@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Usage Desktop</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">LOCAL ANALYTICS</p>
+          <h1>Codex Usage</h1>
+          <p class="muted">本机 JSONL 历史, API token 费用估算</p>
+        </div>
+        <div class="actions"><button id="scan-button" class="primary">立即同步</button><button id="export-button">导出当前 CSV</button></div>
+      </header>
+      <section id="collector-status" class="collector-status" aria-label="采集器状态"></section>
+      <section class="filters" aria-label="审计筛选条件">
+        <div class="filter-heading">
+          <div>
+            <h2>审计范围</h2>
+            <p class="muted">点击条件后立即生效. 模型与执行主体彼此独立.</p>
+          </div>
+          <span class="live-badge">实时筛选</span>
+        </div>
+        <div class="filter-grid">
+          <fieldset class="time-filter">
+            <legend>时间范围 (SGT)</legend>
+            <div class="range-selector">
+              <label for="range-slider">快捷范围 <output id="range-output" for="range-slider" aria-live="polite">72h</output></label>
+              <input id="range-slider" type="range" min="0" max="8" step="1" value="8" aria-label="非均匀小时范围" aria-valuetext="72 小时" />
+              <div class="range-ticks" aria-hidden="true"><span>0.5h</span><span>1h</span><span>2h</span><span>4h</span><span>8h</span><span>12h</span><span>24h</span><span>48h</span><span>72h</span></div>
+            </div>
+            <div class="date-range">
+              <label>开始<input id="start" type="datetime-local" /></label>
+              <label>结束<input id="end" type="datetime-local" /></label>
+            </div>
+          </fieldset>
+          <fieldset class="dimension-filter">
+            <legend>分析维度</legend>
+            <div class="inline-filter-section">
+              <div class="inline-filter-head">
+                <span>模型</span>
+                <button id="clear-models" type="button" class="text-button">全选</button>
+              </div>
+              <p class="facet-hint">默认全选. 右侧显示日期范围内总 tokens 与费用. GPT-5.6, GPT-5.5, GPT-5.4 系列保留型号; <code>source_model=unknown</code> 单列为 Unknown attribution 并计入未定价 tokens; 其他不支持的实际模型归入 Others 且费用为 $0.0.</p>
+              <div id="model-options" class="inline-options" aria-label="模型筛选"></div>
+            </div>
+            <div class="inline-filter-section">
+              <div class="inline-filter-head">
+                <span>执行主体</span>
+                <button id="clear-subjects" type="button" class="text-button">全选</button>
+              </div>
+              <p class="facet-hint">模型与执行主体独立选择; 右侧指标随日期范围实时更新.</p>
+              <div id="subject-options" class="inline-options" aria-label="执行主体筛选"></div>
+            </div>
+            <div class="filter-detail-row">
+              <label class="path-filter">线程检索<input id="path-query" type="search" placeholder="agent path, nickname, rollout ID" /></label>
+              <button id="clear-filters" type="button">恢复全部筛选</button>
+            </div>
+          </fieldset>
+        </div>
+      </section>
+      <p id="status" class="muted" role="status" aria-live="polite">正在连接本地审计账本.</p>
+      <section id="summary" class="summary"></section>
+      <section class="panel"><h2>费用构成 (价格占比)</h2><div id="cost-bars" class="cost-bars"></div></section>
+      <section class="panel"><h2>按模型</h2><div class="table-wrap"><table id="model-table"></table></div></section>
+      <section class="panel"><h2>按线程类型和角色</h2><div class="table-wrap"><table id="role-table"></table></div></section>
+      <section class="panel agent-panel"><h2 id="agent-table-title">按子代理 / 线程</h2><div class="table-wrap agent-table-wrap" role="region" tabindex="0" aria-labelledby="agent-table-title"><table id="agent-table" aria-labelledby="agent-table-title"></table></div></section>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>

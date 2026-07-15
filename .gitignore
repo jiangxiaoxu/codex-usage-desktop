@@ -1,0 +1,29 @@
+# Python
+/.ven/
+/__pycache__/
+*.py[cod]
+
+# Node and Electron
+/node_modules/
+/dist/
+/release*/
+
+# Generated reports and scratch state
+/outputs/
+/work/
+/task-memory/
+
+# Local ledgers, logs, and environment files
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+.env
+.env.*
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,41 @@
+{
+  "name": "codex-usage-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Codex token and API cost analyzer",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/*.test.js",
+    "package:portable": "npm run build && electron-builder --win portable"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2"
+  },
+  "build": {
+    "appId": "local.codex.usage.desktop",
+    "productName": "Codex Usage Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.test.js",
+      "!dist/**/*.test.js.map",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3"
+  }
+}
