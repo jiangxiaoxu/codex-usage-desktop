@@ -44,5 +44,5 @@ Cost notes:
 
 - `reasoning_output_tokens` is treated as a subset of `output_tokens` and is not charged twice.
 - The local rollout records do not expose cache-write or tool-call charges, so the displayed cost is a model token-cost estimate.
-- Repeated cumulative `token_count` snapshots and zero-breakdown stale snapshots are removed before aggregation.
-- Parser revisions atomically reparse still-present canonical sources without deleting permanent history whose source files are already gone.
+- Adjacent repeated complete cumulative `token_count` snapshots and zero-breakdown stale snapshots are removed before aggregation.
+- Parser revisions replace each present rollout transactionally. The revision marker advances only after all required candidates succeed; partial completed work can persist and is retried without deleting permanent history whose source files are already gone.

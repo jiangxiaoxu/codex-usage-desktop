@@ -4,6 +4,7 @@ import path from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Menu, Tray } from "electron";
 import { CollectorClient } from "./collector-client";
 import type { CollectorConfig } from "./collector-protocol";
+import { SingleInstanceWindow } from "./single-instance-window";
 import type { CollectorStatus, FilterSpec, QueryResult, SyncResult } from "./shared";
 import { assertOutsideDirectories } from "./write-boundary";
 
@@ -11,23 +12,23 @@ const PRODUCT_NAME = "Codex Usage Desktop";
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const WATCHER_DEBOUNCE_MS = 2_000;
 
-let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let collector: CollectorClient | null = null;
 let collectorReady: Promise<CollectorStatus> | null = null;
 let isQuitting = false;
-let shutdownStarted = false;
+let fatalErrorHandled = false;
+let shutdownPromise: Promise<void> | null = null;
 let latestStatus: CollectorStatus | null = null;
 
-function showWindow(): void {
-  if (mainWindow === null || mainWindow.isDestroyed()) createWindow();
-  mainWindow?.show();
-  if (mainWindow?.isMinimized()) mainWindow.restore();
-  mainWindow?.focus();
+interface PreparedApplication {
+  readonly collectorReady: Promise<CollectorStatus>;
 }
 
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
+let windowReady: Promise<PreparedApplication> | null = null;
+
+const mainWindow = new SingleInstanceWindow(() => {
+  let showOnReady = true;
+  const window = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 980,
@@ -40,21 +41,42 @@ function createWindow(): void {
       sandbox: true,
     },
   });
-  mainWindow.on("close", (event) => {
+  window.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
-    mainWindow?.hide();
+    showOnReady = false;
+    window.hide();
   });
-  mainWindow.on("closed", () => { mainWindow = null; });
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
-  void mainWindow.loadFile(path.join(__dirname, "renderer.html"));
+  window.once("ready-to-show", () => {
+    if (showOnReady && !isQuitting && !window.isDestroyed()) window.show();
+  });
+  void window.loadFile(path.join(__dirname, "renderer.html")).catch(handleFatalError);
+  return window;
+});
+
+function showWindowWhenReady(): void {
+  const pendingWindow = windowReady;
+  if (isQuitting || pendingWindow === null) return;
+  void pendingWindow.then(() => {
+    if (!isQuitting) mainWindow.show();
+  }).catch(() => { /* Initialization failures are handled by handleFatalError. */ });
+}
+
+function handleFatalError(error: unknown): void {
+  if (fatalErrorHandled || isQuitting) return;
+  fatalErrorHandled = true;
+  isQuitting = true;
+  const message = error instanceof Error ? error.message : String(error);
+  dialog.showErrorBox(PRODUCT_NAME, message);
+  app.quit();
 }
 
 async function createTray(): Promise<void> {
   const icon = await app.getFileIcon(process.execPath, { size: "small" });
+  if (isQuitting) return;
   tray = new Tray(icon);
   tray.setToolTip(PRODUCT_NAME);
-  tray.on("double-click", showWindow);
+  tray.on("double-click", showWindowWhenReady);
   updateTrayMenu();
 }
 
@@ -62,7 +84,7 @@ function updateTrayMenu(): void {
   if (tray === null) return;
   const statusLabel = latestStatus === null ? "Collector: initializing" : `Collector: ${latestStatus.phase}`;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open dashboard", click: showWindow },
+    { label: "Open dashboard", click: showWindowWhenReady },
     { label: "Sync now", click: () => {
       void synchronizeNow().catch((error: unknown) => {
         void dialog.showMessageBox({ type: "error", title: PRODUCT_NAME, message: "Synchronization failed.", detail: error instanceof Error ? error.message : String(error) });
@@ -130,43 +152,44 @@ function registerIpc(): void {
   });
 }
 
-async function initializeApplication(): Promise<void> {
+async function prepareApplication(): Promise<PreparedApplication> {
   registerIpc();
-  collector = new CollectorClient(__dirname);
-  collector.on("usage-updated", (status: CollectorStatus) => {
+  const activeCollector = new CollectorClient(__dirname);
+  collector = activeCollector;
+  activeCollector.on("usage-updated", (status: CollectorStatus) => {
     latestStatus = status;
     updateTrayMenu();
-    if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.webContents.send("usage:updated", status);
+    mainWindow.current()?.webContents.send("usage:updated", status);
   });
-  try {
-    collectorReady = collector.initialize(await collectorConfig());
-    createWindow();
-    await createTray();
-    latestStatus = await collectorReady;
-    updateTrayMenu();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    void dialog.showMessageBox({ type: "error", title: PRODUCT_NAME, message: "Collector failed to initialize.", detail: message });
-  }
+  const config = await collectorConfig();
+  if (isQuitting) throw new Error("Application is shutting down.");
+  const ready = activeCollector.initialize(config);
+  collectorReady = ready;
+  mainWindow.getOrCreate();
+  return { collectorReady: ready };
+}
+
+async function finishApplicationInitialization(prepared: PreparedApplication): Promise<void> {
+  const [status] = await Promise.all([prepared.collectorReady, createTray()]);
+  latestStatus = status;
+  updateTrayMenu();
 }
 
 const lockAcquired = app.requestSingleInstanceLock();
 if (!lockAcquired) app.quit();
 else {
-  app.on("second-instance", showWindow);
-  app.whenReady().then(() => initializeApplication()).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    void dialog.showErrorBox(PRODUCT_NAME, message);
-    app.quit();
+  windowReady = app.whenReady().then(() => prepareApplication());
+  void windowReady.then((prepared) => finishApplicationInitialization(prepared)).catch(handleFatalError);
+  app.on("second-instance", showWindowWhenReady);
+  app.on("activate", showWindowWhenReady);
+  app.on("window-all-closed", () => { /* Keep the collector resident in the tray. */ });
+  app.on("before-quit", () => { isQuitting = true; });
+  app.on("will-quit", (event) => {
+    if (collector === null) return;
+    event.preventDefault();
+    if (shutdownPromise !== null) return;
+    shutdownPromise = collector.close()
+      .catch(() => { /* Exit after the worker has been terminated even if shutdown reporting fails. */ })
+      .finally(() => app.exit(fatalErrorHandled ? 1 : 0));
   });
 }
-
-app.on("activate", showWindow);
-app.on("window-all-closed", () => { /* Keep the collector resident in the tray. */ });
-app.on("before-quit", () => { isQuitting = true; });
-app.on("will-quit", (event) => {
-  if (shutdownStarted || collector === null) return;
-  event.preventDefault();
-  shutdownStarted = true;
-  void collector.close().finally(() => app.exit(0));
-});
