@@ -20,7 +20,7 @@ The copied tree can contain sensitive local data: SQLite ledger records, CSV exp
    git rev-parse HEAD
    ```
 
-3. In the desktop app, note the resolved ledger path. A Portable ledger normally lives below `release\codex-usage-data`; an external `CODEX_USAGE_DATA_DIR` or Electron `userData` ledger needs the separate handling described below.
+3. In the desktop app, note the resolved ledger path. The default ledger lives at `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`; an external `CODEX_USAGE_DATA_DIR` ledger needs the separate handling described below.
 4. Confirm that `D:` is available, `D:\Projects` has enough capacity for the entire source tree, and `D:\Projects\codex-usage-desktop` does not already exist.
 5. Do not use `git clean`, `git reset --hard`, forced checkout or any operation that discards uncommitted work.
 
@@ -85,7 +85,7 @@ Compare the three Git outputs with the values recorded from the source. A differ
 
 The source-tree copy already includes every co-located Portable ledger, `usage.sqlite-wal` and `usage.sqlite-shm` file. Do not copy a live ledger: the tray application must be exited first.
 
-If the noted ledger path is outside the source tree because `CODEX_USAGE_DATA_DIR` is set or the application is using Electron `userData`, copy its complete `codex-usage-data` directory after the application exits. To move that ledger into the target, use a target-owned directory such as `D:\Projects\codex-usage-desktop\codex-usage-data`, verify it with the same manifest approach, and configure the target launch environment to set `CODEX_USAGE_DATA_DIR` to that directory before launching. Do not copy only `usage.sqlite` while WAL companion files exist.
+If the noted ledger path is outside the source tree because `CODEX_USAGE_DATA_DIR` is set or the application uses the default LocalAppData location, copy `usage.sqlite` together with its WAL companion files after the application exits. To move that ledger into the target, use a target-owned directory such as `D:\Projects\codex-usage-desktop\data`, verify it with the same manifest approach, and configure the target launch environment to set `CODEX_USAGE_DATA_DIR` to that directory before launching. Do not copy only `usage.sqlite` while WAL companion files exist.
 
 `.env` and `.env.*` files are included by the full-tree copy. Review their absolute paths, credentials and machine-specific settings before running the target. Preserve an original copy until the target has completed validation.
 

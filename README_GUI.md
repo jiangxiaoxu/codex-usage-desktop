@@ -6,20 +6,20 @@ Start the packaged desktop application by double-clicking:
 launch_codex_usage_gui.vbs
 ```
 
-The launcher prefers the newest Portable executable under `release`. For development:
+The launcher runs the packaged restart flow. For development:
 
 ```powershell
 npm install
 npm start
 ```
 
-The application observes local Codex rollout JSONL files under `%USERPROFILE%\.codex` and does not upload data. Codex source paths are never opened for writing, locked, renamed, deleted, truncated, or repaired. SQLite locking is limited to the application's own `codex-usage-data\usage.sqlite` ledger.
+The application observes local Codex rollout JSONL files under `%USERPROFILE%\.codex` and does not upload data. Codex source paths are never opened for writing, locked, renamed, deleted, truncated, or repaired. SQLite locking is limited to the application's own `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` ledger.
 
 Features:
 
 - Manually started, single-instance tray application; closing the window keeps collection active.
 - Watcher-driven append ingestion with a periodic full inventory as a reliability fallback.
-- Permanent SQLite accounting beside the Portable executable.
+- Permanent SQLite accounting under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
 - Canonical rollout promotion across active and archived paths without duplicate accounting or ledger rollback.
 - Visible collector health, source conflicts, last inventory, SQLite path, and offline observation gaps.
 - One continuous live range slider with clickable, evenly spaced 1h, 4h, 12h, 1-day, 2-day, 4-day, 7-day, and 14-day anchors. The thumb can stop between anchors for ranges such as 1.5 or 10 days, and custom Singapore-time ranges are collapsed by default and available on demand.
@@ -38,6 +38,7 @@ Validation:
 npm run typecheck
 npm test
 npm run package:portable
+npm run package:installer
 ```
 
 Cost notes:

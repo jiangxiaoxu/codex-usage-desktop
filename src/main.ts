@@ -1,11 +1,12 @@
-import { access, mkdir } from "node:fs/promises";
-import { constants } from "node:fs";
+import { access, mkdir, rm } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, Menu, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, Tray } from "electron";
 import { CollectorClient } from "./collector-client";
 import type { CollectorConfig } from "./collector-protocol";
+import { resolveLedgerDirectory } from "./ledger-directory";
 import { SingleInstanceWindow } from "./single-instance-window";
-import type { CollectorStatus, FilterSpec, QueryResult, SyncResult } from "./shared";
+import type { CollectorStatus, FilterSpec, QueryResult, StartupSettings, SyncResult } from "./shared";
 import { assertOutsideDirectories } from "./write-boundary";
 
 const PRODUCT_NAME = "Codex Usage Desktop";
@@ -31,6 +32,7 @@ let windowReady: Promise<PreparedApplication> | null = null;
 const mainWindow = new SingleInstanceWindow(() => {
   let showOnReady = true;
   const window = new BrowserWindow({
+    title: `${PRODUCT_NAME} v${app.getVersion()}`,
     width: 1280,
     height: 860,
     minWidth: 980,
@@ -42,6 +44,10 @@ const mainWindow = new SingleInstanceWindow(() => {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  window.webContents.on("page-title-updated", (event) => {
+    event.preventDefault();
+    window.setTitle(`${PRODUCT_NAME} v${app.getVersion()}`);
   });
   window.on("close", (event) => {
     if (isQuitting) return;
@@ -67,7 +73,6 @@ function showWindowWhenReady(): void {
 function isRestartRequestForCurrentExecutable(commandLine: readonly string[]): boolean {
   const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR?.trim();
   const executableDirectory = path.resolve(portableDirectory || path.dirname(process.execPath)).toLowerCase();
-  const dataDirectory = process.env.CODEX_USAGE_DATA_DIR?.trim();
   const targetDirectories = commandLine
     .filter((argument) => argument.startsWith(RESTART_REQUEST_PREFIX) || argument.startsWith(RESTART_DATA_DIRECTORY_PREFIX))
     .map((argument) => argument.startsWith(RESTART_REQUEST_PREFIX)
@@ -76,8 +81,7 @@ function isRestartRequestForCurrentExecutable(commandLine: readonly string[]): b
     .filter((directory) => directory.length > 0)
     .map((directory) => path.resolve(directory).toLowerCase());
   if (targetDirectories.includes(executableDirectory)) return true;
-  if (!dataDirectory) return false;
-  const normalizedDataDirectory = path.resolve(dataDirectory).toLowerCase();
+  const normalizedDataDirectory = path.resolve(ledgerDataDirectory()).toLowerCase();
   return targetDirectories.includes(normalizedDataDirectory);
 }
 
@@ -115,13 +119,43 @@ function updateTrayMenu(): void {
   ]));
 }
 
-function portableDataDirectory(): string {
-  const override = process.env.CODEX_USAGE_DATA_DIR?.trim();
-  if (override) return path.resolve(override);
-  if (!app.isPackaged) return path.join(app.getPath("userData"), "codex-usage-data");
-  const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR?.trim();
-  const executableDirectory = portableDirectory || path.dirname(process.execPath);
-  return path.join(executableDirectory, "codex-usage-data");
+function ledgerDataDirectory(): string {
+  return resolveLedgerDirectory({
+    overrideDirectory: process.env.CODEX_USAGE_DATA_DIR,
+    localAppDataDirectory: process.env.LOCALAPPDATA,
+    userDataDirectory: app.getPath("userData"),
+    productName: PRODUCT_NAME,
+  });
+}
+
+function startupSettings(): StartupSettings {
+  if (process.platform !== "win32" || !app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR?.trim()) {
+    return { supported: false, enabled: false };
+  }
+  return { supported: true, enabled: existsSync(startupShortcutPath()) };
+}
+
+function startupShortcutPath(): string {
+  return path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${PRODUCT_NAME}.lnk`);
+}
+
+async function setStartupEnabled(value: unknown): Promise<StartupSettings> {
+  if (typeof value !== "boolean") throw new TypeError("Startup setting must be a boolean.");
+  const enabled = value;
+  const settings = startupSettings();
+  if (!settings.supported) throw new Error("Startup settings are available only for the installed Windows application.");
+  const shortcutPath = startupShortcutPath();
+  if (enabled) {
+    const written = shell.writeShortcutLink(shortcutPath, "create", {
+      target: process.execPath,
+      cwd: path.dirname(process.execPath),
+      description: PRODUCT_NAME,
+    });
+    if (!written) throw new Error("Unable to create the startup shortcut.");
+  } else {
+    await rm(shortcutPath, { force: true });
+  }
+  return startupSettings();
 }
 
 async function assertOutsideCodexSources(candidate: string, codexHome: string): Promise<void> {
@@ -129,7 +163,7 @@ async function assertOutsideCodexSources(candidate: string, codexHome: string): 
 }
 
 async function collectorConfig(): Promise<CollectorConfig> {
-  const dataDirectory = portableDataDirectory();
+  const dataDirectory = ledgerDataDirectory();
   const codexHome = path.join(process.env.USERPROFILE ?? "", ".codex");
   await assertOutsideCodexSources(dataDirectory, codexHome);
   await mkdir(dataDirectory, { recursive: true });
@@ -158,6 +192,8 @@ function registerIpc(): void {
   ipcMain.handle("usage:sync", (): Promise<SyncResult> => synchronizeNow());
   ipcMain.handle("usage:query", async (_event, filter: FilterSpec): Promise<QueryResult> => (await getCollector()).request("query", filter));
   ipcMain.handle("usage:status", async (): Promise<CollectorStatus> => (await getCollector()).request("getStatus", null));
+  ipcMain.handle("settings:get-startup", (): StartupSettings => startupSettings());
+  ipcMain.handle("settings:set-startup", (_event, enabled: unknown): Promise<StartupSettings> => setStartupEnabled(enabled));
   ipcMain.handle("usage:export", async (_event, filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }> => {
     const result = await dialog.showSaveDialog({
       title: "Export filtered Codex usage",

@@ -49,7 +49,8 @@ type ObservationCoverage = "baseline" | "continuous" | "gap";
 interface ObservationGap { readonly startUtc: string; readonly endUtc: string; }
 interface CollectorStatus { readonly phase: CollectorPhase; readonly databasePath: string; readonly runStartedUtc: string; readonly lastSuccessfulInventoryUtc: string | null; readonly lastHeartbeatUtc: string | null; readonly filesKnown: number; readonly pendingFiles: number; readonly changedFilesLastSync: number; readonly conflicts: number; readonly observationCoverage: ObservationCoverage; readonly observationGap: ObservationGap | null; readonly message: string; }
 interface SyncResult { readonly status: CollectorStatus; readonly changed: boolean; }
-interface UsageApi { syncNow(): Promise<SyncResult>; query(filter: FilterSpec): Promise<QueryResult>; exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>; getCollectorStatus(): Promise<CollectorStatus>; onUsageUpdated(listener: (status: CollectorStatus) => void): () => void; }
+interface StartupSettings { readonly supported: boolean; readonly enabled: boolean; }
+interface UsageApi { syncNow(): Promise<SyncResult>; query(filter: FilterSpec): Promise<QueryResult>; exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>; getCollectorStatus(): Promise<CollectorStatus>; getStartupSettings(): Promise<StartupSettings>; setStartupEnabled(enabled: boolean): Promise<StartupSettings>; onUsageUpdated(listener: (status: CollectorStatus) => void): () => void; }
 
 const apiWindow = window as unknown as { readonly usageApi: UsageApi };
 
@@ -65,6 +66,7 @@ const RANGE_ANCHOR_HOURS = [1, 4, 12, 24, 48, 96, 168, 336] as const;
 const RANGE_UNITS_PER_SEGMENT = 504;
 const RANGE_MAX = (RANGE_ANCHOR_HOURS.length - 1) * RANGE_UNITS_PER_SEGMENT;
 const ROLLING_REFRESH_INTERVAL_MS = 60_000;
+const TIME_RANGE_STORAGE_KEY = "codex-usage-desktop.time-range.v1";
 const rangeNumber = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
 type TimeRangeSelection =
   | { readonly mode: "relative"; readonly selectedDurationHours: number }
@@ -91,6 +93,39 @@ let querySequence = 0;
 let operationSequence = 0;
 let activeOperations = 0;
 let manualSyncActive = false;
+
+interface StoredTimeRange {
+  readonly selectedDurationHours: number;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null;
+}
+
+function loadStoredTimeRange(): StoredTimeRange | null {
+  try {
+    const raw = window.localStorage.getItem(TIME_RANGE_STORAGE_KEY);
+    if (raw === null) return null;
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value) || typeof value.selectedDurationHours !== "number" || !Number.isFinite(value.selectedDurationHours)) return null;
+    const minimumHours = RANGE_ANCHOR_HOURS[0];
+    const maximumHours = RANGE_ANCHOR_HOURS[RANGE_ANCHOR_HOURS.length - 1];
+    if (value.selectedDurationHours < minimumHours || value.selectedDurationHours > maximumHours) return null;
+    return { selectedDurationHours: value.selectedDurationHours };
+  } catch {
+    return null;
+  }
+}
+
+function persistTimeRange(): void {
+  if (timeRangeSelection.mode !== "relative") return;
+  try {
+    const stored: StoredTimeRange = { selectedDurationHours: timeRangeSelection.selectedDurationHours };
+    window.localStorage.setItem(TIME_RANGE_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Browser storage can be unavailable; the current selection still works.
+  }
+}
 
 function subjectKey(subject: SubjectFilter): string {
   return JSON.stringify([subject.threadType, subject.agentRole]);
@@ -200,7 +235,28 @@ function setContinuousRange(sliderValue: number, applyImmediately: boolean): voi
   slider.value = String(sliderValue);
   slider.setAttribute("aria-valuetext", label);
   byId<HTMLOutputElement>("range-output").value = label;
+  persistTimeRange();
   if (applyImmediately) scheduleFilterQuery(120);
+}
+
+function setCustomDateMode(enabled: boolean, applyImmediately: boolean): void {
+  const recentRange = byId<HTMLElement>("recent-range");
+  const dateRange = byId<HTMLElement>("date-range");
+  const toggle = byId<HTMLButtonElement>("custom-date-toggle");
+  recentRange.hidden = enabled;
+  dateRange.hidden = !enabled;
+  toggle.setAttribute("aria-expanded", String(enabled));
+  toggle.textContent = enabled ? "使用近期时间范围" : "使用自定义日期";
+  if (enabled) {
+    timeRangeSelection = { mode: "custom", selectedDurationHours: timeRangeSelection.selectedDurationHours };
+    resetRollingRefreshTimer();
+    byId<HTMLOutputElement>("range-output").value = "自定义";
+    byId<HTMLInputElement>("range-slider").setAttribute("aria-valuetext", "自定义时间范围");
+    persistTimeRange();
+    if (applyImmediately) scheduleFilterQuery(0);
+    return;
+  }
+  setContinuousRange(Number(byId<HTMLInputElement>("range-slider").value), applyImmediately);
 }
 
 function selectedSubjects(): readonly SubjectFilter[] {
@@ -464,7 +520,8 @@ async function exportCsv(): Promise<void> {
   try { const result = await apiWindow.usageApi.exportCsv(filterSpec()); setStatus(result.path === null ? "已取消导出." : `已导出当前 token 与费用明细: ${result.path}`); } catch (error) { setStatus(error instanceof Error ? error.message : "导出失败."); }
 }
 
-setContinuousRange(RANGE_MAX, false);
+const storedTimeRange = loadStoredTimeRange();
+setContinuousRange(sliderValueForHours(storedTimeRange?.selectedDurationHours ?? RANGE_ANCHOR_HOURS[RANGE_ANCHOR_HOURS.length - 1]), false);
 byId<HTMLInputElement>("range-slider").addEventListener("input", (event) => {
   const target = event.currentTarget;
   if (!(target instanceof HTMLInputElement)) return;
@@ -480,17 +537,11 @@ for (const tick of document.querySelectorAll<HTMLButtonElement>(".range-tick")) 
 byId<HTMLButtonElement>("custom-date-toggle").addEventListener("click", (event) => {
   const toggle = event.currentTarget;
   if (!(toggle instanceof HTMLButtonElement)) return;
-  const dateRange = byId<HTMLElement>("date-range");
-  const expanded = dateRange.hidden;
-  dateRange.hidden = !expanded;
-  toggle.setAttribute("aria-expanded", String(expanded));
-  toggle.textContent = expanded ? "收起自定义日期" : "展开自定义日期";
+  setCustomDateMode(toggle.getAttribute("aria-expanded") !== "true", true);
 });
 for (const id of ["start", "end"] as const) byId<HTMLInputElement>(id).addEventListener("change", () => {
-  timeRangeSelection = { mode: "custom", selectedDurationHours: timeRangeSelection.selectedDurationHours };
-  resetRollingRefreshTimer();
-  byId<HTMLOutputElement>("range-output").value = "自定义";
-  byId<HTMLInputElement>("range-slider").setAttribute("aria-valuetext", "自定义时间范围");
+  if (timeRangeSelection.mode !== "custom") setCustomDateMode(true, false);
+  persistTimeRange();
   scheduleFilterQuery(0);
 });
 byId<HTMLInputElement>("path-query").addEventListener("input", () => scheduleFilterQuery(250));
@@ -520,6 +571,25 @@ byId<HTMLButtonElement>("clear-filters").addEventListener("click", () => {
 });
 byId<HTMLButtonElement>("scan-button").addEventListener("click", () => void scan());
 byId<HTMLButtonElement>("export-button").addEventListener("click", () => void exportCsv());
+
+function renderStartupSettings(settings: StartupSettings): void {
+  const off = byId<HTMLButtonElement>("startup-off");
+  const on = byId<HTMLButtonElement>("startup-on");
+  off.disabled = !settings.supported;
+  on.disabled = !settings.supported;
+  off.setAttribute("aria-pressed", String(!settings.enabled));
+  on.setAttribute("aria-pressed", String(settings.enabled));
+}
+
+function updateStartupSetting(enabled: boolean): void {
+  renderStartupSettings({ supported: false, enabled });
+  void apiWindow.usageApi.setStartupEnabled(enabled)
+    .then(renderStartupSettings)
+    .catch((error: unknown) => { void apiWindow.usageApi.getStartupSettings().then(renderStartupSettings); setStatus(error instanceof Error ? error.message : "更新开机自启动失败."); });
+}
+
+byId<HTMLButtonElement>("startup-off").addEventListener("click", () => updateStartupSetting(false));
+byId<HTMLButtonElement>("startup-on").addEventListener("click", () => updateStartupSetting(true));
 
 apiWindow.usageApi.onUsageUpdated((collectorStatus) => {
   renderCollectorStatus(collectorStatus);
@@ -557,6 +627,8 @@ async function initialize(): Promise<void> {
   const requestRevision = filterRevision;
   activeOperations += 1;
   try {
+    const settings = await apiWindow.usageApi.getStartupSettings();
+    renderStartupSettings(settings);
     const collectorStatus = await apiWindow.usageApi.getCollectorStatus();
     if (operation !== operationSequence) return;
     renderCollectorStatus(collectorStatus);

@@ -33,15 +33,15 @@ For accurate historical daily use, keep the collector running in the tray and al
 
 ## Ledger location and backup
 
-The default portable ledger is:
+The default ledger for portable, installed, and development launches is:
 
 ```text
-<Portable executable directory>\codex-usage-data\usage.sqlite
+%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite
 ```
 
-`CODEX_USAGE_DATA_DIR` overrides that location. Development runs use Electron `userData\codex-usage-data`. The data directory is rejected if it resolves beneath Codex source directories.
+`CODEX_USAGE_DATA_DIR` overrides that location. The data directory is rejected if it resolves beneath Codex source directories.
 
-For backup or migration, exit the application first, then copy the complete `codex-usage-data` directory. This includes `usage.sqlite` and any WAL companion files that may still exist. Do not overwrite a live ledger from another process. If a ledger fails to open after a crash, retain a copy and investigate it before replacing it; source rollout JSONL must not be modified as a repair step.
+For backup or migration, exit the application first, then copy `usage.sqlite` together with any WAL companion files that may still exist in `%LOCALAPPDATA%\Codex Usage Desktop`. Do not overwrite a live ledger from another process. If a ledger fails to open after a crash, retain a copy and investigate it before replacing it; source rollout JSONL must not be modified as a repair step.
 
 ## Recovery and diagnosis
 

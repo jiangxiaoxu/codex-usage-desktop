@@ -51,13 +51,21 @@ npm run typecheck
 npm test
 npm run build
 npm run package:portable
+npm run package:installer
+npm run migrate:ledger
 npm run portable:restart
 npm run package:portable:restart
 ```
 
 `npm run package:portable` 会在 `release/` 生成 Windows Portable executable.package 使用 `dist/` 中的生成文件.应修改 `src/` 后重新构建,不要编辑生成 output.
 
-`npm run portable:restart` 会重启已有的 Portable package.`npm run package:portable:restart` 会先重新打包.两者都会向当前工作区的应用实例发送受路径约束的退出请求,确认 executable 可用后复制到被忽略的 `work/portable-run/` 并启动副本.因此运行实例不会锁定 `release/` 中的打包源文件.命令通过 `CODEX_USAGE_DATA_DIR` 保持 ledger 位于 `release/codex-usage-data/`.退出请求超时时,命令只会终止当前工作区 `work/`,`release/` 或开发 Electron 进程树;其他路径的同名应用仍会使命令停止.
+`npm run package:installer` 会生成 NSIS installer.安装时可选择在 Windows Startup 文件夹创建开机自启动快捷方式;卸载时会终止运行中的应用,删除该快捷方式,并提供删除配置与 usage ledger 的可选项.安装后的 GUI 也提供同一个开机自启动开关.
+
+`npm run migrate:ledger` 会在应用关闭后将旧 portable ledger 从 `release/codex-usage-data/` 迁移到默认 C 盘数据目录.目标已存在时命令会拒绝覆盖.
+
+版本以 `package.json` 的 `version` 为唯一来源,原生窗口标题栏、Portable 与 NSIS installer 使用同一版本.使用 `npm run version:patch`、`npm run version:minor` 或 `npm run version:major` 更新版本,并同步维护 [CHANGELOG.md](CHANGELOG.md).
+
+`npm run portable:restart` 会重启已有的 Portable package.`npm run package:portable:restart` 会先重新打包.两者都会向当前工作区的应用实例发送受路径约束的退出请求,确认 executable 可用后复制到被忽略的 `work/portable-run/` 并启动副本.因此运行实例不会锁定 `release/` 中的打包源文件,并会使用默认的 `%LOCALAPPDATA%` ledger.退出请求超时时,命令只会终止当前工作区 `work/`,`release/` 或开发 Electron 进程树;其他路径的同名应用仍会使命令停止.
 
 ## 数据目录与安全边界
 
@@ -71,8 +79,7 @@ npm run package:portable:restart
 应用不会对这些 source file 加锁,写入,重命名,删除,截断或修复.`%USERPROFILE%\\.codex\\agents` 虽不是观察源,仍属于受保护 Codex 目录,不得作为 output 或 export 目标. collector 的 SQLite ledger 由应用自身拥有,位置如下:
 
 ```text
-Development: %APPDATA%\\codex-usage-desktop\\codex-usage-data\\usage.sqlite
-Portable:    <directory containing the running Portable EXE>\\codex-usage-data\\usage.sqlite
+Default:     %LOCALAPPDATA%\\Codex Usage Desktop\\usage.sqlite
 Override:    %CODEX_USAGE_DATA_DIR%\\usage.sqlite
 ```
 

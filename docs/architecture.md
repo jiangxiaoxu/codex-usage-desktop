@@ -58,4 +58,4 @@ The parser drops invalid token relationships, invalid timestamps, zero-breakdown
 
 `usage-store.ts` owns `usage.sqlite`, with schema version in `PRAGMA user_version`. The schema stores `rollouts`, `usage_events`, `source_files`, `collector_runs`, `collector_diagnostics` and `collector_state`. Source and usage writes run in `BEGIN IMMEDIATE` transactions. The application ledger uses foreign keys, WAL mode and a 5 second SQLite busy timeout. On clean shutdown it performs `wal_checkpoint(TRUNCATE)` before closing the database.
 
-The portable application stores the ledger beside the executable as `codex-usage-data\usage.sqlite`, unless `CODEX_USAGE_DATA_DIR` is set. Development mode uses Electron `userData\codex-usage-data`.
+All application modes store the default ledger at `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`, unless `CODEX_USAGE_DATA_DIR` is set. This keeps the ledger independent of executable, portable-copy, and NSIS installation paths.

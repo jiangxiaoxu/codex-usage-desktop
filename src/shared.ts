@@ -51,6 +51,11 @@ export interface SyncResult {
   readonly changed: boolean;
 }
 
+export interface StartupSettings {
+  readonly supported: boolean;
+  readonly enabled: boolean;
+}
+
 export interface ScanDiagnostics {
   readonly filesScanned: number;
   readonly malformedLines: number;
@@ -137,5 +142,7 @@ export interface UsageApi {
   query(filter: FilterSpec): Promise<QueryResult>;
   exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>;
   getCollectorStatus(): Promise<CollectorStatus>;
+  getStartupSettings(): Promise<StartupSettings>;
+  setStartupEnabled(enabled: boolean): Promise<StartupSettings>;
   onUsageUpdated(listener: (status: CollectorStatus) => void): () => void;
 }

@@ -12,6 +12,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/*.test.js",
     "package:portable": "npm run build && electron-builder --win portable",
+    "package:installer": "npm run build && electron-builder --win nsis && node scripts/verify-nsis-installer.mjs",
+    "migrate:ledger": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/migrate-usage-ledger.ps1",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
     "portable:restart": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/package-portable-and-restart.ps1",
     "package:portable:restart": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/package-portable-and-restart.ps1 -Rebuild"
   },
@@ -37,6 +42,11 @@
       "target": [
         "portable"
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/custom-installer.nsh"
     }
   },
   "dependencies": {

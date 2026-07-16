@@ -18,6 +18,7 @@ $executableName = "$productName.exe"
 $releaseDirectory = Join-Path $workspace "release"
 $portableExecutable = Join-Path $releaseDirectory "$productName $version.exe"
 $portableLauncherName = Split-Path $portableExecutable -Leaf
+$portableLauncherPattern = "^$([regex]::Escape($productName)) [0-9]+(?:\.[0-9]+){1,3}(?:-[A-Za-z0-9.-]+)?\.exe$"
 $runtimeDirectory = Join-Path $workspace "work\portable-run"
 $runtimeExecutable = Join-Path $runtimeDirectory $portableLauncherName
 $controlDirectory = Join-Path $workspace "work\portable-control"
@@ -25,10 +26,11 @@ $controlExecutable = Join-Path $controlDirectory $portableLauncherName
 $unpackedAsar = Join-Path $releaseDirectory "win-unpacked\resources\app.asar"
 $developmentDirectory = Join-Path $workspace "node_modules\electron\dist"
 $developmentExecutable = Join-Path $developmentDirectory "electron.exe"
+$ledgerDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) $productName
 
 function Get-ApplicationInstances {
   return @(Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -eq $portableLauncherName -or
+    $_.Name -match $portableLauncherPattern -or
       (($_.Name -eq $executableName) -and ($_.CommandLine -notmatch "\s--type=")) -or
       (($_.Name -eq "electron.exe") -and ($_.ExecutablePath -eq $developmentExecutable) -and ($_.CommandLine -notmatch "\s--type="))
   })
@@ -65,9 +67,13 @@ function Stop-ProcessTree([int[]]$rootProcessIds) {
 }
 
 function Stop-ManagedApplicationInstances {
-  $managedPaths = @($runtimeExecutable, $controlExecutable, $portableExecutable, $developmentExecutable)
   $rootProcessIds = @(Get-CimInstance Win32_Process |
-    Where-Object { $_.ExecutablePath -in $managedPaths } |
+    Where-Object {
+      $_.ExecutablePath -like "$runtimeDirectory\*" -or
+        $_.ExecutablePath -like "$controlDirectory\*" -or
+        $_.ExecutablePath -like "$releaseDirectory\$productName *.exe" -or
+        $_.ExecutablePath -eq $developmentExecutable
+    } |
     ForEach-Object { [int]$_.ProcessId })
   if ($rootProcessIds.Count -gt 0) {
     Stop-ProcessTree $rootProcessIds
@@ -93,7 +99,8 @@ function Request-ApplicationShutdown {
     "--shutdown-for-restart=`"$runtimeDirectory`"",
     "--shutdown-for-restart=`"$unpackedDirectory`"",
     "--shutdown-for-restart=`"$developmentDirectory`"",
-    "--shutdown-for-data-directory=`"$(Join-Path $releaseDirectory 'codex-usage-data')`""
+    "--shutdown-for-data-directory=`"$(Join-Path $releaseDirectory 'codex-usage-data')`"",
+    "--shutdown-for-data-directory=`"$ledgerDirectory`""
   ) -WorkingDirectory $controlDirectory
   $shutdownDeadline = (Get-Date).AddSeconds(5)
   do {
@@ -151,13 +158,7 @@ Write-Host "Launching refreshed portable executable copy: $runtimeExecutable"
 New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
 Copy-Item -LiteralPath $portableExecutable -Destination $runtimeExecutable -Force
 
-$previousDataDirectory = $env:CODEX_USAGE_DATA_DIR
-$env:CODEX_USAGE_DATA_DIR = Join-Path $releaseDirectory "codex-usage-data"
-try {
-  $launchProcess = Start-Process -FilePath $runtimeExecutable -WorkingDirectory $runtimeDirectory -PassThru
-} finally {
-  $env:CODEX_USAGE_DATA_DIR = $previousDataDirectory
-}
+$launchProcess = Start-Process -FilePath $runtimeExecutable -WorkingDirectory $runtimeDirectory -PassThru
 
 try {
   $launchDeadline = (Get-Date).AddSeconds(15)
