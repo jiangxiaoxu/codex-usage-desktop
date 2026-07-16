@@ -84,6 +84,17 @@ test("supports nested thread_spawn metadata and legacy top-level fields", () => 
   assert.equal(legacy.metadata.agentRole, "reviewer");
 });
 
+test("falls back to unknown when subagent thread_spawn metadata lacks an agent role", () => {
+  const result = parseRollout(jsonl(line("session_meta", {
+    session_id: "parent",
+    id: "child",
+    thread_source: "subagent",
+    source: { subagent: { thread_spawn: { parent_thread_id: "parent", agent_path: "/root/worker" } } },
+  })), "fallback");
+
+  assert.equal(result.metadata.agentRole, "unknown");
+});
+
 test("resolves candidate models after parsing and handles model switches", () => {
   const result = parseRollout(jsonl(
     line("event_msg", { type: "task_started", turn_id: "turn-a" }),

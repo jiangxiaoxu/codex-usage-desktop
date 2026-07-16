@@ -7,10 +7,7 @@ Codex Usage Desktop is a local Electron application. It observes Codex rollout J
 ## Process and data flow
 
 ```text
-Codex sessions / archived_sessions JSONL --- read-only stat, readFile, open("r") ---+
-                                                                         |
-Codex agents/*.toml -------------------------- read-only readdir --------+
-                                                                         v
+Codex sessions / archived_sessions JSONL --- read-only stat, readFile, open("r") --->
                     collector-worker.ts owns chokidar and reconciliation
                                   |
                                   +-> rollout-parser.ts -> usage-store.ts -> usage.sqlite

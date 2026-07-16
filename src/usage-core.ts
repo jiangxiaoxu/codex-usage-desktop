@@ -1,4 +1,4 @@
-import { AgentGroupRow, AgentRoleCategory, ConfiguredAgentRole, CostBreakdown, FilterSpec, GroupRow, ModelFacetOption, ModelGroupRow, QueryFacets, QueryResult, RoleGroupRow, ScanDiagnostics, SubjectFacetOption, Summary, ThreadType, UsageEvent } from "./shared";
+import { AgentGroupRow, CostBreakdown, FilterSpec, GroupRow, ModelFacetOption, ModelGroupRow, QueryFacets, QueryResult, RoleGroupRow, ScanDiagnostics, SubjectFacetOption, Summary, ThreadType, UsageEvent } from "./shared";
 
 const MILLION = 1_000_000;
 const LONG_CONTEXT_LIMIT = 272_000;
@@ -46,9 +46,8 @@ export function modelCategory(sourceModel: string): string {
   return SUPPORTED_MODEL_FAMILIES.some((family) => belongsToFamily(sourceModel, family)) ? sourceModel : OTHER_MODEL_CATEGORY;
 }
 
-export function agentRoleCategory(threadType: ThreadType, rawRole: string, configuredRoles: ReadonlySet<string>): AgentRoleCategory {
-  if (threadType === "main") return "main";
-  return configuredRoles.has(rawRole) && rawRole !== "main" && rawRole !== "Others" ? rawRole as ConfiguredAgentRole : "Others";
+export function normalizedAgentRole(threadType: ThreadType, observedRole: string): string {
+  return threadType === "main" ? "root" : observedRole;
 }
 
 export function costFor(event: UsageEvent): CostBreakdown {
@@ -98,12 +97,12 @@ export function summarize(events: Iterable<UsageEvent>): Summary {
   return summary;
 }
 
-export function matchesFilter(event: UsageEvent, filter: FilterSpec, configuredRoles: ReadonlySet<string>): boolean {
+export function matchesFilter(event: UsageEvent, filter: FilterSpec): boolean {
   const time = Date.parse(event.timestampUtc);
   if (time < Date.parse(filter.startUtc) || time >= Date.parse(filter.endUtc)) return false;
   if (filter.models !== null && !filter.models.includes(modelCategory(event.model))) return false;
-  const roleCategory = agentRoleCategory(event.threadType, event.agentRole, configuredRoles);
-  if (filter.subjects !== null && !filter.subjects.some((subject) => subject.threadType === event.threadType && subject.agentRoleCategory === roleCategory)) return false;
+  const agentRole = normalizedAgentRole(event.threadType, event.agentRole);
+  if (filter.subjects !== null && !filter.subjects.some((subject) => subject.threadType === event.threadType && subject.agentRole === agentRole)) return false;
   const query = filter.pathQuery.trim().toLocaleLowerCase();
   return !query || [event.agentPath, event.agentNickname, event.rolloutId, event.conversationId].join(" ").toLocaleLowerCase().includes(query);
 }
@@ -113,7 +112,7 @@ function inDateScope(event: UsageEvent, filter: FilterSpec): boolean {
   return time >= Date.parse(filter.startUtc) && time < Date.parse(filter.endUtc);
 }
 
-function facets(events: readonly UsageEvent[], configuredRoles: ReadonlySet<string>): QueryFacets {
+function facets(events: readonly UsageEvent[]): QueryFacets {
   const models = new Map<string, Omit<ModelFacetOption, "model">>();
   const subjects = new Map<string, SubjectFacetOption>();
   for (const event of events) {
@@ -125,8 +124,8 @@ function facets(events: readonly UsageEvent[], configuredRoles: ReadonlySet<stri
       canonicalTotalTokens: (currentModel?.canonicalTotalTokens ?? 0) + canonicalTotalTokens,
       totalCost: (currentModel?.totalCost ?? 0) + totalCost,
     });
-    const subject = { threadType: event.threadType, agentRoleCategory: agentRoleCategory(event.threadType, event.agentRole, configuredRoles) };
-    const key = JSON.stringify([subject.threadType, subject.agentRoleCategory]);
+    const subject = { threadType: event.threadType, agentRole: normalizedAgentRole(event.threadType, event.agentRole) };
+    const key = JSON.stringify([subject.threadType, subject.agentRole]);
     const current = subjects.get(key);
     subjects.set(key, {
       subject,
@@ -138,7 +137,7 @@ function facets(events: readonly UsageEvent[], configuredRoles: ReadonlySet<stri
     .map(([model, metrics]) => ({ model, ...metrics }))
     .sort((left, right) => left.model.localeCompare(right.model));
   const subjectOptions = [...subjects.values()].sort((left, right) =>
-    left.subject.threadType.localeCompare(right.subject.threadType) || left.subject.agentRoleCategory.localeCompare(right.subject.agentRoleCategory),
+    left.subject.threadType.localeCompare(right.subject.threadType) || left.subject.agentRole.localeCompare(right.subject.agentRole),
   );
   return { models: modelOptions, subjects: subjectOptions };
 }
@@ -155,20 +154,20 @@ function group<Key extends readonly string[]>(events: readonly UsageEvent[], get
   return [...buckets.values()].map((bucket) => ({ key: bucket.key, summary: summarize(bucket.events) })).sort((left, right) => right.summary.cost.total - left.summary.cost.total);
 }
 
-export function query(events: readonly UsageEvent[], diagnostics: ScanDiagnostics, filter: FilterSpec, configuredRoles: ReadonlySet<string>): QueryResult {
+export function query(events: readonly UsageEvent[], diagnostics: ScanDiagnostics, filter: FilterSpec): QueryResult {
   const dateScoped = events.filter((event) => inDateScope(event, filter));
-  const selected = dateScoped.filter((event) => matchesFilter(event, filter, configuredRoles));
+  const selected = dateScoped.filter((event) => matchesFilter(event, filter));
   return {
     summary: summarize(selected),
     byModel: group(selected, (event): ModelGroupRow["key"] => [modelCategory(event.model)]),
-    byRole: group(selected, (event): RoleGroupRow["key"] => [event.threadType, agentRoleCategory(event.threadType, event.agentRole, configuredRoles)]),
-    byAgent: group(selected, (event): AgentGroupRow["key"] => [event.threadType, agentRoleCategory(event.threadType, event.agentRole, configuredRoles), event.agentPath, modelCategory(event.model)]),
-    facets: facets(dateScoped, configuredRoles),
+    byRole: group(selected, (event): RoleGroupRow["key"] => [event.threadType, normalizedAgentRole(event.threadType, event.agentRole)]),
+    byAgent: group(selected, (event): AgentGroupRow["key"] => [event.threadType, normalizedAgentRole(event.threadType, event.agentRole), event.agentPath, modelCategory(event.model)]),
+    facets: facets(dateScoped),
     diagnostics,
   };
 }
 
-export function csvRows(events: readonly UsageEvent[], filter: FilterSpec, configuredRoles: ReadonlySet<string>): string {
+export function csvRows(events: readonly UsageEvent[], filter: FilterSpec): string {
   const headers = ["timestamp_sgt", "conversation_id", "rollout_id", "thread_type", "agent_role", "agent_path", "model_category", "source_model", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "other_output_tokens", "total_cost_usd"];
   const quote = (value: string | number): string => {
     const raw = String(value);
@@ -180,10 +179,10 @@ export function csvRows(events: readonly UsageEvent[], filter: FilterSpec, confi
     const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? "00";
     return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:${part("second")}+08:00`;
   };
-  const rows = events.filter((event) => matchesFilter(event, filter, configuredRoles)).sort((left, right) => Date.parse(left.timestampUtc) - Date.parse(right.timestampUtc) || left.rolloutId.localeCompare(right.rolloutId) || left.tokenEventOrdinal - right.tokenEventOrdinal).map((event) => {
+  const rows = events.filter((event) => matchesFilter(event, filter)).sort((left, right) => Date.parse(left.timestampUtc) - Date.parse(right.timestampUtc) || left.rolloutId.localeCompare(right.rolloutId) || left.tokenEventOrdinal - right.tokenEventOrdinal).map((event) => {
     const cost = costFor(event);
     const costText = cost.total.toFixed(12).replace(/\.?0+$/, "") || "0";
-    return [singaporeIso(event.timestampUtc), event.conversationId, event.rolloutId, event.threadType, event.agentRole, event.agentPath, modelCategory(event.model), event.model, event.inputTokens, event.cachedInputTokens, event.outputTokens, event.reasoningOutputTokens, event.outputTokens - event.reasoningOutputTokens, costText].map(quote).join(",");
+    return [singaporeIso(event.timestampUtc), event.conversationId, event.rolloutId, event.threadType, normalizedAgentRole(event.threadType, event.agentRole), event.agentPath, modelCategory(event.model), event.model, event.inputTokens, event.cachedInputTokens, event.outputTokens, event.reasoningOutputTokens, event.outputTokens - event.reasoningOutputTokens, costText].map(quote).join(",");
   });
   return `\uFEFF${headers.join(",")}\n${rows.join("\n")}\n`;
 }

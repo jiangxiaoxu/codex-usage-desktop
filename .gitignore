@@ -9,6 +9,7 @@
 /release*/
 
 # Generated reports and scratch state
+*.csv
 /outputs/
 /work/
 /task-memory/

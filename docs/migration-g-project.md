@@ -1,27 +1,10 @@
 # Complete workspace migration
 
-## Migration result
+## Complete cross-drive move
 
-The complete workspace migration was executed on 2026-07-15.
+This procedure moves the complete local project from `C:\Projects\codex-usage-desktop` to `D:\Projects\codex-usage-desktop`. It preserves Git history, tracked and untracked files, and ignored local material that exists under the source tree. This is deliberately not a lean clone.
 
-- Target: `D:\Projects\codex-usage-desktop`.
-- Verified manifest: 10080 files. Every relative path,file length and SHA-256 matched before cutover.
-- Git: branch `main`,HEAD `5979a6215bf4ee11a7c7518f57f8987a2d240909`. Tracked modifications and untracked documentation were preserved.
-- Integrity: `git fsck --full` passed.
-- Validation: `npm test` passed 42 of 42 tests in the target tree.
-- Source contents were removed after validation. The empty directory `C:\Projects\codex-usage-desktop` remained temporarily because the active Codex task still held it as its working directory. After closing that task,the empty directory can be removed with:
-
-  ```powershell
-  Remove-Item -LiteralPath 'C:\Projects\codex-usage-desktop'
-  ```
-
-The target directory is now the authoritative working copy. Do not resume work in the empty legacy path.
-
-## Selected migration: complete cross-drive move
-
-The selected migration moves the complete local project to `D:\Projects\codex-usage-desktop`. It preserves Git history, tracked and untracked files, and ignored local material that exists under the source tree. This is deliberately not a lean clone.
-
-The copy scope includes `.git`, `node_modules`, `dist`, every `release*` directory, `outputs`, `work`, `task-memory`, `.ven`, `__pycache__`, local `codex-usage-data` directories, `.env` and `.env.*` files, and other local scratch files below the source root. `%USERPROFILE%\.codex\sessions`, `archived_sessions` and `agents` are not project files and must remain in place as read-only observation inputs.
+The copy scope includes `.git`, `node_modules`, `dist`, every `release*` directory, `outputs`, `work`, `task-memory`, `.ven`, `__pycache__`, local `codex-usage-data` directories, `.env` and `.env.*` files, and other local scratch files below the source root. `%USERPROFILE%\.codex\sessions`, `archived_sessions` and `agents` are not project files and must remain in place. The application observes `sessions` and `archived_sessions` read-only; `agents` remains inside the protected no-write boundary but is not read or watched.
 
 The copied tree can contain sensitive local data: SQLite ledger records, CSV exports, `.env` secrets, package cache material and task scratch state. Restrict access to `D:\Projects\codex-usage-desktop` before copying, and do not place it in a shared or synchronized location without an explicit data-handling decision.
 
@@ -38,7 +21,7 @@ The copied tree can contain sensitive local data: SQLite ledger records, CSV exp
    ```
 
 3. In the desktop app, note the resolved ledger path. A Portable ledger normally lives below `release\codex-usage-data`; an external `CODEX_USAGE_DATA_DIR` or Electron `userData` ledger needs the separate handling described below.
-4. Confirm that `G:` is available, `D:\Projects` has enough capacity for the entire source tree, and `D:\Projects\codex-usage-desktop` does not already exist.
+4. Confirm that `D:` is available, `D:\Projects` has enough capacity for the entire source tree, and `D:\Projects\codex-usage-desktop` does not already exist.
 5. Do not use `git clean`, `git reset --hard`, forced checkout or any operation that discards uncommitted work.
 
 ## Copy and verify

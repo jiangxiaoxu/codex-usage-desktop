@@ -1,10 +1,8 @@
 type ThreadType = "main" | "subagent" | "unknown";
-type ConfiguredAgentRole = string & { readonly __configuredAgentRole: unique symbol };
-type AgentRoleCategory = "main" | "Others" | ConfiguredAgentRole;
 
 interface SubjectFilter {
   readonly threadType: ThreadType;
-  readonly agentRoleCategory: AgentRoleCategory;
+  readonly agentRole: string;
 }
 
 interface FilterSpec {
@@ -37,8 +35,8 @@ interface Summary {
 
 interface GroupRow<Key extends readonly string[]> { readonly key: Key; readonly summary: Summary; }
 type ModelGroupRow = GroupRow<readonly [model: string]>;
-type RoleGroupRow = GroupRow<readonly [threadType: ThreadType, agentRoleCategory: AgentRoleCategory]>;
-type AgentGroupRow = GroupRow<readonly [threadType: ThreadType, agentRoleCategory: AgentRoleCategory, agentPath: string, model: string]>;
+type RoleGroupRow = GroupRow<readonly [threadType: ThreadType, agentRole: string]>;
+type AgentGroupRow = GroupRow<readonly [threadType: ThreadType, agentRole: string, agentPath: string, model: string]>;
 interface FacetMetrics { readonly canonicalTotalTokens: number; readonly totalCost: number; }
 interface ModelFacetOption extends FacetMetrics { readonly model: string; }
 interface SubjectFacetOption extends FacetMetrics { readonly subject: SubjectFilter; }
@@ -63,8 +61,19 @@ const byId = <T extends HTMLElement>(id: string): T => {
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const integer = new Intl.NumberFormat("en-US");
-const EMPTY_FACET_METRICS: FacetMetrics = { canonicalTotalTokens: 0, totalCost: 0 };
-const QUICK_RANGE_HOURS = [0.5, 1, 2, 4, 8, 12, 24, 48, 72] as const;
+const RANGE_ANCHOR_HOURS = [1, 4, 12, 24, 48, 96, 168, 336] as const;
+const RANGE_UNITS_PER_SEGMENT = 504;
+const RANGE_MAX = (RANGE_ANCHOR_HOURS.length - 1) * RANGE_UNITS_PER_SEGMENT;
+const ROLLING_REFRESH_INTERVAL_MS = 60_000;
+const rangeNumber = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
+type TimeRangeSelection =
+  | { readonly mode: "relative"; readonly selectedDurationHours: number }
+  | { readonly mode: "custom"; readonly selectedDurationHours: number };
+
+let timeRangeSelection: TimeRangeSelection = {
+  mode: "relative",
+  selectedDurationHours: RANGE_ANCHOR_HOURS[RANGE_ANCHOR_HOURS.length - 1],
+};
 const selectedModels = new Set<string>();
 const selectedSubjectKeys = new Set<string>();
 const subjectsByKey = new Map<string, SubjectFilter>();
@@ -75,20 +84,22 @@ let selectAllSubjectsMode = true;
 let latestResult: QueryResult | null = null;
 let refreshTimer: number | null = null;
 let liveFilterTimer: number | null = null;
+let rollingRefreshTimer: number | null = null;
 let filtersDirty = false;
 let filterRevision = 0;
 let querySequence = 0;
 let operationSequence = 0;
+let activeOperations = 0;
 let manualSyncActive = false;
 
 function subjectKey(subject: SubjectFilter): string {
-  return JSON.stringify([subject.threadType, subject.agentRoleCategory]);
+  return JSON.stringify([subject.threadType, subject.agentRole]);
 }
 
 function subjectLabel(subject: SubjectFilter): string {
-  if (subject.threadType === "main") return "主线程";
-  if (subject.threadType === "subagent") return `子代理 · ${subject.agentRoleCategory}`;
-  return `未知线程 · ${subject.agentRoleCategory}`;
+  if (subject.threadType === "main") return "主线程 · root";
+  if (subject.threadType === "subagent") return `子代理 · ${subject.agentRole}`;
+  return `未知线程 · ${subject.agentRole}`;
 }
 
 function singaporeDate(value: Date): string {
@@ -120,7 +131,7 @@ function scheduleFilterQuery(delayMs: number, recordChange = true): void {
   if (liveFilterTimer !== null) window.clearTimeout(liveFilterTimer);
   liveFilterTimer = window.setTimeout(() => {
     liveFilterTimer = null;
-    if (manualSyncActive) {
+    if (manualSyncActive || activeOperations > 0) {
       scheduleFilterQuery(100, false);
       return;
     }
@@ -128,16 +139,66 @@ function scheduleFilterQuery(delayMs: number, recordChange = true): void {
   }, delayMs);
 }
 
-function setQuickRange(index: number, applyImmediately: boolean): void {
-  const hours = QUICK_RANGE_HOURS[index];
-  if (hours === undefined) throw new RangeError(`Unknown quick range index: ${index}`);
-  const end = new Date();
+function resetRollingRefreshTimer(): void {
+  if (rollingRefreshTimer !== null) {
+    window.clearTimeout(rollingRefreshTimer);
+    rollingRefreshTimer = null;
+  }
+  if (document.visibilityState !== "visible" || latestResult === null || timeRangeSelection.mode !== "relative") return;
+  rollingRefreshTimer = window.setTimeout(() => {
+    rollingRefreshTimer = null;
+    const queryCanStart = !manualSyncActive
+      && liveFilterTimer === null
+      && refreshTimer === null
+      && activeOperations === 0;
+    if (document.visibilityState === "visible" && latestResult !== null && timeRangeSelection.mode === "relative" && queryCanStart) {
+      void apply();
+    }
+    resetRollingRefreshTimer();
+  }, ROLLING_REFRESH_INTERVAL_MS);
+}
+
+function hoursForSliderValue(sliderValue: number): number {
+  if (!Number.isFinite(sliderValue)) throw new RangeError(`Invalid range slider value: ${sliderValue}`);
+  const boundedValue = Math.min(RANGE_MAX, Math.max(0, sliderValue));
+  const segmentIndex = Math.min(Math.floor(boundedValue / RANGE_UNITS_PER_SEGMENT), RANGE_ANCHOR_HOURS.length - 2);
+  const startHours = RANGE_ANCHOR_HOURS[segmentIndex];
+  const endHours = RANGE_ANCHOR_HOURS[segmentIndex + 1];
+  if (startHours === undefined || endHours === undefined) throw new RangeError(`Unknown range slider segment: ${segmentIndex}`);
+  const progress = (boundedValue - segmentIndex * RANGE_UNITS_PER_SEGMENT) / RANGE_UNITS_PER_SEGMENT;
+  return startHours + (endHours - startHours) * progress;
+}
+
+function sliderValueForHours(hours: number): number {
+  if (!Number.isFinite(hours)) throw new RangeError(`Invalid range hours: ${hours}`);
+  const boundedHours = Math.min(RANGE_ANCHOR_HOURS[RANGE_ANCHOR_HOURS.length - 1], Math.max(RANGE_ANCHOR_HOURS[0], hours));
+  const segmentIndex = Math.min(
+    RANGE_ANCHOR_HOURS.findIndex((anchorHours) => boundedHours <= anchorHours) - 1,
+    RANGE_ANCHOR_HOURS.length - 2,
+  );
+  const boundedSegmentIndex = Math.max(0, segmentIndex);
+  const startHours = RANGE_ANCHOR_HOURS[boundedSegmentIndex];
+  const endHours = RANGE_ANCHOR_HOURS[boundedSegmentIndex + 1];
+  if (startHours === undefined || endHours === undefined) throw new RangeError(`Unknown range hours segment: ${boundedSegmentIndex}`);
+  const progress = (boundedHours - startHours) / (endHours - startHours);
+  return (boundedSegmentIndex + progress) * RANGE_UNITS_PER_SEGMENT;
+}
+
+function formatRangeHours(hours: number): string {
+  return hours < 24 ? `${rangeNumber.format(hours)}小时` : `${rangeNumber.format(hours / 24)}天`;
+}
+
+function setContinuousRange(sliderValue: number, applyImmediately: boolean): void {
+  const hours = hoursForSliderValue(sliderValue);
+  timeRangeSelection = { mode: "relative", selectedDurationHours: hours };
+  resetRollingRefreshTimer();
+  const end = new Date(Date.now());
   byId<HTMLInputElement>("end").value = singaporeDate(end);
   byId<HTMLInputElement>("start").value = singaporeDate(new Date(end.getTime() - hours * 60 * 60 * 1000));
   const slider = byId<HTMLInputElement>("range-slider");
-  const label = `${hours}h`;
-  slider.value = String(index);
-  slider.setAttribute("aria-valuetext", `${hours} 小时`);
+  const label = formatRangeHours(hours);
+  slider.value = String(sliderValue);
+  slider.setAttribute("aria-valuetext", label);
   byId<HTMLOutputElement>("range-output").value = label;
   if (applyImmediately) scheduleFilterQuery(120);
 }
@@ -152,12 +213,21 @@ function selectedSubjects(): readonly SubjectFilter[] {
 }
 
 function filterSpec(): FilterSpec {
-  const start = byId<HTMLInputElement>("start").value;
-  const end = byId<HTMLInputElement>("end").value;
-  if (!start || !end) throw new Error("请选择开始和结束时间.");
-  const startUtc = new Date(`${start}:00+08:00`);
-  const endUtc = new Date(`${end}:00+08:00`);
-  if (Number.isNaN(startUtc.valueOf()) || Number.isNaN(endUtc.valueOf()) || startUtc >= endUtc) throw new Error("时间范围无效.");
+  let startUtc: Date;
+  let endUtc: Date;
+  if (timeRangeSelection.mode === "relative") {
+    endUtc = new Date(Date.now());
+    startUtc = new Date(endUtc.getTime() - timeRangeSelection.selectedDurationHours * 60 * 60 * 1000);
+    byId<HTMLInputElement>("end").value = singaporeDate(endUtc);
+    byId<HTMLInputElement>("start").value = singaporeDate(startUtc);
+  } else {
+    const start = byId<HTMLInputElement>("start").value;
+    const end = byId<HTMLInputElement>("end").value;
+    if (!start || !end) throw new Error("请选择开始和结束时间.");
+    startUtc = new Date(`${start}:00+08:00`);
+    endUtc = new Date(`${end}:00+08:00`);
+    if (Number.isNaN(startUtc.valueOf()) || Number.isNaN(endUtc.valueOf()) || startUtc >= endUtc) throw new Error("时间范围无效.");
+  }
   return {
     startUtc: startUtc.toISOString(),
     endUtc: endUtc.toISOString(),
@@ -197,19 +267,14 @@ function renderCollectorStatus(status: CollectorStatus): void {
   );
 }
 
-function inlineOption(label: string, metrics: FacetMetrics, checked: boolean, unavailable: boolean, focusKey: string, onChange: (checked: boolean) => void): HTMLLabelElement {
+function inlineOption(label: string, checked: boolean, unavailable: boolean, focusKey: string, onChange: (checked: boolean) => void): HTMLLabelElement {
   const wrapper = document.createElement("label");
   wrapper.className = `inline-option${unavailable ? " unavailable" : ""}`;
   const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = checked;
   checkbox.dataset.filterKey = focusKey;
   checkbox.addEventListener("change", () => onChange(checkbox.checked));
   const name = document.createElement("span"); name.className = "inline-option-name"; name.textContent = label;
-  const metricElement = document.createElement("span"); metricElement.className = "inline-option-metrics";
-  const tokens = document.createElement("span"); tokens.textContent = `${compactTokens(metrics.canonicalTotalTokens)} tok`;
-  const cost = document.createElement("span"); cost.textContent = currency.format(metrics.totalCost);
-  metricElement.title = `${integer.format(metrics.canonicalTotalTokens)} total tokens · ${currency.format(metrics.totalCost)}`;
-  metricElement.append(tokens, cost);
-  wrapper.append(checkbox, name, metricElement);
+  wrapper.append(checkbox, name);
   return wrapper;
 }
 
@@ -226,16 +291,17 @@ function restoreFilterFocus(key: string | null): void {
 }
 
 function renderFilterControls(facets: QueryFacets | null): void {
-  const modelMetrics = new Map<string, FacetMetrics>((facets?.models ?? []).map((option) => [option.model, option]));
-  availableModelNames = [...modelMetrics.keys()].sort();
+  const availableModels = new Set((facets?.models ?? []).map((option) => option.model));
+  availableModelNames = [...availableModels].sort();
+  const visibleModels = new Set(availableModels);
   if (selectAllModelsMode) {
     selectedModels.clear();
     for (const model of availableModelNames) selectedModels.add(model);
   } else {
-    for (const model of selectedModels) if (!modelMetrics.has(model)) modelMetrics.set(model, EMPTY_FACET_METRICS);
+    for (const model of selectedModels) visibleModels.add(model);
   }
-  byId<HTMLElement>("model-options").replaceChildren(...[...modelMetrics.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([model, metrics]) =>
-    inlineOption(model, metrics, selectedModels.has(model), metrics.canonicalTotalTokens === 0, `model:${model}`, (checked) => {
+  byId<HTMLElement>("model-options").replaceChildren(...[...visibleModels].sort().map((model) =>
+    inlineOption(model, selectedModels.has(model), !availableModels.has(model), `model:${model}`, (checked) => {
       if (checked) selectedModels.add(model); else selectedModels.delete(model);
       selectAllModelsMode = availableModelNames.length > 0 && availableModelNames.every((name) => selectedModels.has(name));
       renderFilterControls(latestResult?.facets ?? null);
@@ -244,30 +310,31 @@ function renderFilterControls(facets: QueryFacets | null): void {
     }),
   ));
 
-  const subjectMetrics = new Map<string, FacetMetrics>();
+  const availableSubjects = new Set<string>();
   for (const option of facets?.subjects ?? []) {
     const key = subjectKey(option.subject);
     subjectsByKey.set(key, option.subject);
-    subjectMetrics.set(key, option);
+    availableSubjects.add(key);
   }
-  availableSubjectKeys = [...subjectMetrics.keys()];
+  availableSubjectKeys = [...availableSubjects];
+  const visibleSubjects = new Set(availableSubjects);
   if (selectAllSubjectsMode) {
     selectedSubjectKeys.clear();
     for (const key of availableSubjectKeys) selectedSubjectKeys.add(key);
   } else {
-    for (const key of selectedSubjectKeys) if (!subjectMetrics.has(key)) subjectMetrics.set(key, EMPTY_FACET_METRICS);
+    for (const key of selectedSubjectKeys) visibleSubjects.add(key);
   }
-  const orderedSubjects = [...subjectMetrics.entries()].sort(([left], [right]) => {
+  const orderedSubjects = [...visibleSubjects].sort((left, right) => {
     const leftSubject = subjectsByKey.get(left);
     const rightSubject = subjectsByKey.get(right);
     if (leftSubject === undefined || rightSubject === undefined) return left.localeCompare(right);
     const rank = (subject: SubjectFilter): number => subject.threadType === "main" ? 0 : subject.threadType === "subagent" ? 1 : 2;
-    return rank(leftSubject) - rank(rightSubject) || leftSubject.agentRoleCategory.localeCompare(rightSubject.agentRoleCategory);
+    return rank(leftSubject) - rank(rightSubject) || leftSubject.agentRole.localeCompare(rightSubject.agentRole);
   });
-  byId<HTMLElement>("subject-options").replaceChildren(...orderedSubjects.flatMap(([key, metrics]) => {
+  byId<HTMLElement>("subject-options").replaceChildren(...orderedSubjects.flatMap((key) => {
     const subject = subjectsByKey.get(key);
     if (subject === undefined) return [];
-    return [inlineOption(subjectLabel(subject), metrics, selectedSubjectKeys.has(key), metrics.canonicalTotalTokens === 0, `subject:${key}`, (checked) => {
+    return [inlineOption(subjectLabel(subject), selectedSubjectKeys.has(key), !availableSubjects.has(key), `subject:${key}`, (checked) => {
       if (checked) selectedSubjectKeys.add(key); else selectedSubjectKeys.delete(key);
       selectAllSubjectsMode = availableSubjectKeys.length > 0 && availableSubjectKeys.every((availableKey) => selectedSubjectKeys.has(availableKey));
       renderFilterControls(latestResult?.facets ?? null);
@@ -310,8 +377,8 @@ function threadTypeLabel(threadType: ThreadType): string {
   return threadType === "main" ? "主线程" : threadType === "subagent" ? "子代理" : "未知线程";
 }
 
-function displayedRole(threadType: ThreadType, roleCategory: AgentRoleCategory): string {
-  return threadType === "main" ? "主线程" : roleCategory;
+function displayedRole(threadType: ThreadType, agentRole: string): string {
+  return threadType === "main" ? "root" : agentRole;
 }
 
 function summaryCells(summary: Summary, total: number): readonly string[] {
@@ -342,11 +409,13 @@ function render(result: QueryResult): void {
   table("agent-table", ["类型", "角色", "agent path", "模型", "总 tokens", "无缓存输入", "缓存输入", "输出", "思考输出", "费用", "价格占比"], agentRows(result.byAgent, total));
   const d = result.diagnostics;
   setStatus(`本次运行处理 ${d.filesScanned} 个源文件批次. 跳过重复累计快照 ${d.duplicateSnapshotsSkipped}, 无拆分快照 ${d.zeroBreakdownSnapshotsSkipped}, 关系无效 ${d.invalidTokenRelationshipsSkipped}.`);
+  resetRollingRefreshTimer();
 }
 
 async function scan(): Promise<void> {
   const operation = ++operationSequence;
   const requestRevision = filterRevision;
+  activeOperations += 1;
   manualSyncActive = true;
   setStatus("正在同步变化的 Codex JSONL...");
   byId<HTMLButtonElement>("scan-button").disabled = true;
@@ -362,6 +431,7 @@ async function scan(): Promise<void> {
   } catch (error) {
     if (operation === operationSequence) setStatus(error instanceof Error ? error.message : "同步失败.");
   } finally {
+    activeOperations -= 1;
     manualSyncActive = false;
     byId<HTMLButtonElement>("scan-button").disabled = false;
     if (filtersDirty && liveFilterTimer === null) scheduleFilterQuery(0, false);
@@ -376,6 +446,7 @@ async function apply(): Promise<void> {
   if (latestResult === null) return scan();
   const operation = ++operationSequence;
   const requestRevision = filterRevision;
+  activeOperations += 1;
   try {
     const requestSequence = ++querySequence;
     const result = await apiWindow.usageApi.query(filterSpec());
@@ -384,6 +455,8 @@ async function apply(): Promise<void> {
     filtersDirty = false;
   } catch (error) {
     if (operation === operationSequence && requestRevision === filterRevision) setStatus(error instanceof Error ? error.message : "筛选失败.");
+  } finally {
+    activeOperations -= 1;
   }
 }
 
@@ -391,14 +464,33 @@ async function exportCsv(): Promise<void> {
   try { const result = await apiWindow.usageApi.exportCsv(filterSpec()); setStatus(result.path === null ? "已取消导出." : `已导出当前 token 与费用明细: ${result.path}`); } catch (error) { setStatus(error instanceof Error ? error.message : "导出失败."); }
 }
 
-setQuickRange(QUICK_RANGE_HOURS.length - 1, false);
+setContinuousRange(RANGE_MAX, false);
 byId<HTMLInputElement>("range-slider").addEventListener("input", (event) => {
   const target = event.currentTarget;
   if (!(target instanceof HTMLInputElement)) return;
-  setQuickRange(Number(target.value), true);
+  setContinuousRange(Number(target.value), true);
+});
+for (const tick of document.querySelectorAll<HTMLButtonElement>(".range-tick")) {
+  tick.addEventListener("click", () => {
+    const hours = Number(tick.dataset.hours);
+    if (!Number.isFinite(hours)) throw new RangeError(`Invalid range tick hours: ${tick.dataset.hours ?? "missing"}`);
+    setContinuousRange(sliderValueForHours(hours), true);
+  });
+}
+byId<HTMLButtonElement>("custom-date-toggle").addEventListener("click", (event) => {
+  const toggle = event.currentTarget;
+  if (!(toggle instanceof HTMLButtonElement)) return;
+  const dateRange = byId<HTMLElement>("date-range");
+  const expanded = dateRange.hidden;
+  dateRange.hidden = !expanded;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.textContent = expanded ? "收起自定义日期" : "展开自定义日期";
 });
 for (const id of ["start", "end"] as const) byId<HTMLInputElement>(id).addEventListener("change", () => {
+  timeRangeSelection = { mode: "custom", selectedDurationHours: timeRangeSelection.selectedDurationHours };
+  resetRollingRefreshTimer();
   byId<HTMLOutputElement>("range-output").value = "自定义";
+  byId<HTMLInputElement>("range-slider").setAttribute("aria-valuetext", "自定义时间范围");
   scheduleFilterQuery(0);
 });
 byId<HTMLInputElement>("path-query").addEventListener("input", () => scheduleFilterQuery(250));
@@ -445,9 +537,25 @@ apiWindow.usageApi.onUsageUpdated((collectorStatus) => {
   }, 500);
 });
 
+document.addEventListener("visibilitychange", () => {
+  resetRollingRefreshTimer();
+  if (document.visibilityState !== "visible" || latestResult === null) return;
+  cancelRefreshTimer();
+  if (manualSyncActive || activeOperations > 0) {
+    if (liveFilterTimer === null) scheduleFilterQuery(100, false);
+    return;
+  }
+  if (filtersDirty || liveFilterTimer !== null) {
+    if (liveFilterTimer === null) scheduleFilterQuery(0, false);
+    return;
+  }
+  void apply();
+});
+
 async function initialize(): Promise<void> {
   const operation = ++operationSequence;
   const requestRevision = filterRevision;
+  activeOperations += 1;
   try {
     const collectorStatus = await apiWindow.usageApi.getCollectorStatus();
     if (operation !== operationSequence) return;
@@ -459,6 +567,8 @@ async function initialize(): Promise<void> {
     filtersDirty = false;
   } catch (error) {
     if (operation === operationSequence && requestRevision === filterRevision) setStatus(error instanceof Error ? error.message : "采集器初始化失败.");
+  } finally {
+    activeOperations -= 1;
   }
 }
 

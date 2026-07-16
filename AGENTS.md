@@ -45,7 +45,6 @@ npm test
 npm run package:portable
 ```
 
-- 修改 UI 或采集代码时,使用 `npm start` 做开发 smoke test.验证 filter,collector status,tray behavior 和有界 agent table.
 - 文档,HTML 或 CSS 改动交付前,确认 `git diff --check` 通过.
 - 不自动执行 `git add` 或 `git commit`.暂存和提交由用户决定.
 

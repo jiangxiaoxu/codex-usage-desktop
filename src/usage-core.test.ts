@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FilterSpec, UsageEvent } from "./shared";
-import { agentRoleCategory, costFor, csvRows, modelCategory, query, summarize } from "./usage-core";
+import { costFor, csvRows, modelCategory, normalizedAgentRole, query, summarize } from "./usage-core";
 
 const event: UsageEvent = {
   timestampUtc: "2026-07-15T01:00:00.000Z",
@@ -28,9 +28,6 @@ const filter: FilterSpec = {
   pathQuery: "",
 };
 
-const configuredRoles: ReadonlySet<string> = new Set(["awaiter", "bounded_worker", "explorer", "reviewer", "scout", "worker"]);
-const workerRole = agentRoleCategory("subagent", "worker", configuredRoles);
-
 test("reasoning output remains a subset of output cost and GPT-5.6 always ignores the long-context multiplier", () => {
   const cost = costFor(event);
   assert.equal(cost.uncachedInput, 1);
@@ -47,15 +44,16 @@ test("reasoning output remains a subset of output cost and GPT-5.6 always ignore
 
 test("CSV exposes model category and raw source model while formatting cost and SGT", () => {
   const otherEvent = { ...event, rolloutId: "other", tokenEventOrdinal: 1, model: "o3" };
-  const csv = csvRows([event, otherEvent], filter, configuredRoles);
+  const csv = csvRows([event, otherEvent], filter);
   assert.match(csv, /^\uFEFFtimestamp_sgt,conversation_id,rollout_id,thread_type,agent_role,agent_path,model_category,source_model,/);
   assert.match(csv, /2026-07-15T09:00:00\+08:00/);
+  assert.match(csv, /,"main","root","\/root",/);
   assert.match(csv, /,"gpt-5\.6-sol","gpt-5\.6-sol",/);
   assert.match(csv, /,"Others","o3",/);
   assert.match(csv, /,"4\.4"\r?\n/);
   assert.doesNotMatch(csv, /4\.400000000000001/);
 
-  const unknownCsv = csvRows([{ ...event, model: "unknown" }], filter, configuredRoles);
+  const unknownCsv = csvRows([{ ...event, model: "unknown" }], filter);
   assert.match(unknownCsv, /,"Unknown attribution","unknown",/);
 });
 
@@ -68,7 +66,7 @@ test("model categories retain supported families, isolate unknown attribution, a
     { ...event, rolloutId: "other-unknown", tokenEventOrdinal: 4, model: "unknown" },
   ];
   const diagnostics = { filesScanned: 0, malformedLines: 0, duplicateSnapshotsSkipped: 0, zeroBreakdownSnapshotsSkipped: 0, invalidTokenRelationshipsSkipped: 0 };
-  const result = query(events, diagnostics, filter, configuredRoles);
+  const result = query(events, diagnostics, filter);
 
   assert.equal(modelCategory("gpt-5.4-mini"), "gpt-5.4-mini");
   assert.equal(modelCategory("gpt-5.5"), "gpt-5.5");
@@ -101,11 +99,11 @@ test("model filter distinguishes all, none, Others, unknown attribution, and sup
   ];
   const diagnostics = { filesScanned: 0, malformedLines: 0, duplicateSnapshotsSkipped: 0, zeroBreakdownSnapshotsSkipped: 0, invalidTokenRelationshipsSkipped: 0 };
 
-  assert.equal(query(events, diagnostics, { ...filter, models: null }, configuredRoles).summary.calls, 4);
-  assert.equal(query(events, diagnostics, { ...filter, models: [] }, configuredRoles).summary.calls, 0);
-  assert.equal(query(events, diagnostics, { ...filter, models: ["Others"] }, configuredRoles).summary.calls, 1);
-  assert.equal(query(events, diagnostics, { ...filter, models: ["Unknown attribution"] }, configuredRoles).summary.calls, 1);
-  assert.equal(query(events, diagnostics, { ...filter, models: ["gpt-5.6-preview"] }, configuredRoles).summary.calls, 1);
+  assert.equal(query(events, diagnostics, { ...filter, models: null }).summary.calls, 4);
+  assert.equal(query(events, diagnostics, { ...filter, models: [] }).summary.calls, 0);
+  assert.equal(query(events, diagnostics, { ...filter, models: ["Others"] }).summary.calls, 1);
+  assert.equal(query(events, diagnostics, { ...filter, models: ["Unknown attribution"] }).summary.calls, 1);
+  assert.equal(query(events, diagnostics, { ...filter, models: ["gpt-5.6-preview"] }).summary.calls, 1);
 });
 
 test("Others is priced at zero while unknown attribution and unpriced supported variants accumulate unpriced tokens", () => {
@@ -122,7 +120,7 @@ test("Others is priced at zero while unknown attribution and unpriced supported 
   assert.equal(summarize([otherEvent, unknownEvent, supportedUnpricedEvent]).unpricedTokens, 2_200_000);
 });
 
-test("subject filter uses query-time role categories while facets ignore active selectors", () => {
+test("main threads normalize to root while subagent main remains distinct across filters and facets", () => {
   const events: readonly UsageEvent[] = [
     event,
     { ...event, rolloutId: "worker", tokenEventOrdinal: 1, threadType: "subagent", agentRole: "worker", model: "gpt-5.6-terra" },
@@ -131,16 +129,18 @@ test("subject filter uses query-time role categories while facets ignore active 
     { ...event, rolloutId: "outside-date", tokenEventOrdinal: 4, timestampUtc: "2026-07-16T00:00:00.000Z", model: "gpt-5.4" },
   ];
   const diagnostics = { filesScanned: 0, malformedLines: 0, duplicateSnapshotsSkipped: 0, zeroBreakdownSnapshotsSkipped: 0, invalidTokenRelationshipsSkipped: 0 };
-  const subjects = [{ threadType: "main", agentRoleCategory: "main" }, { threadType: "subagent", agentRoleCategory: workerRole }] as const;
-  assert.equal(query(events, diagnostics, { ...filter, subjects: null }, configuredRoles).summary.calls, 4, "null selects every subject in range");
-  assert.equal(query(events, diagnostics, { ...filter, subjects: [] }, configuredRoles).summary.calls, 0, "an empty subject list selects none");
-  assert.equal(query(events, diagnostics, { ...filter, subjects }, configuredRoles).summary.calls, 3, "all raw main-thread roles share the main category");
+  const subjects = [{ threadType: "main", agentRole: "root" }, { threadType: "subagent", agentRole: "worker" }] as const;
+  assert.equal(query(events, diagnostics, { ...filter, subjects: null }).summary.calls, 4, "null selects every subject in range");
+  assert.equal(query(events, diagnostics, { ...filter, subjects: [] }).summary.calls, 0, "an empty subject list selects none");
+  assert.equal(query(events, diagnostics, { ...filter, subjects }).summary.calls, 3, "subject selection uses exact subagent roles while main threads normalize to root");
+  assert.equal(query(events, diagnostics, { ...filter, subjects: [{ threadType: "main", agentRole: "root" }] }).summary.calls, 2);
+  assert.equal(query(events, diagnostics, { ...filter, subjects: [{ threadType: "subagent", agentRole: "main" }] }).summary.calls, 1);
 
   const result = query(events, diagnostics, {
     ...filter,
     models: ["gpt-5.6-sol"],
     subjects,
-  }, configuredRoles);
+  });
 
   assert.equal(result.summary.calls, 1, "model filter applies after exact subject union");
   assert.deepEqual(result.facets.models, [
@@ -149,13 +149,13 @@ test("subject filter uses query-time role categories while facets ignore active 
     { model: "gpt-5.6-terra", canonicalTotalTokens: 2_200_000, totalCost: costFor(events[1]).total + costFor(events[2]).total },
   ]);
   assert.deepEqual(result.facets.subjects, [
-    { subject: { threadType: "main", agentRoleCategory: "main" }, canonicalTotalTokens: 2_200_000, totalCost: costFor(events[0]).total + costFor(events[2]).total },
-    { subject: { threadType: "subagent", agentRoleCategory: "Others" }, canonicalTotalTokens: 1_100_000, totalCost: costFor(events[3]).total },
-    { subject: { threadType: "subagent", agentRoleCategory: workerRole }, canonicalTotalTokens: 1_100_000, totalCost: costFor(events[1]).total },
+    { subject: { threadType: "main", agentRole: "root" }, canonicalTotalTokens: 2_200_000, totalCost: costFor(events[0]).total + costFor(events[2]).total },
+    { subject: { threadType: "subagent", agentRole: "main" }, canonicalTotalTokens: 1_100_000, totalCost: costFor(events[3]).total },
+    { subject: { threadType: "subagent", agentRole: "worker" }, canonicalTotalTokens: 1_100_000, totalCost: costFor(events[1]).total },
   ]);
 });
 
-test("agent roles are categorized from the configured-role set and unsupported raw roles merge into Others", () => {
+test("main root and subagent main remain distinct in groups and CSV", () => {
   const diagnostics = { filesScanned: 0, malformedLines: 0, duplicateSnapshotsSkipped: 0, zeroBreakdownSnapshotsSkipped: 0, invalidTokenRelationshipsSkipped: 0 };
   const events: readonly UsageEvent[] = [
     event,
@@ -163,23 +163,31 @@ test("agent roles are categorized from the configured-role set and unsupported r
     { ...event, rolloutId: "default", tokenEventOrdinal: 2, threadType: "subagent", agentRole: "default", agentPath: "/root/default" },
     { ...event, rolloutId: "unknown", tokenEventOrdinal: 3, threadType: "subagent", agentRole: "unknown", agentPath: "/root/unknown" },
     { ...event, rolloutId: "heavy", tokenEventOrdinal: 4, threadType: "subagent", agentRole: "worker_heavy", agentPath: "/root/heavy" },
+    { ...event, rolloutId: "subagent-main", tokenEventOrdinal: 5, threadType: "subagent", agentRole: "main", agentPath: "/root/subagent-main" },
   ];
 
-  assert.equal(agentRoleCategory("main", "worker_heavy", configuredRoles), "main");
-  assert.equal(agentRoleCategory("subagent", "worker", configuredRoles), workerRole);
-  assert.equal(agentRoleCategory("subagent", "default", configuredRoles), "Others");
+  assert.equal(normalizedAgentRole("main", "worker"), "root");
+  assert.equal(normalizedAgentRole("subagent", "main"), "main");
 
-  const result = query(events, diagnostics, filter, configuredRoles);
-  assert.deepEqual(result.facets.subjects.map((option) => [option.subject.threadType, option.subject.agentRoleCategory, option.canonicalTotalTokens]), [
-    ["main", "main", 1_100_000],
-    ["subagent", "Others", 3_300_000],
+  const result = query(events, diagnostics, filter);
+  assert.deepEqual(result.facets.subjects.map((option) => [option.subject.threadType, option.subject.agentRole, option.canonicalTotalTokens]), [
+    ["main", "root", 1_100_000],
+    ["subagent", "default", 1_100_000],
+    ["subagent", "main", 1_100_000],
+    ["subagent", "unknown", 1_100_000],
     ["subagent", "worker", 1_100_000],
+    ["subagent", "worker_heavy", 1_100_000],
   ]);
-  assert.equal(result.byRole.find((row) => row.key[1] === "Others")?.summary.calls, 3);
-  assert.equal(result.byAgent.filter((row) => row.key[1] === "Others").length, 3, "agent paths remain distinct while each role category is Others");
-  assert.equal(query(events, diagnostics, { ...filter, subjects: [{ threadType: "subagent", agentRoleCategory: "Others" }] }, configuredRoles).summary.calls, 3);
+  assert.equal(result.byRole.find((row) => row.key[1] === "default")?.summary.calls, 1);
+  assert.equal(result.byRole.find((row) => row.key[1] === "unknown")?.summary.calls, 1);
+  assert.deepEqual(result.byRole.find((row) => row.key[0] === "main")?.key, ["main", "root"]);
+  assert.deepEqual(result.byRole.find((row) => row.key[0] === "subagent" && row.key[1] === "main")?.key, ["subagent", "main"]);
+  assert.equal(result.byAgent.filter((row) => row.key[1] === "worker_heavy").length, 1);
+  assert.equal(query(events, diagnostics, { ...filter, subjects: [{ threadType: "subagent", agentRole: "unknown" }] }).summary.calls, 1);
 
-  const csv = csvRows(events, filter, configuredRoles);
+  const csv = csvRows(events, filter);
+  assert.match(csv, /,"main","root","\/root",/);
   assert.match(csv, /,"subagent","default","\/root\/default",/);
+  assert.match(csv, /,"subagent","main","\/root\/subagent-main",/);
   assert.match(csv, /,"subagent","worker_heavy","\/root\/heavy",/);
 });

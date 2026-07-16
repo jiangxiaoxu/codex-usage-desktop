@@ -127,7 +127,7 @@ test("collector remains read-only while Codex appends, archives, and deletes sou
   assert.ok(database.byteLength > 0);
 });
 
-test("collector refreshes configured agent roles from read-only TOML inventory", async (t) => {
+test("collector uses roles from actual rollout threads and ignores the read-only TOML inventory", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-agent-roles-"));
   const codexHome = path.join(root, ".codex");
   const sessions = path.join(codexHome, "sessions");
@@ -146,7 +146,9 @@ test("collector refreshes configured agent roles from read-only TOML inventory",
   await writeFile(path.join(sessions, "rollout-main.jsonl"), rollout("main", null, 40, "2026-07-15T01:00:00.000Z"), "utf8");
   await writeFile(path.join(sessions, "rollout-worker.jsonl"), rollout("worker", "worker", 30, "2026-07-15T02:00:00.000Z"), "utf8");
   await writeFile(path.join(sessions, "rollout-scout.jsonl"), rollout("scout", "scout", 20, "2026-07-15T03:00:00.000Z"), "utf8");
-  await writeFile(path.join(sessions, "rollout-ghost.jsonl"), rollout("ghost", "ghost", 10, "2026-07-15T04:00:00.000Z"), "utf8");
+  await writeFile(path.join(sessions, "rollout-default.jsonl"), rollout("default", "default", 15, "2026-07-15T04:00:00.000Z"), "utf8");
+  await writeFile(path.join(sessions, "rollout-unknown.jsonl"), rollout("unknown", "unknown", 10, "2026-07-15T05:00:00.000Z"), "utf8");
+  await writeFile(path.join(sessions, "rollout-subagent-main.jsonl"), rollout("subagent-main", "main", 5, "2026-07-15T06:00:00.000Z"), "utf8");
   const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
   const client = new CollectorClient(__dirname);
   t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
@@ -157,40 +159,42 @@ test("collector refreshes configured agent roles from read-only TOML inventory",
     .map((row) => row.key)
     .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   assert.deepEqual(sortedRoleKeys(initial), [
-    ["main", "main"],
-    ["subagent", "Others"],
+    ["main", "root"],
+    ["subagent", "default"],
+    ["subagent", "main"],
+    ["subagent", "scout"],
+    ["subagent", "unknown"],
     ["subagent", "worker"],
   ]);
-  const workerSubject = initial.facets.subjects.find((option) => option.subject.agentRoleCategory === "worker")?.subject;
-  assert.ok(workerSubject);
-  const workerFilter: FilterSpec = { ...filter, subjects: [workerSubject] };
-  assert.equal((await client.request("exportCsv", { filter: workerFilter, filePath: path.join(root, "worker.csv") })).count, 1);
+  const mainSubject = initial.facets.subjects.find((option) => option.subject.threadType === "main" && option.subject.agentRole === "root")?.subject;
+  assert.ok(mainSubject, "missing normalized root subject from the main rollout thread");
+  const mainExport = await client.request("exportCsv", { filter: { ...filter, subjects: [mainSubject] }, filePath: path.join(root, "root.csv") });
+  assert.equal(mainExport.count, 1, "root filter exports only the main rollout");
+  assert.match(await readFile(path.join(root, "root.csv"), "utf8"), /,"main","root","\/root",/);
+  for (const role of ["worker", "scout", "default", "unknown", "main"] as const) {
+    const subject = initial.facets.subjects.find((option) => option.subject.threadType === "subagent" && option.subject.agentRole === role)?.subject;
+    assert.ok(subject, `missing ${role} subject from its rollout thread`);
+    const roleFilter: FilterSpec = { ...filter, subjects: [subject] };
+    const exportResult = await client.request("exportCsv", { filter: roleFilter, filePath: path.join(root, `${role}.csv`) });
+    assert.equal(exportResult.count, 1, `${role} filter exports only its own rollout`);
+    assert.match(await readFile(path.join(root, `${role}.csv`), "utf8"), new RegExp(`,\\\"${role}\\\",`));
+  }
 
-  const scoutAdded = nextUsageUpdate(client);
   await writeFile(path.join(agents, "scout.toml"), "name = \"scout\"\n", "utf8");
-  await scoutAdded;
-  const afterAdd = await query(client);
-  assert.deepEqual(sortedRoleKeys(afterAdd), [
-    ["main", "main"],
-    ["subagent", "Others"],
+  await rm(path.join(agents, "worker.toml"));
+  await client.request("reconcile", null);
+  const afterInventoryChange = await query(client);
+  assert.deepEqual(sortedRoleKeys(afterInventoryChange), [
+    ["main", "root"],
+    ["subagent", "default"],
+    ["subagent", "main"],
     ["subagent", "scout"],
+    ["subagent", "unknown"],
     ["subagent", "worker"],
   ]);
-
-  const workerDeleted = nextUsageUpdate(client);
-  await rm(path.join(agents, "worker.toml"));
-  await workerDeleted;
-  const afterDelete = await query(client);
-  assert.deepEqual(sortedRoleKeys(afterDelete), [
-    ["main", "main"],
-    ["subagent", "Others"],
-    ["subagent", "scout"],
-  ]);
-  assert.equal(afterDelete.byRole.find((row) => row.key[1] === "Others")?.summary.inputTokens, 40);
-  assert.equal((await client.request("exportCsv", { filter: workerFilter, filePath: path.join(root, "removed-worker.csv") })).count, 0);
-  const othersSubject = afterDelete.facets.subjects.find((option) => option.subject.agentRoleCategory === "Others")?.subject;
-  assert.ok(othersSubject);
-  assert.equal((await client.request("exportCsv", { filter: { ...filter, subjects: [othersSubject] }, filePath: path.join(root, "others.csv") })).count, 2);
+  const workerSubject = afterInventoryChange.facets.subjects.find((option) => option.subject.threadType === "subagent" && option.subject.agentRole === "worker")?.subject;
+  assert.ok(workerSubject);
+  assert.equal((await client.request("exportCsv", { filter: { ...filter, subjects: [workerSubject] }, filePath: path.join(root, "worker-after-inventory-change.csv") })).count, 1);
 });
 
 test("collector rejects a divergent copy without replacing canonical events", async (t) => {

@@ -52,7 +52,6 @@ let statusMessage = "Starting collector";
 let changedFilesLastSync = 0;
 let pendingPaths = new Set<string>();
 let runtimeByPath = new Map<string, SourceRuntime>();
-let configuredAgentRoles: ReadonlySet<string> = new Set<string>();
 let conflictsAttempted = new Set<string>();
 let unknownModelsAttempted = new Set<string>();
 let operationQueue: Promise<void> = Promise.resolve();
@@ -377,36 +376,18 @@ async function listRollouts(root: string): Promise<readonly string[]> {
   return result.sort();
 }
 
-async function listConfiguredAgentRoles(root: string): Promise<ReadonlySet<string>> {
-  const agentsDirectory = path.join(root, "agents");
-  try {
-    const entries = await readdir(agentsDirectory, { withFileTypes: true });
-    return new Set(entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".toml"))
-      .map((entry) => path.basename(entry.name, ".toml"))
-      .filter((role) => role.length > 0));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set<string>();
-    throw error;
-  }
-}
-
 async function reconcile(): Promise<SyncResult> {
   const activeStore = requireStore();
   const config = requireConfiguration();
   phase = "syncing";
   statusMessage = "Reconciling local rollouts";
   emitUpdated();
-  const refreshedAgentRoles = await listConfiguredAgentRoles(config.codexHome);
-  const agentRolesChanged = refreshedAgentRoles.size !== configuredAgentRoles.size
-    || [...refreshedAgentRoles].some((role) => !configuredAgentRoles.has(role));
-  configuredAgentRoles = refreshedAgentRoles;
   const paths = await listRollouts(config.codexHome);
   const present = new Set(paths);
   const knownSources = new Map(activeStore.listSourceFiles().map((source) => [source.filePath, source] as const));
   const sourcesWithUnknownModels = new Set(activeStore.listCanonicalSourcesWithUnknownModels());
   let changedFiles = 0;
-  let usageChanged = agentRolesChanged;
+  let usageChanged = false;
   for (const source of knownSources.values()) {
     if (source.isPresent && !present.has(source.filePath)) {
       activeStore.markSourceMissing(source.filePath, Date.now());
@@ -526,7 +507,7 @@ async function initialize(config: CollectorConfig): Promise<CollectorStatus> {
   lastSuccessfulInventoryEpochMs = storedInventory === null ? null : Number(storedInventory);
   runId = randomUUID();
   store.beginCollectorRun({ runId, trigger: "application-session", startedAtEpochMs: runStartedEpochMs });
-  const activeWatcher = watch([path.join(config.codexHome, "sessions"), path.join(config.codexHome, "archived_sessions"), path.join(config.codexHome, "agents")], { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: config.watcherDebounceMs, pollInterval: 250 } });
+  const activeWatcher = watch([path.join(config.codexHome, "sessions"), path.join(config.codexHome, "archived_sessions")], { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: config.watcherDebounceMs, pollInterval: 250 } });
   watcher = activeWatcher;
   activeWatcher.on("add", scheduleWatcherReconcile).on("change", scheduleWatcherReconcile).on("unlink", scheduleWatcherReconcile).on("error", (error: unknown) => {
     phase = "degraded";
@@ -574,15 +555,15 @@ async function handle<Method extends CollectorMethod>(method: Method, payload: C
     case "reconcile": return await reconcile() as CollectorRequestMap[Method]["output"];
     case "query": {
       const filter = payload as FilterSpec;
-      return query(eventsForFilter(filter), scanDiagnostics(), filter, configuredAgentRoles) as CollectorRequestMap[Method]["output"];
+      return query(eventsForFilter(filter), scanDiagnostics(), filter) as CollectorRequestMap[Method]["output"];
     }
     case "exportCsv": {
       const request = payload as CollectorRequestMap["exportCsv"]["input"];
       const events = eventsForFilter(request.filter);
-      const selected = events.filter((event) => matchesFilter(event, request.filter, configuredAgentRoles));
+      const selected = events.filter((event) => matchesFilter(event, request.filter));
       const config = requireConfiguration();
       await assertOutsideDirectories(request.filePath, [path.join(config.codexHome, "sessions"), path.join(config.codexHome, "archived_sessions"), path.join(config.codexHome, "agents")]);
-      await writeFile(request.filePath, csvRows(events, request.filter, configuredAgentRoles), "utf8");
+      await writeFile(request.filePath, csvRows(events, request.filter), "utf8");
       return { count: selected.length } as CollectorRequestMap[Method]["output"];
     }
     case "getStatus": return status() as CollectorRequestMap[Method]["output"];

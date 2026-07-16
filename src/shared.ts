@@ -1,15 +1,9 @@
 export type ThreadType = "main" | "subagent" | "unknown";
 
-declare const configuredAgentRoleBrand: unique symbol;
-
-/** A role backed by a read-only `agents/<role>.toml` configuration file. */
-export type ConfiguredAgentRole = string & { readonly [configuredAgentRoleBrand]: true };
-export type AgentRoleCategory = "main" | "Others" | ConfiguredAgentRole;
-
-/** An exact thread-type and query-time role-category pair used to select usage events. */
+/** An exact thread-type and observed rollout role pair used to select usage events. */
 export interface SubjectFilter {
   readonly threadType: ThreadType;
-  readonly agentRoleCategory: AgentRoleCategory;
+  readonly agentRole: string;
 }
 
 export interface UsageEvent {
@@ -108,8 +102,8 @@ export interface GroupRow<Key extends readonly string[]> {
 }
 
 export type ModelGroupRow = GroupRow<readonly [model: string]>;
-export type RoleGroupRow = GroupRow<readonly [threadType: ThreadType, agentRoleCategory: AgentRoleCategory]>;
-export type AgentGroupRow = GroupRow<readonly [threadType: ThreadType, agentRoleCategory: AgentRoleCategory, agentPath: string, model: string]>;
+export type RoleGroupRow = GroupRow<readonly [threadType: ThreadType, agentRole: string]>;
+export type AgentGroupRow = GroupRow<readonly [threadType: ThreadType, agentRole: string, agentPath: string, model: string]>;
 
 export interface ModelFacetOption {
   readonly model: string;

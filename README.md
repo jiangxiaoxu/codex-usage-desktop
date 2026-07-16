@@ -5,11 +5,11 @@
 ## 主要能力
 
 - 后台 tray collector,结合 watcher 驱动的增量读取和周期性 reconciliation.
-- 只读观察 active session,archived session 与 agent configuration file.
-- 按 model,role category 以及单个主线程或 subagent thread 汇总 token 和预估费用.
+- 只读观察 active session 与 archived session.
+- 按 model,实际 role 以及单个主线程或 subagent thread 汇总 token 和预估费用.
 - 分别展示 input,cached input,output 和 reasoning output token. reasoning output 是 output 的子集,不会重复计费.
-- 支持 time range,自定义 Singapore time range,model,execution subject 和 thread search 的实时筛选.
-- 从 `%USERPROFILE%\\.codex\\agents\\*.toml` 只读发现 role.没有配置的 role 显示为 `Others`.
+- 支持连续 time range,默认折叠且可展开的自定义 Singapore time range,model,execution subject 和 thread search 的实时筛选.连续滑块以 1h,4h,12h,1天,2天,4天,7天和14天为均匀锚点,可点击锚点或拖动到锚点之间选择 1.5天或10天等范围.
+- role 从实际 rollout/session thread metadata 读取.主线程 role 规范显示为 `root`;subagent 保留实际记录的 role 并可独立筛选和汇总,缺失时显示为 `unknown`.
 - 将当前筛选条件匹配的 usage event 导出为 CSV,保存到用户选择且不位于受保护 Codex 目录内的位置.
 - 提供固定高度,独立滚动且具有 sticky header 的 thread audit table.
 - 估算 GPT-5.4,GPT-5.5,GPT-5.6 的费用.其他 model 归入未计费的 `Others`.GPT-5.6 始终忽略 input 超过 272K token 的 multiplier.
@@ -62,10 +62,9 @@ npm run package:portable
 ```text
 %USERPROFILE%\\.codex\\sessions
 %USERPROFILE%\\.codex\\archived_sessions
-%USERPROFILE%\\.codex\\agents
 ```
 
-应用不会对这些 source file 加锁,写入,重命名,删除,截断或修复. collector 的 SQLite ledger 由应用自身拥有,位置如下:
+应用不会对这些 source file 加锁,写入,重命名,删除,截断或修复.`%USERPROFILE%\\.codex\\agents` 虽不是观察源,仍属于受保护 Codex 目录,不得作为 output 或 export 目标. collector 的 SQLite ledger 由应用自身拥有,位置如下:
 
 ```text
 Development: %APPDATA%\\codex-usage-desktop\\codex-usage-data\\usage.sqlite
@@ -82,7 +81,7 @@ SQLite lock 仅限于应用自己的 ledger.应用会拒绝任何解析后落在
 - [Architecture](docs/architecture.md): process boundary,watcher owner,IPC 与 ledger design.
 - [Cost model](docs/cost-model.md): token accounting,pricing,CSV field 与 price share 定义.
 - [Data safety](docs/data-safety.md): read-only source boundary,ledger 和 export safety.
-- [Migration to G project](docs/migration-g-project.md): 本次完整跨盘移动,验证,cutover 和 rollback.
+- [Workspace migration](docs/migration-g-project.md): 完整跨盘移动,验证,cutover 和 rollback.
 - [Operations](docs/operations.md): collector lifecycle,watcher delay,backup,recovery 与 export.
 - [Testing](docs/testing.md): automated verification,read-only desktop smoke 与 release acceptance.
 - [Package scripts](package.json): command 与 Portable packaging configuration 的权威定义.
@@ -99,4 +98,8 @@ npm test
 git diff --check
 ```
 
-修改 packaging 时运行 `npm run package:portable`.修改 collector,tray 或 renderer 时,还要完成一次真实 Electron smoke test.
+修改 packaging 时运行 `npm run package:portable`.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
