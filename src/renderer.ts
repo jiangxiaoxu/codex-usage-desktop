@@ -50,7 +50,8 @@ interface ObservationGap { readonly startUtc: string; readonly endUtc: string; }
 interface CollectorStatus { readonly phase: CollectorPhase; readonly databasePath: string; readonly runStartedUtc: string; readonly lastSuccessfulInventoryUtc: string | null; readonly lastHeartbeatUtc: string | null; readonly filesKnown: number; readonly pendingFiles: number; readonly changedFilesLastSync: number; readonly conflicts: number; readonly observationCoverage: ObservationCoverage; readonly observationGap: ObservationGap | null; readonly message: string; }
 interface SyncResult { readonly status: CollectorStatus; readonly changed: boolean; }
 interface StartupSettings { readonly supported: boolean; readonly enabled: boolean; }
-interface UsageApi { syncNow(): Promise<SyncResult>; query(filter: FilterSpec): Promise<QueryResult>; exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>; getCollectorStatus(): Promise<CollectorStatus>; getStartupSettings(): Promise<StartupSettings>; setStartupEnabled(enabled: boolean): Promise<StartupSettings>; onUsageUpdated(listener: (status: CollectorStatus) => void): () => void; }
+interface UpdateStatus { readonly currentVersion: string; readonly latestVersion: string | null; readonly available: boolean; }
+interface UsageApi { syncNow(): Promise<SyncResult>; query(filter: FilterSpec): Promise<QueryResult>; exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>; getCollectorStatus(): Promise<CollectorStatus>; getStartupSettings(): Promise<StartupSettings>; setStartupEnabled(enabled: boolean): Promise<StartupSettings>; checkForUpdates(): Promise<UpdateStatus>; openLatestRelease(): Promise<void>; onUpdateStatus(listener: (status: UpdateStatus) => void): () => void; onUsageUpdated(listener: (status: CollectorStatus) => void): () => void; }
 
 const apiWindow = window as unknown as { readonly usageApi: UsageApi };
 
@@ -93,6 +94,7 @@ let querySequence = 0;
 let operationSequence = 0;
 let activeOperations = 0;
 let manualSyncActive = false;
+let latestUpdateStatus: UpdateStatus | null = null;
 
 interface StoredTimeRange {
   readonly selectedDurationHours: number;
@@ -572,6 +574,49 @@ byId<HTMLButtonElement>("clear-filters").addEventListener("click", () => {
 byId<HTMLButtonElement>("scan-button").addEventListener("click", () => void scan());
 byId<HTMLButtonElement>("export-button").addEventListener("click", () => void exportCsv());
 
+function renderUpdateStatus(status: UpdateStatus | null): void {
+  const button = byId<HTMLButtonElement>("update-button");
+  button.disabled = false;
+  if (status?.available && status.latestVersion !== null) {
+    button.textContent = `下载 v${status.latestVersion}`;
+    button.setAttribute("aria-label", `发现 v${status.latestVersion},打开下载页面`);
+    return;
+  }
+  button.textContent = "检查更新";
+  button.setAttribute("aria-label", "检查 GitHub Release 更新");
+}
+
+async function checkForUpdates(showResult: boolean): Promise<void> {
+  const button = byId<HTMLButtonElement>("update-button");
+  button.disabled = true;
+  button.textContent = "正在检查";
+  try {
+    const status = await apiWindow.usageApi.checkForUpdates();
+    latestUpdateStatus = status;
+    renderUpdateStatus(status);
+    if (status.available && status.latestVersion !== null) setStatus(`发现新版本 v${status.latestVersion},可点击“下载 v${status.latestVersion}”前往 GitHub Release。`);
+    else if (showResult) setStatus("当前已是最新版本。");
+  } catch (error) {
+    latestUpdateStatus = null;
+    renderUpdateStatus(null);
+    if (showResult) setStatus(error instanceof Error ? `检查更新失败: ${error.message}` : "检查更新失败。");
+  }
+}
+
+byId<HTMLButtonElement>("update-button").addEventListener("click", () => {
+  if (latestUpdateStatus?.available) {
+    void apiWindow.usageApi.openLatestRelease().catch((error: unknown) => setStatus(error instanceof Error ? error.message : "无法打开下载页面。"));
+    return;
+  }
+  void checkForUpdates(true);
+});
+
+apiWindow.usageApi.onUpdateStatus((status) => {
+  latestUpdateStatus = status;
+  renderUpdateStatus(status);
+  if (status.available && status.latestVersion !== null) setStatus(`发现新版本 v${status.latestVersion},可点击“下载 v${status.latestVersion}”前往 GitHub Release。`);
+});
+
 function renderStartupSettings(settings: StartupSettings): void {
   const off = byId<HTMLButtonElement>("startup-off");
   const on = byId<HTMLButtonElement>("startup-on");
@@ -644,4 +689,4 @@ async function initialize(): Promise<void> {
   }
 }
 
-void initialize();
+void initialize().finally(() => { void checkForUpdates(false); });

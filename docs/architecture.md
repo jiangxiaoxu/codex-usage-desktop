@@ -2,7 +2,7 @@
 
 ## Scope
 
-Codex Usage Desktop is a local Electron application. It observes Codex rollout JSONL files below `%USERPROFILE%\.codex`, persists normalized usage records to its own SQLite ledger, and presents token and estimated API cost views. The application has no network client and does not upload the observed data.
+Codex Usage Desktop is a local Electron application. It observes Codex rollout JSONL files below `%USERPROFILE%\.codex`, persists normalized usage records to its own SQLite ledger, and presents token and estimated API cost views. It does not upload observed data. Its only network client requests this project's public GitHub Releases API at startup and every four hours while running to check for a newer version; a download page is opened only after the user clicks the update action.
 
 ## Process and data flow
 
@@ -36,6 +36,8 @@ Codex sessions / archived_sessions JSONL --- read-only stat, readFile, open("r")
 | `usage:query` | `FilterSpec` | `QueryResult` | `query` |
 | `usage:status` | none | `CollectorStatus` | `getStatus` |
 | `usage:export` | `FilterSpec` | saved path and count | `exportCsv` |
+| `updates:check` | none | `UpdateStatus` | requests the fixed GitHub latest-release endpoint in main |
+| `updates:open-latest-release` | none | none | opens the fixed GitHub Releases page in the system browser |
 | `usage:updated` | main-to-renderer event | `CollectorStatus` | forwarded worker event |
 
 The worker protocol in `src/collector-protocol.ts` additionally contains `initialize` and `shutdown`; these are private to main/worker coordination. `FilterSpec` uses a half-open UTC interval `[startUtc, endUtc)`. `models: null` and `subjects: null` mean all available categories, while an empty array means none.

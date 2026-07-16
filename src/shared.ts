@@ -56,6 +56,12 @@ export interface StartupSettings {
   readonly enabled: boolean;
 }
 
+export interface UpdateStatus {
+  readonly currentVersion: string;
+  readonly latestVersion: string | null;
+  readonly available: boolean;
+}
+
 export interface ScanDiagnostics {
   readonly filesScanned: number;
   readonly malformedLines: number;
@@ -144,5 +150,8 @@ export interface UsageApi {
   getCollectorStatus(): Promise<CollectorStatus>;
   getStartupSettings(): Promise<StartupSettings>;
   setStartupEnabled(enabled: boolean): Promise<StartupSettings>;
+  checkForUpdates(): Promise<UpdateStatus>;
+  openLatestRelease(): Promise<void>;
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
   onUsageUpdated(listener: (status: CollectorStatus) => void): () => void;
 }

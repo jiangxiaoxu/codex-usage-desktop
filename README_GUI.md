@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-The application observes local Codex rollout JSONL files under `%USERPROFILE%\.codex` and does not upload data. Codex source paths are never opened for writing, locked, renamed, deleted, truncated, or repaired. SQLite locking is limited to the application's own `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` ledger.
+The application observes local Codex rollout JSONL files under `%USERPROFILE%\.codex` and does not upload data. On startup and every four hours while it remains running, it sends a version-only request to this project's public GitHub Releases API; if a newer release exists, the user can open its download page. Codex source paths are never opened for writing, locked, renamed, deleted, truncated, or repaired. SQLite locking is limited to the application's own `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` ledger.
 
 Features:
 
@@ -30,6 +30,7 @@ Features:
 - Exact `source_model=unknown` values are isolated as Unknown attribution and reported as unpriced tokens instead of zero-cost Others.
 - Forked subagent rollout replay is excluded; only the addressed child turn and its later usage are accounted.
 - CSV export of the currently filtered event snapshot.
+- Automatic GitHub Release checks on startup and every four hours, with a manual retry button and a user-initiated download-page link for newer versions.
 - A bounded, independently scrollable agent/thread audit table with a sticky header.
 
 Validation:

@@ -5,8 +5,9 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell, Tray } from "electron
 import { CollectorClient } from "./collector-client";
 import type { CollectorConfig } from "./collector-protocol";
 import { resolveLedgerDirectory } from "./ledger-directory";
+import { updateStatusFromLatestRelease } from "./release-update";
 import { SingleInstanceWindow } from "./single-instance-window";
-import type { CollectorStatus, FilterSpec, QueryResult, StartupSettings, SyncResult } from "./shared";
+import type { CollectorStatus, FilterSpec, QueryResult, StartupSettings, SyncResult, UpdateStatus } from "./shared";
 import { assertOutsideDirectories } from "./write-boundary";
 
 const PRODUCT_NAME = "Codex Usage Desktop";
@@ -14,6 +15,10 @@ const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const WATCHER_DEBOUNCE_MS = 2_000;
 const RESTART_REQUEST_PREFIX = "--shutdown-for-restart=";
 const RESTART_DATA_DIRECTORY_PREFIX = "--shutdown-for-data-directory=";
+const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/jiangxiaoxu/codex-usage-desktop/releases/latest";
+const GITHUB_RELEASES_PAGE = "https://github.com/jiangxiaoxu/codex-usage-desktop/releases/latest";
+const UPDATE_REQUEST_TIMEOUT_MS = 8_000;
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60_000;
 
 let tray: Tray | null = null;
 let collector: CollectorClient | null = null;
@@ -22,6 +27,8 @@ let isQuitting = false;
 let fatalErrorHandled = false;
 let shutdownPromise: Promise<void> | null = null;
 let latestStatus: CollectorStatus | null = null;
+let latestUpdateStatus: UpdateStatus | null = null;
+let updateCheckTimer: NodeJS.Timeout | null = null;
 
 interface PreparedApplication {
   readonly collectorReady: Promise<CollectorStatus>;
@@ -158,6 +165,47 @@ async function setStartupEnabled(value: unknown): Promise<StartupSettings> {
   return startupSettings();
 }
 
+async function checkForUpdates(): Promise<UpdateStatus> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(GITHUB_LATEST_RELEASE_API, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": `${PRODUCT_NAME}/${app.getVersion()}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: controller.signal,
+    });
+    const responseUrl = new URL(response.url);
+    if (responseUrl.origin !== "https://api.github.com") throw new Error("Unexpected update response origin.");
+    if (!response.ok) throw new Error(`GitHub update check failed with HTTP ${response.status}.`);
+    const payload: unknown = await response.json();
+    const status = updateStatusFromLatestRelease(app.getVersion(), payload);
+    latestUpdateStatus = status;
+    mainWindow.current()?.webContents.send("updates:status", status);
+    return status;
+  } catch (error) {
+    latestUpdateStatus = null;
+    if (error instanceof Error && error.name === "AbortError") throw new Error("GitHub update check timed out.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function openLatestRelease(): Promise<void> {
+  if (latestUpdateStatus === null || !latestUpdateStatus.available) throw new Error("No newer release is available.");
+  await shell.openExternal(GITHUB_RELEASES_PAGE);
+}
+
+function startPeriodicUpdateChecks(): void {
+  if (updateCheckTimer !== null) return;
+  updateCheckTimer = setInterval(() => {
+    void checkForUpdates().catch(() => { /* A later interval or manual check can retry. */ });
+  }, UPDATE_CHECK_INTERVAL_MS);
+}
+
 async function assertOutsideCodexSources(candidate: string, codexHome: string): Promise<void> {
   await assertOutsideDirectories(candidate, [path.join(codexHome, "sessions"), path.join(codexHome, "archived_sessions"), path.join(codexHome, "agents")]);
 }
@@ -194,6 +242,8 @@ function registerIpc(): void {
   ipcMain.handle("usage:status", async (): Promise<CollectorStatus> => (await getCollector()).request("getStatus", null));
   ipcMain.handle("settings:get-startup", (): StartupSettings => startupSettings());
   ipcMain.handle("settings:set-startup", (_event, enabled: unknown): Promise<StartupSettings> => setStartupEnabled(enabled));
+  ipcMain.handle("updates:check", (): Promise<UpdateStatus> => checkForUpdates());
+  ipcMain.handle("updates:open-latest-release", (): Promise<void> => openLatestRelease());
   ipcMain.handle("usage:export", async (_event, filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }> => {
     const result = await dialog.showSaveDialog({
       title: "Export filtered Codex usage",
@@ -228,6 +278,7 @@ async function finishApplicationInitialization(prepared: PreparedApplication): P
   const [status] = await Promise.all([prepared.collectorReady, createTray()]);
   latestStatus = status;
   updateTrayMenu();
+  startPeriodicUpdateChecks();
 }
 
 const lockAcquired = app.requestSingleInstanceLock();
@@ -244,7 +295,10 @@ else {
   });
   app.on("activate", showWindowWhenReady);
   app.on("window-all-closed", () => { /* Keep the collector resident in the tray. */ });
-  app.on("before-quit", () => { isQuitting = true; });
+  app.on("before-quit", () => {
+    isQuitting = true;
+    if (updateCheckTimer !== null) clearInterval(updateCheckTimer);
+  });
   app.on("will-quit", (event) => {
     if (collector === null) return;
     event.preventDefault();

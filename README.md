@@ -1,6 +1,6 @@
 # Codex Usage Desktop
 
-`Codex Usage Desktop` 是一个离线 Windows Electron 应用,用于审计本地 Codex token 用量并估算标准 API token 费用.它持续观察 `%USERPROFILE%\\.codex` 下的 rollout JSONL.后台自动持久化仅写入应用自己的 SQLite ledger;只有用户明确执行 export 时才写入所选 CSV 路径.应用不会上传源数据.
+`Codex Usage Desktop` 是一个本地 Windows Electron 应用,用于审计本地 Codex token 用量并估算标准 API token 费用.它持续观察 `%USERPROFILE%\\.codex` 下的 rollout JSONL.后台自动持久化仅写入应用自己的 SQLite ledger;只有用户明确执行 export 时才写入所选 CSV 路径.应用不会上传源数据.启动时及运行期间每 4 小时会请求 GitHub Releases API 检查公开的新版本;发现更新后仅在用户点击下载按钮时打开 Release 网页.
 
 ## 主要能力
 

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { CollectorStatus, FilterSpec, QueryResult, StartupSettings, SyncResult, UsageApi } from "./shared";
+import type { CollectorStatus, FilterSpec, QueryResult, StartupSettings, SyncResult, UpdateStatus, UsageApi } from "./shared";
 
 const usageApi: UsageApi = {
   syncNow: (): Promise<SyncResult> => ipcRenderer.invoke("usage:sync"),
@@ -8,6 +8,13 @@ const usageApi: UsageApi = {
   getCollectorStatus: (): Promise<CollectorStatus> => ipcRenderer.invoke("usage:status"),
   getStartupSettings: (): Promise<StartupSettings> => ipcRenderer.invoke("settings:get-startup"),
   setStartupEnabled: (enabled: boolean): Promise<StartupSettings> => ipcRenderer.invoke("settings:set-startup", enabled),
+  checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke("updates:check"),
+  openLatestRelease: (): Promise<void> => ipcRenderer.invoke("updates:open-latest-release"),
+  onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus): void => listener(status);
+    ipcRenderer.on("updates:status", handler);
+    return () => ipcRenderer.removeListener("updates:status", handler);
+  },
   onUsageUpdated: (listener: (status: CollectorStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: CollectorStatus): void => listener(status);
     ipcRenderer.on("usage:updated", handler);
