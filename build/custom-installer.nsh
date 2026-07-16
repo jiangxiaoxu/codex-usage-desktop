@@ -22,9 +22,9 @@
       ${EndIf}
       Abort
     ${EndIf}
-    ${NSD_CreateLabel} 0 0 100% 24u "Choose whether Codex Usage Desktop starts when you sign in."
+    ${NSD_CreateLabel} 0 0 100% 24u "选择是否在登录 Windows 时自动启动 Codex Usage Desktop。"
     Pop $0
-    ${NSD_CreateCheckbox} 0 34u 100% 12u "Start Codex Usage Desktop when I sign in"
+    ${NSD_CreateCheckbox} 0 34u 100% 12u "登录 Windows 时自动启动 Codex Usage Desktop"
     Pop $StartAtLoginCheckbox
     ${If} ${FileExists} "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Codex Usage Desktop.lnk"
       ${NSD_SetState} $StartAtLoginCheckbox ${BST_CHECKED}
@@ -73,7 +73,7 @@
 !macroend
 
 !macro customUnInstallSection
-  Section /o "un.Delete Codex Usage Desktop configuration and usage ledger"
+  Section /o "un.删除 Codex Usage Desktop 配置和 usage ledger"
     ${If} $installMode == "all"
       SetShellVarContext current
     ${EndIf}

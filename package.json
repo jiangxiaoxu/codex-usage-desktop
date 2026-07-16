@@ -46,6 +46,10 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
       "include": "build/custom-installer.nsh"
     }
   },
