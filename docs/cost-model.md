@@ -52,7 +52,7 @@ The UI shows the four cost components separately. Reasoning and other output hav
 
 The threshold is `input_tokens > 272,000`.
 
-- For `gpt-5.6` models, the application always ignores the long-context multiplier. The input and output multipliers remain `1`.
+- Product policy: for `gpt-5.6` models, the application always excludes the extra charge for input above 272K tokens. The input and output multipliers remain `1`, even when an external API price card would apply a long-context premium. This is intentional and the dashboard is not an invoice calculation.
 - For priced `gpt-5.5` and `gpt-5.4` models above the threshold, the input and cached-input multipliers are `2`, and the reasoning and other-output multipliers are `1.5`.
 - The threshold is strict: exactly `272,000` input tokens does not activate it.
 
