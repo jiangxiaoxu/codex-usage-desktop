@@ -11,7 +11,9 @@
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/*.test.js",
-    "package:portable": "npm run build && electron-builder --win portable"
+    "package:portable": "npm run build && electron-builder --win portable",
+    "portable:restart": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/package-portable-and-restart.ps1",
+    "package:portable:restart": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/package-portable-and-restart.ps1 -Rebuild"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

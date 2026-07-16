@@ -11,6 +11,8 @@ import { assertOutsideDirectories } from "./write-boundary";
 const PRODUCT_NAME = "Codex Usage Desktop";
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const WATCHER_DEBOUNCE_MS = 2_000;
+const RESTART_REQUEST_PREFIX = "--shutdown-for-restart=";
+const RESTART_DATA_DIRECTORY_PREFIX = "--shutdown-for-data-directory=";
 
 let tray: Tray | null = null;
 let collector: CollectorClient | null = null;
@@ -60,6 +62,23 @@ function showWindowWhenReady(): void {
   void pendingWindow.then(() => {
     if (!isQuitting) mainWindow.show();
   }).catch(() => { /* Initialization failures are handled by handleFatalError. */ });
+}
+
+function isRestartRequestForCurrentExecutable(commandLine: readonly string[]): boolean {
+  const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR?.trim();
+  const executableDirectory = path.resolve(portableDirectory || path.dirname(process.execPath)).toLowerCase();
+  const dataDirectory = process.env.CODEX_USAGE_DATA_DIR?.trim();
+  const targetDirectories = commandLine
+    .filter((argument) => argument.startsWith(RESTART_REQUEST_PREFIX) || argument.startsWith(RESTART_DATA_DIRECTORY_PREFIX))
+    .map((argument) => argument.startsWith(RESTART_REQUEST_PREFIX)
+      ? argument.slice(RESTART_REQUEST_PREFIX.length).trim()
+      : argument.slice(RESTART_DATA_DIRECTORY_PREFIX.length).trim())
+    .filter((directory) => directory.length > 0)
+    .map((directory) => path.resolve(directory).toLowerCase());
+  if (targetDirectories.includes(executableDirectory)) return true;
+  if (!dataDirectory) return false;
+  const normalizedDataDirectory = path.resolve(dataDirectory).toLowerCase();
+  return targetDirectories.includes(normalizedDataDirectory);
 }
 
 function handleFatalError(error: unknown): void {
@@ -176,11 +195,17 @@ async function finishApplicationInitialization(prepared: PreparedApplication): P
 }
 
 const lockAcquired = app.requestSingleInstanceLock();
-if (!lockAcquired) app.quit();
+if (!lockAcquired || isRestartRequestForCurrentExecutable(process.argv)) app.quit();
 else {
   windowReady = app.whenReady().then(() => prepareApplication());
   void windowReady.then((prepared) => finishApplicationInitialization(prepared)).catch(handleFatalError);
-  app.on("second-instance", showWindowWhenReady);
+  app.on("second-instance", (_event, commandLine) => {
+    if (isRestartRequestForCurrentExecutable(commandLine)) {
+      app.quit();
+      return;
+    }
+    showWindowWhenReady();
+  });
   app.on("activate", showWindowWhenReady);
   app.on("window-all-closed", () => { /* Keep the collector resident in the tray. */ });
   app.on("before-quit", () => { isQuitting = true; });

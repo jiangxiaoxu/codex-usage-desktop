@@ -40,7 +40,7 @@ collector 初始化完成后会显示 dashboard.关闭窗口只会隐藏到 noti
 
 ## VBS 启动器
 
-构建 Portable 包后,双击 [launch_codex_usage_gui.vbs](launch_codex_usage_gui.vbs).启动器会查找 `release` 目录下最新的 Portable executable,并在不显示 console window 的情况下启动它.
+双击 [launch_codex_usage_gui.vbs](launch_codex_usage_gui.vbs) 会在不显示 console window 的情况下运行 `npm run package:portable:restart`.
 
 如果尚未有 package,先运行 `npm run package:portable`.
 
@@ -51,9 +51,13 @@ npm run typecheck
 npm test
 npm run build
 npm run package:portable
+npm run portable:restart
+npm run package:portable:restart
 ```
 
 `npm run package:portable` 会在 `release/` 生成 Windows Portable executable.package 使用 `dist/` 中的生成文件.应修改 `src/` 后重新构建,不要编辑生成 output.
+
+`npm run portable:restart` 会重启已有的 Portable package.`npm run package:portable:restart` 会先重新打包.两者都会向当前工作区的应用实例发送受路径约束的退出请求,确认 executable 可用后复制到被忽略的 `work/portable-run/` 并启动副本.因此运行实例不会锁定 `release/` 中的打包源文件.命令通过 `CODEX_USAGE_DATA_DIR` 保持 ledger 位于 `release/codex-usage-data/`.退出请求超时时,命令只会终止当前工作区 `work/`,`release/` 或开发 Electron 进程树;其他路径的同名应用仍会使命令停止.
 
 ## 数据目录与安全边界
 
