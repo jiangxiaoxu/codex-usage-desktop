@@ -26,7 +26,7 @@ Features:
 - Inline live filtering by model and observed role, with all models and subjects selected by default. Roles come from actual rollout/session thread metadata: the main-thread role is normalized to `root`, while subagents retain each recorded role for independent filtering and aggregation and fall back to `unknown` when missing.
 - Main-thread or subagent filtering and agent path or nickname search.
 - Token and cost summaries by model and role; price shares are labeled explicitly, and all UI USD values use one decimal place. Usage-event counts are not exposed as user-facing metrics.
-- Standard API token-cost estimate that always ignores the GPT-5.6 >272K input multiplier; non-GPT-5.6/5.5/5.4 models are grouped as zero-cost Others.
+- Standard API token-cost estimate that always uses base rates for Codex subscription usage and never applies a long-context multiplier; non-GPT-5.6/5.5/5.4 models are grouped as zero-cost Others.
 - Exact `source_model=unknown` values are isolated as Unknown attribution and reported as unpriced tokens instead of zero-cost Others.
 - Forked subagent rollout replay is excluded; only the addressed child turn and its later usage are accounted.
 - CSV export of the currently filtered event snapshot.

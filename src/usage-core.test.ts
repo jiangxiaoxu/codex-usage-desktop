@@ -28,7 +28,7 @@ const filter: FilterSpec = {
   pathQuery: "",
 };
 
-test("reasoning output remains a subset of output cost and GPT-5.6 always ignores the long-context multiplier", () => {
+test("reasoning output remains a subset of output cost and Codex subscriptions never add a long-context premium", () => {
   const cost = costFor(event);
   assert.equal(cost.uncachedInput, 1);
   assert.equal(cost.cachedInput, 0.4);
@@ -38,8 +38,21 @@ test("reasoning output remains a subset of output cost and GPT-5.6 always ignore
   assert.equal(summarize([event]).canonicalTotalTokens, 1_100_000);
 
   const gpt54Cost = costFor({ ...event, model: "gpt-5.4", cachedInputTokens: 0 });
-  assert.equal(gpt54Cost.uncachedInput, 5, "non-GPT-5.6 long contexts retain the input multiplier");
-  assert.equal(gpt54Cost.reasoningOutput, 1.575, "non-GPT-5.6 long contexts retain the output multiplier");
+  assert.equal(gpt54Cost.uncachedInput, 2.5, "GPT-5.4 always ignores the input multiplier");
+  assert.equal(gpt54Cost.reasoningOutput, 1.05, "GPT-5.4 always ignores the output multiplier");
+
+  const gpt54MiniCost = costFor({ ...event, model: "gpt-5.4-mini", cachedInputTokens: 0 });
+  const gpt54NanoCost = costFor({ ...event, model: "gpt-5.4-nano", cachedInputTokens: 0 });
+  assert.equal(gpt54MiniCost.total, 1.2, "GPT-5.4 mini always ignores the long-context multiplier");
+  assert.ok(Math.abs(gpt54NanoCost.total - 0.325) < Number.EPSILON, "GPT-5.4 nano always ignores the long-context multiplier");
+
+  const gpt55Cost = costFor({ ...event, model: "gpt-5.5", cachedInputTokens: 0 });
+  assert.equal(gpt55Cost.uncachedInput, 5, "GPT-5.5 ignores the input multiplier");
+  assert.equal(gpt55Cost.reasoningOutput, 2.1, "GPT-5.5 ignores the output multiplier");
+  assert.equal(costFor({ ...event, model: "gpt-5.5", inputTokens: 272_001, cachedInputTokens: 0 }).uncachedInput, 1.360005, "input above 272K remains at the base rate");
+
+  const aliasCost = costFor({ ...event, model: "gpt-5.6" });
+  assert.deepEqual(aliasCost, cost, "gpt-5.6 routes to the GPT-5.6 Sol rate");
 });
 
 test("CSV exposes model category and raw source model while formatting cost and SGT", () => {
@@ -78,7 +91,7 @@ test("model categories retain supported families, isolate unknown attribution, a
 
   assert.deepEqual(new Map(result.facets.models.map((option) => [option.model, { canonicalTotalTokens: option.canonicalTotalTokens, totalCost: option.totalCost }])), new Map([
     ["gpt-5.6-sol", { canonicalTotalTokens: 1_100_000, totalCost: 4.4 }],
-    ["gpt-5.6", { canonicalTotalTokens: 1_100_000, totalCost: 0 }],
+    ["gpt-5.6", { canonicalTotalTokens: 1_100_000, totalCost: 4.4 }],
     ["gpt-5.6-preview", { canonicalTotalTokens: 1_100_000, totalCost: 0 }],
     ["Others", { canonicalTotalTokens: 1_100_000, totalCost: 0 }],
     ["Unknown attribution", { canonicalTotalTokens: 1_100_000, totalCost: 0 }],

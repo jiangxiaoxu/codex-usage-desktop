@@ -1,7 +1,6 @@
 import { AgentGroupRow, CostBreakdown, FilterSpec, GroupRow, ModelFacetOption, ModelGroupRow, QueryFacets, QueryResult, RoleGroupRow, ScanDiagnostics, SubjectFacetOption, Summary, ThreadType, UsageEvent } from "./shared";
 
 const MILLION = 1_000_000;
-const LONG_CONTEXT_LIMIT = 272_000;
 const OTHER_MODEL_CATEGORY = "Others";
 const UNKNOWN_ATTRIBUTION_CATEGORY = "Unknown attribution";
 const SUPPORTED_MODEL_FAMILIES = ["gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
@@ -14,8 +13,11 @@ interface ModelRate {
   readonly output: number;
 }
 
+const GPT_5_6_SOL_RATE: ModelRate = { input: 5, cachedInput: 0.5, output: 30 };
+
 const STANDARD_RATES: Readonly<Record<string, ModelRate>> = {
-  "gpt-5.6-sol": { input: 5, cachedInput: 0.5, output: 30 },
+  "gpt-5.6": GPT_5_6_SOL_RATE,
+  "gpt-5.6-sol": GPT_5_6_SOL_RATE,
   "gpt-5.6-terra": { input: 2.5, cachedInput: 0.25, output: 15 },
   "gpt-5.6-luna": { input: 1, cachedInput: 0.1, output: 6 },
   "gpt-5.5": { input: 5, cachedInput: 0.5, output: 30 },
@@ -60,17 +62,13 @@ export function costFor(event: UsageEvent): CostBreakdown {
   }
   const rate = STANDARD_RATES[event.model];
   if (rate === undefined) return { uncachedInput: 0, cachedInput: 0, reasoningOutput: 0, otherOutput: 0, total: 0, priced: false };
-  const longContext = event.inputTokens > LONG_CONTEXT_LIMIT;
-  const applyMultiplier = longContext && !belongsToFamily(event.model, "gpt-5.6");
-  const inputMultiplier = applyMultiplier ? 2 : 1;
-  const outputMultiplier = applyMultiplier ? 1.5 : 1;
   const uncachedInput = event.inputTokens - event.cachedInputTokens;
   const reasoningOutput = event.reasoningOutputTokens;
   const otherOutput = event.outputTokens - reasoningOutput;
-  const uncached = uncachedInput * rate.input * inputMultiplier / MILLION;
-  const cached = event.cachedInputTokens * rate.cachedInput * inputMultiplier / MILLION;
-  const reasoning = reasoningOutput * rate.output * outputMultiplier / MILLION;
-  const other = otherOutput * rate.output * outputMultiplier / MILLION;
+  const uncached = uncachedInput * rate.input / MILLION;
+  const cached = event.cachedInputTokens * rate.cachedInput / MILLION;
+  const reasoning = reasoningOutput * rate.output / MILLION;
+  const other = otherOutput * rate.output / MILLION;
   return { uncachedInput: uncached, cachedInput: cached, reasoningOutput: reasoning, otherOutput: other, total: uncached + cached + reasoning + other, priced: true };
 }
 
