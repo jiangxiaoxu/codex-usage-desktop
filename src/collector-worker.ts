@@ -15,7 +15,7 @@ if (port === null) throw new Error("Collector worker requires a parent port.");
 const workerPort = port;
 
 const BOUNDARY_WINDOW_BYTES = 64 * 1024;
-const ROLLOUT_PARSER_REVISION = 2;
+const ROLLOUT_PARSER_REVISION = 4;
 const ROLLOUT_PARSER_REVISION_STATE_KEY = "rollout_parser_revision";
 
 // Codex rollout paths are a strict observation-only boundary. Never open them
@@ -290,8 +290,9 @@ async function processIncrementalFile(filePath: string, runtime: SourceRuntime):
   const result = parseRolloutChunk(buffer, runtime.rolloutId, runtime.state);
   rejectInternalDamage(filePath, result);
   const resolvedTurns = new Set(result.state.turnModels.map(([turnId]) => turnId));
-  const resolvedPreviouslyUnknown = runtime.state.unresolvedTurnIds.some((turnId) => resolvedTurns.has(turnId));
-  if (resolvedPreviouslyUnknown) return processFullFile(filePath);
+  const resolvedPreviouslyUnattributed = [...runtime.state.unresolvedTurnIds, ...runtime.state.provisionalTurnIds]
+    .some((turnId) => resolvedTurns.has(turnId));
+  if (resolvedPreviouslyUnattributed) return processFullFile(filePath);
   addDiagnostics(result.diagnostics);
   if (result.stableByteLength === 0) return false;
   const newOffset = runtime.byteOffset + result.stableByteLength;

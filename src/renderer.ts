@@ -36,13 +36,12 @@ interface Summary {
 interface GroupRow<Key extends readonly string[]> { readonly key: Key; readonly summary: Summary; }
 type ModelGroupRow = GroupRow<readonly [model: string]>;
 type RoleGroupRow = GroupRow<readonly [threadType: ThreadType, agentRole: string]>;
-type AgentGroupRow = GroupRow<readonly [threadType: ThreadType, agentRole: string, agentPath: string, model: string]>;
 interface FacetMetrics { readonly canonicalTotalTokens: number; readonly totalCost: number; }
 interface ModelFacetOption extends FacetMetrics { readonly model: string; }
 interface SubjectFacetOption extends FacetMetrics { readonly subject: SubjectFilter; }
 interface QueryFacets { readonly models: readonly ModelFacetOption[]; readonly subjects: readonly SubjectFacetOption[]; }
 interface ScanDiagnostics { readonly filesScanned: number; readonly malformedLines: number; readonly duplicateSnapshotsSkipped: number; readonly zeroBreakdownSnapshotsSkipped: number; readonly invalidTokenRelationshipsSkipped: number; }
-interface QueryResult { readonly summary: Summary; readonly byModel: readonly ModelGroupRow[]; readonly byRole: readonly RoleGroupRow[]; readonly byAgent: readonly AgentGroupRow[]; readonly facets: QueryFacets; readonly diagnostics: ScanDiagnostics; }
+interface QueryResult { readonly summary: Summary; readonly byModel: readonly ModelGroupRow[]; readonly byRole: readonly RoleGroupRow[]; readonly facets: QueryFacets; readonly diagnostics: ScanDiagnostics; }
 
 type CollectorPhase = "initializing" | "syncing" | "watching" | "degraded" | "stopped";
 type ObservationCoverage = "baseline" | "continuous" | "gap";
@@ -451,10 +450,6 @@ function roleRows(groups: readonly RoleGroupRow[], total: number): string[][] {
   return groups.map(({ key, summary }) => [threadTypeLabel(key[0]), displayedRole(key[0], key[1]), ...summaryCells(summary, total)]);
 }
 
-function agentRows(groups: readonly AgentGroupRow[], total: number): string[][] {
-  return groups.map(({ key, summary }) => [threadTypeLabel(key[0]), displayedRole(key[0], key[1]), key[2], key[3], ...summaryCells(summary, total)]);
-}
-
 function render(result: QueryResult): void {
   const filterFocus = focusedFilterKey();
   latestResult = result;
@@ -464,7 +459,6 @@ function render(result: QueryResult): void {
   const total = result.summary.cost.total;
   table("model-table", ["模型", "总 tokens", "无缓存输入", "缓存输入", "输出", "思考输出", "费用", "价格占比"], modelRows(result.byModel, total));
   table("role-table", ["类型", "角色", "总 tokens", "无缓存输入", "缓存输入", "输出", "思考输出", "费用", "价格占比"], roleRows(result.byRole, total));
-  table("agent-table", ["类型", "角色", "agent path", "模型", "总 tokens", "无缓存输入", "缓存输入", "输出", "思考输出", "费用", "价格占比"], agentRows(result.byAgent, total));
   const d = result.diagnostics;
   setStatus(`本次运行处理 ${d.filesScanned} 个源文件批次. 跳过重复累计快照 ${d.duplicateSnapshotsSkipped}, 无拆分快照 ${d.zeroBreakdownSnapshotsSkipped}, 关系无效 ${d.invalidTokenRelationshipsSkipped}.`);
   resetRollingRefreshTimer();

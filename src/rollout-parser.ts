@@ -60,11 +60,13 @@ export interface RolloutParserState {
   readonly metadata: RolloutMetadata;
   readonly turnModels: readonly (readonly [turnId: string, model: string])[];
   readonly currentTurnId: string;
+  readonly currentTurnModelOverridden: boolean;
   readonly currentModel: string;
   readonly forkReplay: RolloutForkReplayState;
   readonly previousSnapshot: string | null;
   readonly nextTokenEventOrdinal: number;
   readonly unresolvedTurnIds: readonly string[];
+  readonly provisionalTurnIds: readonly string[];
 }
 
 export interface RolloutChunkParseResult {
@@ -99,7 +101,7 @@ interface TokenTuple {
 interface TokenCandidate {
   readonly timestamp: string;
   readonly turnId: string;
-  readonly model: string | null;
+  readonly model: { readonly value: string; readonly source: "active-turn-setting" | "settings-fallback" } | null;
   readonly usage: TokenTuple;
   readonly cumulativeSnapshot: string;
 }
@@ -237,6 +239,7 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
   let metadataDiscovered = false;
   let metadata = priorState?.metadata ?? metadataFrom(metadataPayload, fallbackRolloutId);
   let currentTurnId = priorState?.currentTurnId ?? "";
+  let currentTurnModelOverridden = priorState?.currentTurnModelOverridden ?? false;
   let currentModel = priorState?.currentModel ?? "unknown";
   let forkReplay: RolloutForkReplayState = priorState?.forkReplay ?? { status: "inactive" };
   let stableLineCount = 0;
@@ -284,7 +287,10 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
         continue;
       }
       if (forkReplay.status !== "inactive") continue;
-      if (turnId !== null) currentTurnId = turnId;
+      if (turnId !== null) {
+        if (turnId !== currentTurnId) currentTurnModelOverridden = false;
+        currentTurnId = turnId;
+      }
       if (turnId !== null && model !== null) turnModels.set(turnId, model);
       continue;
     }
@@ -309,7 +315,10 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
     if (event.type !== "event_msg" || payload === null) continue;
     if (payload.type === "thread_settings_applied") {
       const model = nonEmptyString(record(payload.thread_settings)?.model);
-      if (model !== null) currentModel = model;
+      if (model !== null) {
+        currentModel = model;
+        if (currentTurnId.length > 0) currentTurnModelOverridden = true;
+      }
       continue;
     }
     if (payload.type === "task_started") {
@@ -319,7 +328,15 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
         continue;
       }
       currentTurnId = turnId ?? currentTurnId;
-      if (turnId !== null && currentModel !== "unknown") turnModels.set(turnId, currentModel);
+      currentTurnModelOverridden = false;
+      continue;
+    }
+    if (payload.type === "task_complete") {
+      const turnId = nonEmptyString(payload.turn_id);
+      if (turnId === null || turnId === currentTurnId) {
+        currentTurnId = "";
+        currentTurnModelOverridden = false;
+      }
       continue;
     }
     if (payload.type !== "token_count") continue;
@@ -351,10 +368,14 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
     }
     previousSnapshot = cumulativeSnapshot;
     const candidateTurnId = nonEmptyString(payload.turn_id) ?? currentTurnId;
+    const activeTurnSetting = currentTurnModelOverridden && candidateTurnId === currentTurnId && currentModel !== "unknown";
+    const settingsFallback = !activeTurnSetting && !turnModels.has(candidateTurnId) && currentModel !== "unknown";
     candidates.push({
       timestamp: event.timestamp,
       turnId: candidateTurnId,
-      model: candidateTurnId.length === 0 && currentModel !== "unknown" ? currentModel : null,
+      model: activeTurnSetting
+        ? { value: currentModel, source: "active-turn-setting" }
+        : settingsFallback ? { value: currentModel, source: "settings-fallback" } : null,
       usage,
       cumulativeSnapshot,
     });
@@ -364,7 +385,9 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
   const firstTokenEventOrdinal = priorState?.nextTokenEventOrdinal ?? 0;
   const events = candidates.map((candidate, candidateIndex): ParsedRolloutUsageEvent => {
     const tokenEventOrdinal = firstTokenEventOrdinal + candidateIndex;
-    const model = turnModels.get(candidate.turnId) ?? candidate.model ?? "unknown";
+    const activeTurnSetting = candidate.model?.source === "active-turn-setting" ? candidate.model.value : null;
+    const settingsFallback = candidate.model?.source === "settings-fallback" ? candidate.model.value : null;
+    const model = activeTurnSetting ?? turnModels.get(candidate.turnId) ?? settingsFallback ?? "unknown";
     const deterministicSignature = JSON.stringify([
       candidate.timestamp,
       candidate.turnId,
@@ -390,21 +413,30 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
   });
 
   const unresolvedTurnIds = new Set(priorState?.unresolvedTurnIds ?? []);
+  const provisionalTurnIds = new Set(priorState?.provisionalTurnIds ?? []);
   for (const event of events) {
     if (event.model === "unknown") unresolvedTurnIds.add(event.turnId);
   }
+  for (const candidate of candidates) {
+    if (candidate.model?.source === "settings-fallback" && candidate.turnId.length > 0 && !turnModels.has(candidate.turnId)) {
+      provisionalTurnIds.add(candidate.turnId);
+    }
+  }
   for (const turnId of turnModels.keys()) unresolvedTurnIds.delete(turnId);
+  for (const turnId of turnModels.keys()) provisionalTurnIds.delete(turnId);
 
   const state: RolloutParserState = {
     metadataPayload,
     metadata,
     turnModels: [...turnModels.entries()],
     currentTurnId,
+    currentTurnModelOverridden,
     currentModel,
     forkReplay,
     previousSnapshot,
     nextTokenEventOrdinal: firstTokenEventOrdinal + events.length,
     unresolvedTurnIds: [...unresolvedTurnIds].sort(),
+    provisionalTurnIds: [...provisionalTurnIds].sort(),
   };
   return {
     metadata,

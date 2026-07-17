@@ -282,6 +282,7 @@ test("late model metadata enriches canonical events without a false conflict", a
   const rolloutPath = path.join(sessions, "rollout-model.jsonl");
   await writeFile(rolloutPath,
     line("session_meta", { session_id: "conversation", id: "rollout-model", thread_source: "user" })
+      + line("event_msg", { type: "thread_settings_applied", thread_settings: { model: "gpt-5.6-sol" } })
       + line("event_msg", { type: "task_started", turn_id: "turn-late" })
       + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
     "utf8",
@@ -290,7 +291,7 @@ test("late model metadata enriches canonical events without a false conflict", a
   let client = new CollectorClient(__dirname);
   t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
   await client.initialize(config);
-  assert.deepEqual((await query(client)).byModel.map((row) => row.key[0]), ["Unknown attribution"]);
+  assert.deepEqual((await query(client)).byModel.map((row) => row.key[0]), ["gpt-5.6-sol"]);
   await appendFile(rolloutPath, line("turn_context", { turn_id: "turn-late", model: "gpt-5.6-terra" }), "utf8");
   await client.request("reconcile", null);
   const enriched = await query(client);
@@ -300,6 +301,39 @@ test("late model metadata enriches canonical events without a false conflict", a
   client = new CollectorClient(__dirname);
   await client.initialize(config);
   assert.deepEqual((await query(client)).byModel.map((row) => row.key[0]), ["gpt-5.6-terra"]);
+});
+
+test("captures a model switch in an incrementally collected turn", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-model-switch-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-model-switch.jsonl");
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-model-switch", thread_source: "user" })
+      + line("event_msg", { type: "thread_settings_applied", thread_settings: { model: "gpt-5.6-sol" } })
+      + line("event_msg", { type: "task_started", turn_id: "turn-switch" })
+      + line("turn_context", { turn_id: "turn-switch", model: "gpt-5.6-sol" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  assert.deepEqual((await query(client)).byModel.map((row) => row.key[0]), ["gpt-5.6-sol"]);
+  await appendFile(rolloutPath,
+    line("event_msg", { type: "thread_settings_applied", thread_settings: { model: "gpt-5.6-terra" } })
+      + token([20, 0, 3, 1, 23], [30, 0, 5, 2, 35], "2026-07-15T01:01:00.000Z"),
+    "utf8",
+  );
+  await client.request("reconcile", null);
+  const result = await query(client);
+  assert.deepEqual(result.byModel.map((row) => [row.key[0], row.summary.inputTokens]), [
+    ["gpt-5.6-sol", 10],
+    ["gpt-5.6-terra", 20],
+  ]);
+  assert.equal(result.summary.inputTokens, 30);
 });
 
 test("parser revision rebuild replaces present canonical rollouts and preserves missing history", async (t) => {
@@ -333,7 +367,7 @@ test("parser revision rebuild replaces present canonical rollouts and preserves 
 
   const ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "2");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
     const stored = ledger.queryEvents({ startEpochMs: Date.parse(filter.startUtc), endEpochMs: Date.parse(filter.endUtc) });
     assert.deepEqual(stored.map((event) => [event.rolloutId, event.inputTokens]), [
       ["rollout-missing", 777],
@@ -384,7 +418,7 @@ test("parser revision rebuild promotes a present archived candidate when canonic
 
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "2");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
     assert.equal(ledger.getCanonicalSourcePath("rollout-candidate"), candidatePath);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === canonicalPath)?.isPresent, false);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === candidatePath)?.canonicalStatus, "canonical");
@@ -428,7 +462,7 @@ test("parser revision discovers an offline archive move before publishing the up
 
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "2");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
     assert.equal(ledger.getCanonicalSourcePath("rollout-offline"), archivedPath);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === activePath)?.isPresent, false);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === archivedPath)?.canonicalStatus, "canonical");
@@ -478,7 +512,7 @@ test("an interrupted parser revision rebuild keeps the old revision and retries"
   await client.close();
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "2");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
   } finally {
     ledger.close();
   }

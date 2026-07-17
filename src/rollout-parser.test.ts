@@ -166,6 +166,52 @@ test("uses thread settings as model state across model switches", () => {
   ]);
 });
 
+test("attributes snapshots in one turn to the model effective when each snapshot was observed", () => {
+  const result = parseRollout(jsonl(
+    threadSettings("gpt-a"),
+    taskStarted("turn-a"),
+    line("turn_context", { turn_id: "turn-a", model: "gpt-a" }),
+    token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6]),
+    threadSettings("gpt-b"),
+    token([5, 1, 3, 2, 8], [9, 2, 5, 3, 14]),
+  ), "rollout");
+
+  assert.deepEqual(result.events.map((event) => [event.turnId, event.model]), [
+    ["turn-a", "gpt-a"],
+    ["turn-a", "gpt-b"],
+  ]);
+});
+
+test("keeps turn context authoritative when it arrives after a stale thread setting", () => {
+  const result = parseRollout(jsonl(
+    threadSettings("gpt-stale"),
+    taskStarted("turn-a"),
+    token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6]),
+    line("turn_context", { turn_id: "turn-a", model: "gpt-current" }),
+    token([5, 1, 3, 2, 8], [9, 2, 5, 3, 14]),
+  ), "rollout");
+
+  assert.deepEqual(result.events.map((event) => [event.turnId, event.model]), [
+    ["turn-a", "gpt-current"],
+    ["turn-a", "gpt-current"],
+  ]);
+});
+
+test("does not carry a model-setting override into a turn selected by turn context", () => {
+  const result = parseRollout(jsonl(
+    line("turn_context", { turn_id: "turn-a", model: "gpt-a" }),
+    threadSettings("gpt-b"),
+    token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6]),
+    line("turn_context", { turn_id: "turn-c", model: "gpt-c" }),
+    token([5, 1, 3, 2, 8], [9, 2, 5, 3, 14]),
+  ), "rollout");
+
+  assert.deepEqual(result.events.map((event) => [event.turnId, event.model]), [
+    ["turn-a", "gpt-b"],
+    ["turn-c", "gpt-c"],
+  ]);
+});
+
 test("a new turn never inherits another turn model while waiting for exact metadata", () => {
   const first = parseRolloutChunk(Buffer.from(jsonl(
     line("turn_context", { turn_id: "turn-a", model: "gpt-a" }),
