@@ -127,6 +127,39 @@ test("collector remains read-only while Codex appends, archives, and deletes sou
   assert.ok(database.byteLength > 0);
 });
 
+test("collector skips manual main fork replay and ingests the first appended live task", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-main-fork-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-main-fork.jsonl");
+  const forkTimestamp = "2026-07-15T01:02:30.500Z";
+  await writeFile(rolloutPath,
+    line("session_meta", { id: "main-fork", forked_from_id: "parent", thread_source: "user" }, forkTimestamp)
+      + line("event_msg", { type: "task_started", turn_id: "replayed-turn", started_at: Date.parse("2026-07-15T01:01:00.000Z") / 1_000 }, forkTimestamp)
+      + line("turn_context", { turn_id: "replayed-turn", model: "gpt-5.6-sol" }, forkTimestamp)
+      + token([40, 10, 6, 2, 46], [40, 10, 6, 2, 46], forkTimestamp),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  assert.equal((await query(client)).summary.inputTokens, 0, "replayed parent usage must not enter the ledger");
+
+  await appendFile(rolloutPath,
+    line("event_msg", { type: "thread_settings_applied", thread_settings: { model: "gpt-5.6-terra" } }, "2026-07-15T01:03:00.000Z")
+      + line("event_msg", { type: "task_started", turn_id: "live-turn", started_at: Date.parse("2026-07-15T01:03:00.000Z") / 1_000 }, "2026-07-15T01:03:00.000Z")
+      + line("turn_context", { turn_id: "live-turn", model: "gpt-5.6-terra" }, "2026-07-15T01:03:00.000Z")
+      + token([7, 2, 3, 1, 10], [47, 12, 9, 3, 56], "2026-07-15T01:03:01.000Z"),
+    "utf8",
+  );
+  await client.request("reconcile", null);
+  const result = await query(client);
+  assert.equal(result.summary.inputTokens, 7);
+  assert.deepEqual(result.byModel.map((row) => [row.key[0], row.summary.inputTokens]), [["gpt-5.6-terra", 7]]);
+});
+
 test("collector uses roles from actual rollout threads and ignores the read-only TOML inventory", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-agent-roles-"));
   const codexHome = path.join(root, ".codex");
@@ -367,7 +400,7 @@ test("parser revision rebuild replaces present canonical rollouts and preserves 
 
   const ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
     const stored = ledger.queryEvents({ startEpochMs: Date.parse(filter.startUtc), endEpochMs: Date.parse(filter.endUtc) });
     assert.deepEqual(stored.map((event) => [event.rolloutId, event.inputTokens]), [
       ["rollout-missing", 777],
@@ -418,7 +451,7 @@ test("parser revision rebuild promotes a present archived candidate when canonic
 
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
     assert.equal(ledger.getCanonicalSourcePath("rollout-candidate"), candidatePath);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === canonicalPath)?.isPresent, false);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === candidatePath)?.canonicalStatus, "canonical");
@@ -462,7 +495,7 @@ test("parser revision discovers an offline archive move before publishing the up
 
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
     assert.equal(ledger.getCanonicalSourcePath("rollout-offline"), archivedPath);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === activePath)?.isPresent, false);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === archivedPath)?.canonicalStatus, "canonical");
@@ -512,7 +545,7 @@ test("an interrupted parser revision rebuild keeps the old revision and retries"
   await client.close();
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "4");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
   } finally {
     ledger.close();
   }

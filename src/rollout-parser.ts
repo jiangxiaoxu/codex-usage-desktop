@@ -50,6 +50,8 @@ export interface RolloutParseResult {
 
 export type RolloutForkReplayState =
   | { readonly status: "inactive" }
+  | { readonly status: "awaiting_main_live_turn"; readonly forkBoundaryEpochMs: number | null }
+  | { readonly status: "unproven" }
   | { readonly status: "awaiting_task_started" }
   | { readonly status: "awaiting_turn_context"; readonly turnId: string }
   | { readonly status: "awaiting_trigger"; readonly turnId: string; readonly model: string | null }
@@ -193,10 +195,39 @@ function metadataFrom(payload: RolloutJsonObject | null, fallbackRolloutId: stri
   };
 }
 
-function forkReplayFrom(payload: RolloutJsonObject): RolloutForkReplayState {
-  return nonEmptyString(payload.forked_from_id) === null
-    ? { status: "inactive" }
-    : { status: "awaiting_task_started" };
+const UUID_V7_PATTERN = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function uuidV7EpochMs(value: unknown): number | null {
+  const id = nonEmptyString(value);
+  if (id === null) return null;
+  const match = UUID_V7_PATTERN.exec(id);
+  if (match === null) return null;
+  const epochMs = Number.parseInt(`${match[1]}${match[2]}`, 16);
+  return Number.isSafeInteger(epochMs) ? epochMs : null;
+}
+
+function forkReplayFrom(payload: RolloutJsonObject, metadata: RolloutMetadata, timestamp: unknown): RolloutForkReplayState {
+  if (nonEmptyString(payload.forked_from_id) === null) return { status: "inactive" };
+  if (metadata.threadType === "subagent") return { status: "awaiting_task_started" };
+  if (metadata.threadType !== "main") return { status: "unproven" };
+  const forkBoundaryEpochMs = validTimestamp(timestamp)
+    ? Date.parse(timestamp)
+    : uuidV7EpochMs(metadata.rolloutId);
+  return { status: "awaiting_main_live_turn", forkBoundaryEpochMs };
+}
+
+function isLiveMainForkTurn(payload: RolloutJsonObject, forkBoundaryEpochMs: number | null): boolean {
+  if (forkBoundaryEpochMs === null) return false;
+  const startedAtEpochSeconds = nonNegativeSafeInteger(payload.started_at);
+  const turnEpochMs = uuidV7EpochMs(payload.turn_id);
+  if (startedAtEpochSeconds === null) return turnEpochMs !== null && turnEpochMs > forkBoundaryEpochMs;
+  const forkBoundaryEpochSeconds = Math.floor(forkBoundaryEpochMs / 1_000);
+  if (startedAtEpochSeconds === forkBoundaryEpochSeconds) {
+    return turnEpochMs !== null && turnEpochMs > forkBoundaryEpochMs;
+  }
+  const liveByStartedAt = startedAtEpochSeconds > forkBoundaryEpochSeconds;
+  if (turnEpochMs !== null && (turnEpochMs > forkBoundaryEpochMs) !== liveByStartedAt) return false;
+  return liveByStartedAt;
 }
 
 function emptyDiagnostics(): MutableDiagnostics {
@@ -274,7 +305,7 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
       metadataPayload = payload;
       metadataDiscovered = true;
       metadata = metadataFrom(metadataPayload, fallbackRolloutId);
-      forkReplay = forkReplayFrom(payload);
+      forkReplay = forkReplayFrom(payload, metadata, event.timestamp);
       continue;
     }
     if (event.type === "turn_context" && payload !== null) {
@@ -323,7 +354,12 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
     }
     if (payload.type === "task_started") {
       const turnId = nonEmptyString(payload.turn_id);
-      if (forkReplay.status !== "inactive") {
+      if (forkReplay.status === "awaiting_main_live_turn") {
+        if (!isLiveMainForkTurn(payload, forkReplay.forkBoundaryEpochMs)) continue;
+        forkReplay = { status: "inactive" };
+      } else if (forkReplay.status === "unproven") {
+        continue;
+      } else if (forkReplay.status !== "inactive") {
         if (turnId !== null) forkReplay = { status: "awaiting_turn_context", turnId };
         continue;
       }

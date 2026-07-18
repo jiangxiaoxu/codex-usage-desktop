@@ -18,7 +18,7 @@ Current test sources cover these boundaries:
 | Test source | Focus |
 | --- | --- |
 | `usage-core.test.ts` | filtering, grouping, model category, observed role, cost components and CSV output |
-| `rollout-parser.test.ts` | JSONL parsing, stable partial lines, token validation, adjacent complete cumulative snapshot deduplication and fork replay exclusion |
+| `rollout-parser.test.ts` | JSONL parsing, stable partial lines, token validation, adjacent complete cumulative snapshot deduplication, manual main-thread fork replay exclusion and subagent fork replay exclusion |
 | `collector-worker.test.ts` | reconciliation, active/archive canonical promotion, incremental ingestion, parser revision rebuild, watcher behavior and diagnostics |
 | `usage-store.test.ts` | schema, transactional event/source operations, canonical source state, diagnostics and collector state |
 | `write-boundary.test.ts` | source output boundary and resolved-path protection |

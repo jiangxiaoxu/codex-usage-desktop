@@ -52,7 +52,7 @@ Each rollout has one canonical source in SQLite. Active and archived copies can 
 
 `rollout-parser.ts` accepts only newline-terminated JSONL records. A trailing partial line is deliberately deferred until it becomes complete. It derives rollout metadata from `session_meta`, resolves models from `turn_context`, `thread_settings_applied` and `task_started`, and extracts `token_count` deltas from `last_token_usage`.
 
-The parser drops invalid token relationships, invalid timestamps, zero-breakdown snapshots and only adjacent complete cumulative snapshots. `reasoning_output_tokens` must not exceed `output_tokens`, and `cached_input_tokens` must not exceed `input_tokens`. Forked subagent replay is skipped until the addressed child turn has been identified, so copied historical tokens are not double counted.
+The parser drops invalid token relationships, invalid timestamps, zero-breakdown snapshots and only adjacent complete cumulative snapshots. `reasoning_output_tokens` must not exceed `output_tokens`, and `cached_input_tokens` must not exceed `input_tokens`. Forked rollout replay is excluded so copied historical tokens are not double counted. Manual main-thread forks become live when `task_started.started_at` and, when needed, the UUIDv7 turn timestamp prove that the task began after the fork boundary. Subagent forks retain the addressed-child handshake proof.
 
 `UsageEvent` is the normalized unit: timestamp, rollout and conversation identity, thread classification, agent metadata, model, input, cache input, output and reasoning output. `usage-core.ts` applies filters, facet calculation, grouping and cost aggregation after SQLite returns the time-scoped events.
 

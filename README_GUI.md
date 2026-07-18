@@ -28,7 +28,7 @@ Features:
 - Token and cost summaries by model and role; price shares are labeled explicitly, and all UI USD values use one decimal place. Usage-event counts are not exposed as user-facing metrics.
 - Standard API token-cost estimate that always uses base rates for Codex subscription usage and never applies a long-context multiplier; non-GPT-5.6/5.5/5.4 models are grouped as zero-cost Others.
 - Exact `source_model=unknown` values are isolated as Unknown attribution and reported as unpriced tokens instead of zero-cost Others.
-- Forked subagent rollout replay is excluded; only the addressed child turn and its later usage are accounted.
+- Forked rollout replay is excluded. Manual main-thread forks start accounting at the first post-fork task, while subagent forks start at the addressed child turn.
 - CSV export of the currently filtered event snapshot.
 - Automatic GitHub Release checks on startup and every four hours, with a manual retry button and a user-initiated download-page link for newer versions.
 

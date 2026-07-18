@@ -15,8 +15,12 @@ function token(
   return line("event_msg", { type: "token_count", info: { last_token_usage: tuple(last), total_token_usage: tuple(total) } }, timestamp);
 }
 
-function taskStarted(turnId: string): string {
-  return line("event_msg", { type: "task_started", turn_id: turnId });
+function taskStarted(turnId: string, startedAtEpochSeconds?: number): string {
+  return line("event_msg", {
+    type: "task_started",
+    turn_id: turnId,
+    ...(startedAtEpochSeconds === undefined ? {} : { started_at: startedAtEpochSeconds }),
+  });
 }
 
 function threadSettings(model: string): string {
@@ -33,6 +37,11 @@ function triggeringAgentMessage(recipient: string, turnId?: string): string {
 
 function jsonl(...lines: readonly string[]): string {
   return `${lines.join("\n")}\n`;
+}
+
+function uuidV7At(timestamp: string): string {
+  const epochHex = Date.parse(timestamp).toString(16).padStart(12, "0");
+  return `${epochHex.slice(0, 8)}-${epochHex.slice(8)}-7000-8000-000000000000`;
 }
 
 test("parses main metadata and keeps conversation and rollout identifiers separate", () => {
@@ -147,6 +156,116 @@ test("skips fork replay until the addressed child turn is proven live", () => {
   assert.deepEqual(result.events.map((event) => [event.tokenEventOrdinal, event.turnId, event.model, event.inputTokens]), [
     [0, "child-turn", "gpt-child", 7],
   ]);
+});
+
+test("skips manual main fork replay and accounts usage from the first post-fork task", () => {
+  const forkTimestamp = "2026-07-15T01:02:30.500Z";
+  const result = parseRollout(jsonl(
+    line("session_meta", {
+      session_id: "child",
+      id: "child",
+      forked_from_id: "parent",
+      thread_source: "user",
+    }, forkTimestamp),
+    taskStarted("replayed-turn", Date.parse("2026-07-15T01:01:00.000Z") / 1_000),
+    line("turn_context", { turn_id: "replayed-turn", model: "gpt-parent" }),
+    token([40, 10, 6, 2, 46], [40, 10, 6, 2, 46]),
+    line("event_msg", { type: "task_complete", turn_id: "replayed-turn" }),
+    threadSettings("gpt-child"),
+    taskStarted("live-turn", Date.parse("2026-07-15T01:03:00.000Z") / 1_000),
+    line("turn_context", { turn_id: "live-turn", model: "gpt-child" }),
+    token([7, 2, 3, 1, 10], [47, 12, 9, 3, 56]),
+  ), "fallback");
+
+  assert.equal(result.metadata.threadType, "main");
+  assert.deepEqual(result.events.map((event) => [event.tokenEventOrdinal, event.turnId, event.model, event.inputTokens]), [
+    [0, "live-turn", "gpt-child", 7],
+  ]);
+});
+
+test("carries manual main fork replay state across incremental chunks", () => {
+  const forkTimestamp = "2026-07-15T01:02:30.500Z";
+  const first = parseRolloutChunk(jsonl(
+    line("session_meta", {
+      id: "child",
+      forked_from_id: "parent",
+      thread_source: "user",
+    }, forkTimestamp),
+    taskStarted("replayed-turn", Date.parse("2026-07-15T01:01:00.000Z") / 1_000),
+    token([20, 5, 4, 1, 24], [20, 5, 4, 1, 24]),
+  ), "fallback");
+  assert.equal(first.events.length, 0);
+  assert.deepEqual(first.state.forkReplay, {
+    status: "awaiting_main_live_turn",
+    forkBoundaryEpochMs: Date.parse(forkTimestamp),
+  });
+
+  const restoredState = JSON.parse(JSON.stringify(first.state)) as RolloutParserState;
+  const second = parseRolloutChunk(jsonl(
+    threadSettings("gpt-child"),
+    taskStarted("live-turn", Date.parse("2026-07-15T01:03:00.000Z") / 1_000),
+    line("turn_context", { turn_id: "live-turn", model: "gpt-child" }),
+    token([6, 2, 2, 1, 8], [26, 7, 6, 2, 32]),
+  ), "fallback", restoredState);
+
+  assert.deepEqual(second.events.map((event) => [event.tokenEventOrdinal, event.turnId, event.model]), [
+    [0, "live-turn", "gpt-child"],
+  ]);
+  assert.deepEqual(second.state.forkReplay, { status: "inactive" });
+});
+
+test("uses UUIDv7 time to resolve main fork tasks started in the boundary second", () => {
+  const forkTimestamp = "2026-07-15T01:02:30.500Z";
+  const boundarySecond = Math.floor(Date.parse(forkTimestamp) / 1_000);
+  const result = parseRollout(jsonl(
+    line("session_meta", {
+      id: uuidV7At(forkTimestamp),
+      forked_from_id: "parent",
+      thread_source: "user",
+    }, forkTimestamp),
+    taskStarted(uuidV7At("2026-07-15T01:02:30.100Z"), boundarySecond),
+    token([20, 5, 4, 1, 24], [20, 5, 4, 1, 24]),
+    taskStarted(uuidV7At(forkTimestamp), boundarySecond),
+    token([5, 1, 1, 0, 6], [25, 6, 5, 1, 30]),
+    taskStarted(uuidV7At("2026-07-15T01:02:30.900Z"), boundarySecond),
+    line("turn_context", { turn_id: uuidV7At("2026-07-15T01:02:30.900Z"), model: "gpt-child" }),
+    token([6, 2, 2, 1, 8], [26, 7, 6, 2, 32]),
+  ), "fallback");
+
+  assert.deepEqual(result.events.map((event) => [event.tokenEventOrdinal, event.inputTokens]), [[0, 6]]);
+});
+
+test("keeps forks with unknown thread attribution unproven", () => {
+  const result = parseRolloutChunk(jsonl(
+    line("session_meta", {
+      id: "unknown-fork",
+      forked_from_id: "parent",
+      thread_source: "remote",
+    }, "2026-07-15T01:02:30.500Z"),
+    taskStarted("apparently-live", Date.parse("2026-07-15T01:04:00.000Z") / 1_000),
+    token([6, 2, 2, 1, 8], [6, 2, 2, 1, 8]),
+  ), "fallback");
+
+  assert.equal(result.events.length, 0);
+  assert.deepEqual(result.state.forkReplay, { status: "unproven" });
+});
+
+test("keeps main fork replay closed when task time proofs conflict", () => {
+  const forkTimestamp = "2026-07-15T01:02:30.500Z";
+  const result = parseRollout(jsonl(
+    line("session_meta", {
+      id: uuidV7At(forkTimestamp),
+      forked_from_id: "parent",
+      thread_source: "user",
+    }, forkTimestamp),
+    taskStarted(uuidV7At("2026-07-15T01:02:00.000Z"), Date.parse("2026-07-15T01:03:00.000Z") / 1_000),
+    token([20, 5, 4, 1, 24], [20, 5, 4, 1, 24]),
+    taskStarted(uuidV7At("2026-07-15T01:04:00.000Z"), Date.parse("2026-07-15T01:04:00.000Z") / 1_000),
+    line("turn_context", { turn_id: uuidV7At("2026-07-15T01:04:00.000Z"), model: "gpt-child" }),
+    token([6, 2, 2, 1, 8], [26, 7, 6, 2, 32]),
+  ), "fallback");
+
+  assert.deepEqual(result.events.map((event) => [event.tokenEventOrdinal, event.inputTokens]), [[0, 6]]);
 });
 
 test("uses thread settings as model state across model switches", () => {

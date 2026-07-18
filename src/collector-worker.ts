@@ -15,7 +15,7 @@ if (port === null) throw new Error("Collector worker requires a parent port.");
 const workerPort = port;
 
 const BOUNDARY_WINDOW_BYTES = 64 * 1024;
-const ROLLOUT_PARSER_REVISION = 4;
+const ROLLOUT_PARSER_REVISION = 5;
 const ROLLOUT_PARSER_REVISION_STATE_KEY = "rollout_parser_revision";
 
 // Codex rollout paths are a strict observation-only boundary. Never open them
