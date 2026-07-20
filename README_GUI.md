@@ -17,7 +17,7 @@ The application observes local Codex rollout JSONL files under `%USERPROFILE%\.c
 
 Features:
 
-- Manually started, single-instance tray application; closing the window keeps collection active.
+- A manually started, single-instance tray application; a Windows Startup launch opens directly in the notification area, and closing the dashboard keeps collection active.
 - Watcher-driven append ingestion with a periodic full inventory as a reliability fallback.
 - Permanent SQLite accounting under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
 - Canonical rollout promotion across active and archived paths without duplicate accounting or ledger rollback.

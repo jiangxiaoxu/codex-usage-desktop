@@ -52,9 +52,11 @@
       SetShellVarContext current
     ${EndIf}
     ${If} $StartAtLoginEnabled == "1"
-      CreateShortCut "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Codex Usage Desktop.lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+      CreateShortCut "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Codex Usage Desktop.lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "--startup"
     ${ElseIf} $StartAtLoginEnabled == "0"
       Delete "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Codex Usage Desktop.lnk"
+    ${ElseIf} ${FileExists} "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Codex Usage Desktop.lnk"
+      CreateShortCut "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Codex Usage Desktop.lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "--startup"
     ${EndIf}
     ${If} $installMode == "all"
       SetShellVarContext all

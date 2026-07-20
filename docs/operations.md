@@ -9,7 +9,7 @@ npm install
 npm start
 ```
 
-Electron enforces a single application instance. The second launch focuses the existing dashboard. Closing the dashboard window hides it and leaves collection resident in the system tray. Use the tray `Exit` command for a clean shutdown. The tray has `Open dashboard`, `Sync now`, collector status and `Exit`.
+Electron enforces a single application instance. A normal second launch focuses the existing dashboard. A Windows Startup launch opens directly in the notification area without showing the dashboard. Closing the dashboard window hides it and leaves collection resident in the system tray. Use the tray `Exit` command for a clean shutdown. The tray has `Open dashboard`, `Sync now`, collector status and `Exit`.
 
 ## Collector schedule
 

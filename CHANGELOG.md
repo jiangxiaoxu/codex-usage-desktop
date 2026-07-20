@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-20
+
+- Changed Windows Startup launches to open directly in the notification area instead of showing the dashboard.
+
 ## [0.2.2] - 2026-07-18
 
 - Fixed manual main-thread fork accounting so replayed ancestor usage is excluded while post-fork usage is collected.

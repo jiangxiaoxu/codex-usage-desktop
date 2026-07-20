@@ -41,7 +41,7 @@ npm install
 npm start
 ```
 
-collector 初始化完成后会显示 dashboard.关闭窗口只会隐藏到 notification area,collector 会继续运行.可通过 tray menu 重新打开 dashboard,立即同步或退出应用.
+手动启动时,collector 初始化完成后会显示 dashboard.使用开机自启动时,应用会直接驻留 notification area 而不弹出 dashboard;可通过 tray menu 重新打开 dashboard,立即同步或退出应用.关闭窗口只会隐藏到 notification area,collector 会继续运行.
 
 ## VBS 启动器
 
@@ -64,7 +64,7 @@ npm run package:portable:restart
 
 `npm run package:portable` 会在 `release/` 生成 Windows Portable executable.package 使用 `dist/` 中的生成文件.应修改 `src/` 后重新构建,不要编辑生成 output.
 
-`npm run package:installer` 会生成 NSIS installer.安装时可选择在 Windows Startup 文件夹创建开机自启动快捷方式;卸载时会终止运行中的应用,删除该快捷方式,并提供删除配置与 usage ledger 的可选项.安装后的 GUI 也提供同一个开机自启动开关.
+`npm run package:installer` 会生成 NSIS installer.安装时可选择在 Windows Startup 文件夹创建开机自启动快捷方式;该方式启动后会直接驻留 notification area.卸载时会终止运行中的应用,删除该快捷方式,并提供删除配置与 usage ledger 的可选项.安装后的 GUI 也提供同一个开机自启动开关.
 
 `npm run migrate:ledger` 会在应用关闭后将旧 portable ledger 从 `release/codex-usage-data/` 迁移到默认 C 盘数据目录.目标已存在时命令会拒绝覆盖.
 

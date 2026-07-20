@@ -7,6 +7,7 @@ import type { CollectorConfig } from "./collector-protocol";
 import { resolveLedgerDirectory } from "./ledger-directory";
 import { updateStatusFromLatestRelease } from "./release-update";
 import { SingleInstanceWindow } from "./single-instance-window";
+import { isStartupLaunch, STARTUP_LAUNCH_ARGUMENT } from "./startup-launch";
 import type { CollectorStatus, FilterSpec, QueryResult, StartupSettings, SyncResult, UpdateStatus } from "./shared";
 import { assertOutsideDirectories } from "./write-boundary";
 
@@ -35,9 +36,10 @@ interface PreparedApplication {
 }
 
 let windowReady: Promise<PreparedApplication> | null = null;
+const launchedAtLogin = isStartupLaunch(process.argv);
 
 const mainWindow = new SingleInstanceWindow(() => {
-  let showOnReady = true;
+  let showOnReady = !launchedAtLogin;
   const window = new BrowserWindow({
     title: `${PRODUCT_NAME} v${app.getVersion()}`,
     width: 1280,
@@ -155,6 +157,7 @@ async function setStartupEnabled(value: unknown): Promise<StartupSettings> {
   if (enabled) {
     const written = shell.writeShortcutLink(shortcutPath, "create", {
       target: process.execPath,
+      args: STARTUP_LAUNCH_ARGUMENT,
       cwd: path.dirname(process.execPath),
       description: PRODUCT_NAME,
     });
@@ -291,6 +294,7 @@ else {
       app.quit();
       return;
     }
+    if (isStartupLaunch(commandLine)) return;
     showWindowWhenReady();
   });
   app.on("activate", showWindowWhenReady);

@@ -31,7 +31,8 @@ Run this matrix against a disposable copy of the packaged application or a devel
 
 | Area | Action | Expected result |
 | --- | --- | --- |
-| Startup | Launch once, then launch again | A single instance remains; the second launch focuses the first |
+| Normal startup | Launch once, then launch again | A single instance remains; the second launch focuses the first |
+| Windows Startup | Exit the application, then launch through the Windows Startup shortcut | The application opens only in the notification area until `Open dashboard` is selected |
 | Tray lifecycle | Close the dashboard, then use tray Open dashboard and Exit | Closing hides the window, collection remains active, Exit stops cleanly |
 | Baseline | Observe the existing dashboard after initial inventory | Initial inventory completes and known file count appears without changing any source |
 | Status and query | Inspect collector status and run an immediate sync, then query a known time range | Status, known file count and query results remain available; no source file is changed |
