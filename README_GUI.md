@@ -22,7 +22,7 @@ Features:
 - Permanent SQLite accounting under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
 - Canonical rollout promotion across active and archived paths without duplicate accounting or ledger rollback.
 - Visible collector health, source conflicts, last inventory, SQLite path, and offline observation gaps.
-- One continuous live range slider with clickable, evenly spaced 1h, 4h, 12h, 1-day, 2-day, 4-day, 7-day, and 14-day anchors. The thumb can stop between anchors for ranges such as 1.5 or 10 days, and custom Singapore-time ranges are collapsed by default and available on demand.
+- One continuous live range slider with clickable, evenly spaced 30-minute, 4h, 12h, 1-day, 2-day, 4-day, 7-day, and 14-day anchors. The thumb can stop between anchors for ranges such as 1.5 or 10 days, and custom Singapore-time ranges are collapsed by default and available on demand.
 - Inline live filtering by model and observed role, with all models and subjects selected by default. Roles come from actual rollout/session thread metadata: the main-thread role is normalized to `root`, while subagents retain each recorded role for independent filtering and aggregation and fall back to `unknown` when missing.
 - Main-thread or subagent filtering and agent path or nickname search.
 - Token and cost summaries by model and role; price shares are labeled explicitly, and all UI USD values use one decimal place. Usage-event counts are not exposed as user-facing metrics.

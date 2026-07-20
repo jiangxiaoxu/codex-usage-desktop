@@ -14,7 +14,7 @@
 - 只读观察 active session 与 archived session.
 - 按 model 和实际 role 汇总 token 和预估费用.
 - 分别展示 input,cached input,output 和 reasoning output token. reasoning output 是 output 的子集,不会重复计费.
-- 支持连续 time range,默认折叠且可展开的自定义 Singapore time range,model,execution subject 和 thread search 的实时筛选.连续滑块以 1h,4h,12h,1天,2天,4天,7天和14天为均匀锚点,可点击锚点或拖动到锚点之间选择 1.5天或10天等范围.
+- 支持连续 time range,默认折叠且可展开的自定义 Singapore time range,model,execution subject 和 thread search 的实时筛选.连续滑块以 30分钟,4h,12h,1天,2天,4天,7天和14天为均匀锚点,可点击锚点或拖动到锚点之间选择 1.5天或10天等范围.
 - role 从实际 rollout/session thread metadata 读取.主线程 role 规范显示为 `root`;subagent 保留实际记录的 role 并可独立筛选和汇总,缺失时显示为 `unknown`.
 - 将当前筛选条件匹配的 usage event 导出为 CSV,保存到用户选择且不位于受保护 Codex 目录内的位置.
 - 估算 GPT-5.4,GPT-5.5,GPT-5.6 的费用.其他 model 归入未计费的 `Others`.所有 Codex subscription usage 始终按基础 token 费率估算,不计入 long-context multiplier.

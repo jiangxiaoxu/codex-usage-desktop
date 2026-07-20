@@ -36,7 +36,7 @@ Run this matrix against a disposable copy of the packaged application or a devel
 | Tray lifecycle | Close the dashboard, then use tray Open dashboard and Exit | Closing hides the window, collection remains active, Exit stops cleanly |
 | Baseline | Observe the existing dashboard after initial inventory | Initial inventory completes and known file count appears without changing any source |
 | Status and query | Inspect collector status and run an immediate sync, then query a known time range | Status, known file count and query results remain available; no source file is changed |
-| Filters | Toggle model and subject selections independently, change quick range and search an agent path | Results update live and one facet does not remove the other facet's available options |
+| Filters | Toggle model and subject selections independently, select the 30-minute anchor, change quick range and search an agent path | Results update live and one facet does not remove the other facet's available options; the shortest continuous range is 30 minutes |
 | Cost | Check an event where output includes reasoning output | Reasoning and other output sum to output cost exactly once |
 | Export | Export a filtered CSV outside `%USERPROFILE%\.codex` | CSV is written with selected event count; a protected destination is rejected |
 | Data safety | Monitor source-directory metadata while collecting | No source lock, write, rename, deletion, truncation or repair occurs |

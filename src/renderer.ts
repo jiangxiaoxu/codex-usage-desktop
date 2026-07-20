@@ -62,7 +62,7 @@ const byId = <T extends HTMLElement>(id: string): T => {
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const integer = new Intl.NumberFormat("en-US");
-const RANGE_ANCHOR_HOURS = [1, 4, 12, 24, 48, 96, 168, 336] as const;
+const RANGE_ANCHOR_HOURS = [0.5, 4, 12, 24, 48, 96, 168, 336] as const;
 const RANGE_UNITS_PER_SEGMENT = 504;
 const RANGE_MAX = (RANGE_ANCHOR_HOURS.length - 1) * RANGE_UNITS_PER_SEGMENT;
 const ROLLING_REFRESH_INTERVAL_MS = 60_000;
@@ -221,6 +221,7 @@ function sliderValueForHours(hours: number): number {
 }
 
 function formatRangeHours(hours: number): string {
+  if (hours < 1) return `${rangeNumber.format(hours * 60)}分钟`;
   return hours < 24 ? `${rangeNumber.format(hours)}小时` : `${rangeNumber.format(hours / 24)}天`;
 }
 

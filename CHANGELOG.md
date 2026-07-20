@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-20
+
+- Changed the shortest continuous time-range anchor from one hour to 30 minutes.
+
 ## [0.2.3] - 2026-07-20
 
 - Changed Windows Startup launches to open directly in the notification area instead of showing the dashboard.
