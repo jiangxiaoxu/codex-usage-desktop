@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-desktop",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "Local Codex token and API cost analyzer",
   "author": "jiangxiaoxu",
@@ -38,6 +38,14 @@
       "!dist/**/*.test.js.map",
       "package.json"
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "jiangxiaoxu",
+        "repo": "codex-usage-desktop",
+        "releaseType": "release"
+      }
+    ],
     "win": {
       "target": [
         "portable"
@@ -50,10 +58,12 @@
         "zh_CN"
       ],
       "language": "2052",
+      "artifactName": "${name}-setup-${version}-${arch}.${ext}",
       "include": "build/custom-installer.nsh"
     }
   },
   "dependencies": {
-    "chokidar": "^4.0.3"
+    "chokidar": "^4.0.3",
+    "electron-updater": "^6.8.9"
   }
 }

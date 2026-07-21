@@ -56,11 +56,62 @@ export interface StartupSettings {
   readonly enabled: boolean;
 }
 
-export interface UpdateStatus {
+export interface UnsupportedUpdateStatus {
   readonly currentVersion: string;
-  readonly latestVersion: string | null;
-  readonly available: boolean;
+  readonly phase: "unsupported";
 }
+
+export interface IdleUpdateStatus {
+  readonly currentVersion: string;
+  readonly phase: "idle";
+}
+
+export interface CheckingUpdateStatus {
+  readonly currentVersion: string;
+  readonly phase: "checking";
+}
+
+export interface AvailableUpdateStatus {
+  readonly currentVersion: string;
+  readonly phase: "available";
+  readonly latestVersion: string;
+}
+
+export interface DownloadingUpdateStatus {
+  readonly currentVersion: string;
+  readonly phase: "downloading";
+  readonly latestVersion: string;
+  readonly downloadPercent: number;
+}
+
+export interface DownloadedUpdateStatus {
+  readonly currentVersion: string;
+  readonly phase: "downloaded";
+  readonly latestVersion: string;
+}
+
+export interface InstallingUpdateStatus {
+  readonly currentVersion: string;
+  readonly phase: "installing";
+  readonly latestVersion: string;
+}
+
+export interface CheckUpdateErrorStatus {
+  readonly currentVersion: string;
+  readonly phase: "error";
+  readonly operation: "check";
+  readonly error: string;
+}
+
+export interface DownloadOrInstallUpdateErrorStatus {
+  readonly currentVersion: string;
+  readonly phase: "error";
+  readonly operation: "download" | "install";
+  readonly latestVersion: string;
+  readonly error: string;
+}
+
+export type UpdateStatus = UnsupportedUpdateStatus | IdleUpdateStatus | CheckingUpdateStatus | AvailableUpdateStatus | DownloadingUpdateStatus | DownloadedUpdateStatus | InstallingUpdateStatus | CheckUpdateErrorStatus | DownloadOrInstallUpdateErrorStatus;
 
 export interface ScanDiagnostics {
   readonly filesScanned: number;
@@ -151,7 +202,7 @@ export interface UsageApi {
   getStartupSettings(): Promise<StartupSettings>;
   setStartupEnabled(enabled: boolean): Promise<StartupSettings>;
   checkForUpdates(): Promise<UpdateStatus>;
-  openLatestRelease(): Promise<void>;
+  downloadAndInstallUpdate(): Promise<void>;
   onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
   onUsageUpdated(listener: (status: CollectorStatus) => void): () => void;
 }

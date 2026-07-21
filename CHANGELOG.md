@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-21
+
+- Changed NSIS-installed Windows updates to download, verify, silently install, and restart from the dashboard instead of opening a GitHub Release page.
+
 ## [0.2.4] - 2026-07-20
 
 - Changed the shortest continuous time-range anchor from one hour to 30 minutes.

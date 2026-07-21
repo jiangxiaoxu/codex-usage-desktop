@@ -2,7 +2,7 @@
 
 ## Scope
 
-Codex Usage Desktop is a local Electron application. It observes Codex rollout JSONL files below `%USERPROFILE%\.codex`, persists normalized usage records to its own SQLite ledger, and presents token and estimated API cost views. It does not upload observed data. Its only network client requests this project's public GitHub Releases API at startup and every four hours while running to check for a newer version; a download page is opened only after the user clicks the update action.
+Codex Usage Desktop is a local Electron application. It observes Codex rollout JSONL files below `%USERPROFILE%\.codex`, persists normalized usage records to its own SQLite ledger, and presents token and estimated API cost views. It does not upload observed data. Its only network client is the Main-process updater for NSIS-installed Windows builds. It checks this project's public GitHub Release metadata at startup and every four hours, then downloads a SHA-512-verified installer only after the user requests an update. Portable and development builds do not run the updater.
 
 ## Process and data flow
 
@@ -25,6 +25,7 @@ Codex sessions / archived_sessions JSONL --- read-only stat, readFile, open("r")
 - `src/renderer.html`, `src/renderer.ts` and `src/styles.css` implement the local dashboard. Renderer state is limited to UI filters and query results; it does not open source files or SQLite directly.
 - `src/collector-client.ts` starts `collector-worker.js` as a Node `Worker`, correlates request IDs, applies a 10 minute timeout to initialization/reconciliation and a 60 second timeout to other requests, and forwards `usage-updated` events to `main.ts`. It does not own the filesystem watcher.
 - `src/collector-worker.ts` serializes all worker operations through one promise queue. It owns source discovery, watch-triggered reconciliation, parser revision rebuild, SQLite access and CSV writing.
+- `src/update-manager.ts` owns the typed update state machine. `src/electron-update-client.ts` adapts `electron-updater` only in Main. Before installer launch, Main closes the collector, and updater cache plus staging state are validated outside protected Codex directories.
 
 ## IPC contract
 
@@ -36,8 +37,9 @@ Codex sessions / archived_sessions JSONL --- read-only stat, readFile, open("r")
 | `usage:query` | `FilterSpec` | `QueryResult` | `query` |
 | `usage:status` | none | `CollectorStatus` | `getStatus` |
 | `usage:export` | `FilterSpec` | saved path and count | `exportCsv` |
-| `updates:check` | none | `UpdateStatus` | requests the fixed GitHub latest-release endpoint in main |
-| `updates:open-latest-release` | none | none | opens the fixed GitHub Releases page in the system browser |
+| `updates:check` | none | `UpdateStatus` | asks the Main-process NSIS updater to check GitHub release metadata |
+| `updates:download-and-install` | none | none | downloads a verified installer, stops the collector, silently installs, and restarts |
+| `updates:status` | main-to-renderer event | `UpdateStatus` | typed update state and download progress |
 | `usage:updated` | main-to-renderer event | `CollectorStatus` | forwarded worker event |
 
 The worker protocol in `src/collector-protocol.ts` additionally contains `initialize` and `shutdown`; these are private to main/worker coordination. `FilterSpec` uses a half-open UTC interval `[startUtc, endUtc)`. `models: null` and `subjects: null` mean all available categories, while an empty array means none.

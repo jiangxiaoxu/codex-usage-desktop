@@ -8,10 +8,11 @@ Run the following from the repository root:
 npm run typecheck
 npm test
 npm run package:portable
+npm run package:installer
 git diff --check
 ```
 
-`typecheck` verifies the TypeScript project with no emission. `test` first builds `dist`, then runs Node's test runner over `dist/*.test.js`. `package:portable` rebuilds the renderer static assets and produces the Windows Portable package. `git diff --check` detects whitespace errors in modified tracked files.
+`typecheck` verifies the TypeScript project with no emission. `test` first builds `dist`, then runs Node's test runner over `dist/*.test.js`. `package:portable` rebuilds the renderer static assets and produces the Windows Portable package. `package:installer` verifies the NSIS installer, `latest.yml`, installer blockmap, and packaged updater provider configuration. `git diff --check` detects whitespace errors in modified tracked files.
 
 Current test sources cover these boundaries:
 
@@ -22,6 +23,7 @@ Current test sources cover these boundaries:
 | `collector-worker.test.ts` | reconciliation, active/archive canonical promotion, incremental ingestion, parser revision rebuild, watcher behavior and diagnostics |
 | `usage-store.test.ts` | schema, transactional event/source operations, canonical source state, diagnostics and collector state |
 | `write-boundary.test.ts` | source output boundary and resolved-path protection |
+| `update-manager.test.ts` | typed update states, manual download, progress, retry, collector shutdown ordering, and unsupported packages |
 
 Test fixtures that append, move, delete or edit rollout and agent configuration files must use temporary directories and test databases. Do not point automated tests at the user's real `%USERPROFILE%\.codex` directories or production `usage.sqlite`.
 
@@ -40,6 +42,7 @@ Run this matrix against a disposable copy of the packaged application or a devel
 | Cost | Check an event where output includes reasoning output | Reasoning and other output sum to output cost exactly once |
 | Export | Export a filtered CSV outside `%USERPROFILE%\.codex` | CSV is written with selected event count; a protected destination is rejected |
 | Data safety | Monitor source-directory metadata while collecting | No source lock, write, rename, deletion, truncation or repair occurs |
+| Automatic update | Use an installed disposable copy with a newer Release containing matching `latest.yml`, installer, and blockmap; click `下载并安装` | Progress appears, collector closes before installer launch, installer preserves its existing directory and Startup shortcut setting, and the new version starts automatically |
 | Responsive UI | Inspect at minimum window size, default size, wide landscape, short height and high-DPI scaling | Controls reflow without clipping, dashboard scrolls normally and agent table keeps its own scroll region |
 
 ## Manual UI checks
@@ -58,4 +61,5 @@ Before replacing a user-facing executable:
 2. Launch the newly packaged executable with a non-production or backed-up application ledger.
 3. Verify startup, tray hide/open/exit, an immediate sync, a filtered query and one CSV export without modifying any Codex source.
 4. Confirm the data directory resolves outside the three protected Codex source directories.
-5. Record the executable SHA-256 and keep the prior executable until the new build completes the smoke matrix.
+5. Confirm `latest.yml`, `codex-usage-desktop-setup-<version>-x64.exe`, and its `.blockmap` came from the same build, then upload all three to one published GitHub Release.
+6. Record the executable SHA-256 and keep the prior executable until the new build completes the smoke matrix.

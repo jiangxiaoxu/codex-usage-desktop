@@ -49,8 +49,14 @@ interface ObservationGap { readonly startUtc: string; readonly endUtc: string; }
 interface CollectorStatus { readonly phase: CollectorPhase; readonly databasePath: string; readonly runStartedUtc: string; readonly lastSuccessfulInventoryUtc: string | null; readonly lastHeartbeatUtc: string | null; readonly filesKnown: number; readonly pendingFiles: number; readonly changedFilesLastSync: number; readonly conflicts: number; readonly observationCoverage: ObservationCoverage; readonly observationGap: ObservationGap | null; readonly message: string; }
 interface SyncResult { readonly status: CollectorStatus; readonly changed: boolean; }
 interface StartupSettings { readonly supported: boolean; readonly enabled: boolean; }
-interface UpdateStatus { readonly currentVersion: string; readonly latestVersion: string | null; readonly available: boolean; }
-interface UsageApi { syncNow(): Promise<SyncResult>; query(filter: FilterSpec): Promise<QueryResult>; exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>; getCollectorStatus(): Promise<CollectorStatus>; getStartupSettings(): Promise<StartupSettings>; setStartupEnabled(enabled: boolean): Promise<StartupSettings>; checkForUpdates(): Promise<UpdateStatus>; openLatestRelease(): Promise<void>; onUpdateStatus(listener: (status: UpdateStatus) => void): () => void; onUsageUpdated(listener: (status: CollectorStatus) => void): () => void; }
+type UpdateStatus =
+  | { readonly currentVersion: string; readonly phase: "unsupported" | "idle" | "checking"; }
+  | { readonly currentVersion: string; readonly phase: "available"; readonly latestVersion: string; }
+  | { readonly currentVersion: string; readonly phase: "downloading"; readonly latestVersion: string; readonly downloadPercent: number; }
+  | { readonly currentVersion: string; readonly phase: "downloaded" | "installing"; readonly latestVersion: string; }
+  | { readonly currentVersion: string; readonly phase: "error"; readonly operation: "check"; readonly error: string; }
+  | { readonly currentVersion: string; readonly phase: "error"; readonly operation: "download" | "install"; readonly latestVersion: string; readonly error: string; };
+interface UsageApi { syncNow(): Promise<SyncResult>; query(filter: FilterSpec): Promise<QueryResult>; exportCsv(filter: FilterSpec): Promise<{ readonly path: string | null; readonly count: number }>; getCollectorStatus(): Promise<CollectorStatus>; getStartupSettings(): Promise<StartupSettings>; setStartupEnabled(enabled: boolean): Promise<StartupSettings>; checkForUpdates(): Promise<UpdateStatus>; downloadAndInstallUpdate(): Promise<void>; onUpdateStatus(listener: (status: UpdateStatus) => void): () => void; onUsageUpdated(listener: (status: CollectorStatus) => void): () => void; }
 
 const apiWindow = window as unknown as { readonly usageApi: UsageApi };
 
@@ -571,14 +577,35 @@ byId<HTMLButtonElement>("export-button").addEventListener("click", () => void ex
 
 function renderUpdateStatus(status: UpdateStatus | null): void {
   const button = byId<HTMLButtonElement>("update-button");
-  button.disabled = false;
-  if (status?.available && status.latestVersion !== null) {
-    button.textContent = `下载 v${status.latestVersion}`;
-    button.setAttribute("aria-label", `发现 v${status.latestVersion},打开下载页面`);
-    return;
+  if (status?.phase === "unsupported") {
+    button.disabled = true;
+    button.textContent = "仅安装版支持更新";
+    button.setAttribute("aria-label", "自动更新仅适用于通过安装程序安装的 Windows 应用");
+  } else if (status?.phase === "checking") {
+    button.disabled = true;
+    button.textContent = "正在检查";
+    button.setAttribute("aria-label", "正在检查更新");
+  } else if (status?.phase === "downloading") {
+    button.disabled = true;
+    button.textContent = `下载中 ${status.downloadPercent}%`;
+    button.setAttribute("aria-label", `正在下载 v${status.latestVersion}`);
+  } else if (status?.phase === "downloaded" || status?.phase === "installing") {
+    button.disabled = true;
+    button.textContent = "正在安装并重启";
+    button.setAttribute("aria-label", "更新已下载,正在静默安装并重启应用");
+  } else if (status?.phase === "available") {
+    button.disabled = false;
+    button.textContent = `下载并安装 v${status.latestVersion}`;
+    button.setAttribute("aria-label", `下载并静默安装 v${status.latestVersion}`);
+  } else if (status?.phase === "error" && status.operation !== "check") {
+    button.disabled = false;
+    button.textContent = `重试下载并安装 v${status.latestVersion}`;
+    button.setAttribute("aria-label", `重试下载并静默安装 v${status.latestVersion}`);
+  } else {
+    button.disabled = false;
+    button.textContent = "检查更新";
+    button.setAttribute("aria-label", "检查 GitHub Release 更新");
   }
-  button.textContent = "检查更新";
-  button.setAttribute("aria-label", "检查 GitHub Release 更新");
 }
 
 async function checkForUpdates(showResult: boolean): Promise<void> {
@@ -589,18 +616,27 @@ async function checkForUpdates(showResult: boolean): Promise<void> {
     const status = await apiWindow.usageApi.checkForUpdates();
     latestUpdateStatus = status;
     renderUpdateStatus(status);
-    if (status.available && status.latestVersion !== null) setStatus(`发现新版本 v${status.latestVersion},可点击“下载 v${status.latestVersion}”前往 GitHub Release。`);
-    else if (showResult) setStatus("当前已是最新版本。");
+    if (status.phase === "unsupported") {
+      if (showResult) setStatus("自动更新仅适用于通过安装程序安装的 Windows 应用.");
+    } else if (status.phase === "available") setStatus(`发现新版本 v${status.latestVersion},可点击下载并安装 v${status.latestVersion}开始更新.`);
+    else if (showResult) setStatus("当前已是最新版本.");
   } catch (error) {
-    latestUpdateStatus = null;
-    renderUpdateStatus(null);
-    if (showResult) setStatus(error instanceof Error ? `检查更新失败: ${error.message}` : "检查更新失败。");
+    if (showResult) setStatus(error instanceof Error ? `检查更新失败: ${error.message}` : "检查更新失败.");
+  }
+}
+
+async function downloadAndInstallUpdate(): Promise<void> {
+  try {
+    await apiWindow.usageApi.downloadAndInstallUpdate();
+  } catch (error) {
+    setStatus(error instanceof Error ? `更新失败: ${error.message}` : "更新失败.");
   }
 }
 
 byId<HTMLButtonElement>("update-button").addEventListener("click", () => {
-  if (latestUpdateStatus?.available) {
-    void apiWindow.usageApi.openLatestRelease().catch((error: unknown) => setStatus(error instanceof Error ? error.message : "无法打开下载页面。"));
+  if (latestUpdateStatus?.phase === "unsupported") return;
+  if (latestUpdateStatus?.phase === "available" || (latestUpdateStatus?.phase === "error" && latestUpdateStatus.operation !== "check")) {
+    void downloadAndInstallUpdate();
     return;
   }
   void checkForUpdates(true);
@@ -609,7 +645,10 @@ byId<HTMLButtonElement>("update-button").addEventListener("click", () => {
 apiWindow.usageApi.onUpdateStatus((status) => {
   latestUpdateStatus = status;
   renderUpdateStatus(status);
-  if (status.available && status.latestVersion !== null) setStatus(`发现新版本 v${status.latestVersion},可点击“下载 v${status.latestVersion}”前往 GitHub Release。`);
+  if (status.phase === "available") setStatus(`发现新版本 v${status.latestVersion},可点击下载并安装 v${status.latestVersion}开始更新.`);
+  else if (status.phase === "downloaded") setStatus("更新下载完成,正在安装并重启应用.");
+  else if (status.phase === "installing") setStatus("正在静默安装更新,应用将自动重启.");
+  else if (status.phase === "error") setStatus(`更新失败: ${status.error}`);
 });
 
 function renderStartupSettings(settings: StartupSettings): void {

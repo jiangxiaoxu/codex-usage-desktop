@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-The application observes local Codex rollout JSONL files under `%USERPROFILE%\.codex` and does not upload data. On startup and every four hours while it remains running, it sends a version-only request to this project's public GitHub Releases API; if a newer release exists, the user can open its download page. Codex source paths are never opened for writing, locked, renamed, deleted, truncated, or repaired. SQLite locking is limited to the application's own `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` ledger.
+The application observes local Codex rollout JSONL files under `%USERPROFILE%\.codex` and does not upload data. An NSIS-installed Windows application checks this project's public GitHub Releases at startup and every four hours while it remains running. When a newer version is available, one click downloads, verifies, silently installs, and restarts the application after the collector stops cleanly. Portable and development builds do not run automatic updates. Codex source paths are never opened for writing, locked, renamed, deleted, truncated, or repaired. SQLite locking is limited to the application's own `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` ledger.
 
 Features:
 
@@ -30,7 +30,7 @@ Features:
 - Exact `source_model=unknown` values are isolated as Unknown attribution and reported as unpriced tokens instead of zero-cost Others.
 - Forked rollout replay is excluded. Manual main-thread forks start accounting at the first post-fork task, while subagent forks start at the addressed child turn.
 - CSV export of the currently filtered event snapshot.
-- Automatic GitHub Release checks on startup and every four hours, with a manual retry button and a user-initiated download-page link for newer versions.
+- Automatic GitHub Release checks for NSIS-installed applications, with a manual retry button, download progress, checksum verification, silent installation, and automatic restart for newer versions.
 
 Validation:
 

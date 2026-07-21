@@ -1,6 +1,6 @@
 # Codex Usage Desktop
 
-`Codex Usage Desktop` 是一个本地 Windows Electron 应用,用于审计本地 Codex token 用量并估算标准 API token 费用.它持续观察 `%USERPROFILE%\\.codex` 下的 rollout JSONL.后台自动持久化仅写入应用自己的 SQLite ledger;只有用户明确执行 export 时才写入所选 CSV 路径.应用不会上传源数据.启动时及运行期间每 4 小时会请求 GitHub Releases API 检查公开的新版本;发现更新后仅在用户点击下载按钮时打开 Release 网页.
+`Codex Usage Desktop` 是一个本地 Windows Electron 应用,用于审计本地 Codex token 用量并估算标准 API token 费用.它持续观察 `%USERPROFILE%\\.codex` 下的 rollout JSONL.后台自动持久化仅写入应用自己的 SQLite ledger;只有用户明确执行 export 时才写入所选 CSV 路径.应用不会上传源数据.通过 NSIS installer 安装的 Windows 应用会在启动时及运行期间每 4 小时检查 GitHub Release;发现更新后,用户点击一次即可下载,校验,静默安装并自动重启. Portable 和 development 版本不执行自动更新.
 
 ## 界面预览
 
@@ -64,7 +64,11 @@ npm run package:portable:restart
 
 `npm run package:portable` 会在 `release/` 生成 Windows Portable executable.package 使用 `dist/` 中的生成文件.应修改 `src/` 后重新构建,不要编辑生成 output.
 
-`npm run package:installer` 会生成 NSIS installer.安装时可选择在 Windows Startup 文件夹创建开机自启动快捷方式;该方式启动后会直接驻留 notification area.卸载时会终止运行中的应用,删除该快捷方式,并提供删除配置与 usage ledger 的可选项.安装后的 GUI 也提供同一个开机自启动开关.
+`npm run package:installer` 会生成 NSIS installer,`latest.yml` 和 installer blockmap.安装时可选择在 Windows Startup 文件夹创建开机自启动快捷方式;该方式启动后会直接驻留 notification area.卸载时会终止运行中的应用,删除该快捷方式,并提供删除配置与 usage ledger 的可选项.安装后的 GUI 也提供同一个开机自启动开关.
+
+自动更新仅支持通过 NSIS installer 安装的 Windows 应用,并沿用已有安装目录和权限范围.下载完成后,应用会先停止 collector,再以静默模式运行 installer 并重启.发布新版本时,必须从同一次 `npm run package:installer` 构建上传 `latest.yml`,`codex-usage-desktop-setup-<version>-x64.exe` 及其 `.blockmap` 到同一个 published GitHub Release.应用会使用 `latest.yml` 中的 SHA-512 校验下载内容.当前构建未配置代码签名,Windows 可能额外显示 SmartScreen 或未知发布者提示;配置受信任的 Authenticode 签名后才能消除这类提示.
+
+已发布且不含该 updater 的旧版不能自行升级到首个支持自动更新的版本.这一次需要用户手动安装新的 NSIS installer;之后的 NSIS 版本可使用应用内更新.
 
 `npm run migrate:ledger` 会在应用关闭后将旧 portable ledger 从 `release/codex-usage-data/` 迁移到默认 C 盘数据目录.目标已存在时命令会拒绝覆盖.
 

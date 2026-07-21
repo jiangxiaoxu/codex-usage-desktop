@@ -9,7 +9,7 @@ const usageApi: UsageApi = {
   getStartupSettings: (): Promise<StartupSettings> => ipcRenderer.invoke("settings:get-startup"),
   setStartupEnabled: (enabled: boolean): Promise<StartupSettings> => ipcRenderer.invoke("settings:set-startup", enabled),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke("updates:check"),
-  openLatestRelease: (): Promise<void> => ipcRenderer.invoke("updates:open-latest-release"),
+  downloadAndInstallUpdate: (): Promise<void> => ipcRenderer.invoke("updates:download-and-install"),
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus): void => listener(status);
     ipcRenderer.on("updates:status", handler);
