@@ -350,7 +350,7 @@ function focusedFilterKey(): string | null {
 function restoreFilterFocus(key: string | null): void {
   if (key === null) return;
   document.querySelectorAll<HTMLInputElement>("input[data-filter-key]").forEach((input) => {
-    if (input.dataset.filterKey === key) input.focus();
+    if (input.dataset.filterKey === key) input.focus({ preventScroll: true });
   });
 }
 

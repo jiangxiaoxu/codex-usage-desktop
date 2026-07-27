@@ -4,6 +4,11 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-27
+
+- Fixed dashboard scroll jumps caused by restoring dynamic filter focus during background refreshes.
+- Fixed GPT realtime voice rollouts being classified as unknown threads, including automatic ledger reattribution for existing records.
+
 ## [0.2.5] - 2026-07-21
 
 - Changed NSIS-installed Windows updates to download, verify, silently install, and restart from the dashboard instead of opening a GitHub Release page.

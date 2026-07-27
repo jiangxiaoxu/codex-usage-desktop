@@ -6,7 +6,7 @@ import test from "node:test";
 import { CollectorClient } from "./collector-client";
 import type { CollectorConfig } from "./collector-protocol";
 import type { FilterSpec, QueryResult } from "./shared";
-import { UsageStore, type CandidateSourceInput, type SourceFileRecord, type UsageEventInput } from "./usage-store";
+import { UsageStore, type CandidateSourceInput, type RolloutMetadataInput, type SourceFileRecord, type UsageEventInput } from "./usage-store";
 
 function line(type: string, payload: Readonly<Record<string, unknown>>, timestamp = "2026-07-15T01:00:00.000Z"): string {
   return `${JSON.stringify({ timestamp, type, payload })}\n`;
@@ -65,16 +65,22 @@ function contaminatedEvent(inputTokens: number, tokenEventOrdinal = 0): UsageEve
   };
 }
 
-function contaminateRollout(databasePath: string, rolloutId: string, events: readonly UsageEventInput[]): void {
+interface ContaminateRolloutOptions {
+  readonly metadata?: RolloutMetadataInput;
+  readonly parserRevision?: string;
+}
+
+function contaminateRollout(databasePath: string, rolloutId: string, events: readonly UsageEventInput[], options: ContaminateRolloutOptions = {}): void {
   const ledger = new UsageStore(databasePath);
   try {
-    const metadata = ledger.getRolloutMetadata(rolloutId);
+    const storedMetadata = ledger.getRolloutMetadata(rolloutId);
     const source = ledger.listSourceFiles().find((candidate) => candidate.rolloutId === rolloutId && candidate.canonicalStatus === "canonical");
-    assert.ok(metadata);
+    assert.ok(storedMetadata);
     assert.ok(source);
+    const metadata = options.metadata ?? storedMetadata;
     ledger.replaceRolloutCandidate({ metadata, events, source: candidateSource(source), observedAtEpochMs: Date.now() });
     ledger.promoteRolloutCandidate({ rolloutId, canonicalFilePath: source.filePath, promotedAtEpochMs: Date.now() });
-    ledger.setCollectorState("rollout_parser_revision", "1", Date.now());
+    ledger.setCollectorState("rollout_parser_revision", options.parserRevision ?? "1", Date.now());
   } finally {
     ledger.close();
   }
@@ -369,6 +375,60 @@ test("captures a model switch in an incrementally collected turn", async (t) => 
   assert.equal(result.summary.inputTokens, 30);
 });
 
+test("parser revision rebuild reattributes existing realtime voice usage to main root", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-parser-voice-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const voicePath = path.join(sessions, "rollout-voice.jsonl");
+  await writeFile(voicePath,
+    line("session_meta", {
+      session_id: "voice-conversation",
+      id: "rollout-voice",
+      originator: "Codex Desktop",
+      source: "vscode",
+      thread_source: "realtime_voice",
+    })
+      + line("event_msg", { type: "task_started", turn_id: "voice-turn" })
+      + line("turn_context", { turn_id: "voice-turn", model: "gpt-5.6-sol", realtime_active: true })
+      + token([10, 0, 1, 0, 11], [10, 0, 1, 0, 11], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  let client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  await client.close();
+
+  const ledger = new UsageStore(config.databasePath);
+  let currentMetadata: RolloutMetadataInput;
+  try {
+    const storedMetadata = ledger.getRolloutMetadata("rollout-voice");
+    assert.ok(storedMetadata);
+    currentMetadata = storedMetadata;
+  } finally {
+    ledger.close();
+  }
+  contaminateRollout(config.databasePath, "rollout-voice", [contaminatedEvent(10)], {
+    metadata: { ...currentMetadata, threadType: "unknown", agentRole: "unknown" },
+    parserRevision: "5",
+  });
+
+  client = new CollectorClient(__dirname);
+  await client.initialize(config);
+  const rebuilt = await query(client);
+  assert.deepEqual(rebuilt.facets.subjects.map((option) => option.subject), [{ threadType: "main", agentRole: "root" }]);
+  await client.close();
+
+  const rebuiltLedger = new UsageStore(config.databasePath);
+  try {
+    assert.equal(rebuiltLedger.getCollectorState("rollout_parser_revision"), "6");
+    assert.deepEqual(rebuiltLedger.getRolloutMetadata("rollout-voice"), currentMetadata);
+  } finally {
+    rebuiltLedger.close();
+  }
+});
+
 test("parser revision rebuild replaces present canonical rollouts and preserves missing history", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-parser-revision-"));
   const codexHome = path.join(root, ".codex");
@@ -400,7 +460,7 @@ test("parser revision rebuild replaces present canonical rollouts and preserves 
 
   const ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "6");
     const stored = ledger.queryEvents({ startEpochMs: Date.parse(filter.startUtc), endEpochMs: Date.parse(filter.endUtc) });
     assert.deepEqual(stored.map((event) => [event.rolloutId, event.inputTokens]), [
       ["rollout-missing", 777],
@@ -451,7 +511,7 @@ test("parser revision rebuild promotes a present archived candidate when canonic
 
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "6");
     assert.equal(ledger.getCanonicalSourcePath("rollout-candidate"), candidatePath);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === canonicalPath)?.isPresent, false);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === candidatePath)?.canonicalStatus, "canonical");
@@ -495,7 +555,7 @@ test("parser revision discovers an offline archive move before publishing the up
 
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "6");
     assert.equal(ledger.getCanonicalSourcePath("rollout-offline"), archivedPath);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === activePath)?.isPresent, false);
     assert.equal(ledger.listSourceFiles().find((source) => source.filePath === archivedPath)?.canonicalStatus, "canonical");
@@ -545,7 +605,7 @@ test("an interrupted parser revision rebuild keeps the old revision and retries"
   await client.close();
   ledger = new UsageStore(config.databasePath);
   try {
-    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "5");
+    assert.equal(ledger.getCollectorState("rollout_parser_revision"), "6");
   } finally {
     ledger.close();
   }

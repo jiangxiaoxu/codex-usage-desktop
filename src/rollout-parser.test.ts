@@ -64,6 +64,34 @@ test("parses main metadata and keeps conversation and rollout identifiers separa
   assert.equal(result.events[0]?.tokenEventOrdinal, 0);
 });
 
+test("classifies realtime voice usage as a main root thread", () => {
+  const result = parseRollout(jsonl(
+    line("session_meta", {
+      session_id: "voice-conversation",
+      id: "voice-rollout",
+      originator: "Codex Desktop",
+      source: "vscode",
+      thread_source: "realtime_voice",
+    }),
+    line("event_msg", { type: "task_started", turn_id: "voice-turn" }),
+    line("turn_context", { turn_id: "voice-turn", model: "gpt-5.6-sol", realtime_active: true }),
+    token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]),
+  ), "fallback");
+
+  assert.deepEqual(result.metadata, {
+    conversationId: "voice-conversation",
+    rolloutId: "voice-rollout",
+    parentThreadId: "",
+    threadType: "main",
+    agentRole: "main",
+    agentPath: "/root",
+    agentNickname: "",
+  });
+  assert.deepEqual(result.events.map((event) => [event.threadType, event.agentRole, event.agentPath, event.model, event.inputTokens]), [
+    ["main", "main", "/root", "gpt-5.6-sol", 10],
+  ]);
+});
+
 test("supports nested thread_spawn metadata and legacy top-level fields", () => {
   const nested = parseRollout(jsonl(line("session_meta", {
     session_id: "parent",

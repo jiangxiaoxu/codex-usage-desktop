@@ -182,7 +182,7 @@ function metadataFrom(payload: RolloutJsonObject | null, fallbackRolloutId: stri
   const isSubagent = threadSource === "subagent" || spawn !== null;
   const threadType: RolloutThreadType = isSubagent
     ? "subagent"
-    : threadSource === null || threadSource === "user" ? "main" : "unknown";
+    : threadSource === null || threadSource === "user" || threadSource === "realtime_voice" ? "main" : "unknown";
   const rolloutId = stringOr(payload?.id, fallbackRolloutId);
   return {
     conversationId: stringOr(payload?.session_id, rolloutId),

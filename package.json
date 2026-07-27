@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-desktop",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "Local Codex token and API cost analyzer",
   "author": "jiangxiaoxu",
