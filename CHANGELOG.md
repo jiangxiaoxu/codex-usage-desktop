@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+- Added safe automatic ledger recovery for stable same-source canonical rollout rewrites, while preserving conflicts for ambiguous changes and keeping Codex JSONL read-only.
+- Reduced collector CPU spikes with deduplicated watcher-path batches, bounded retries, non-reentrant sliced inventories and a guaranteed fresh trailing inventory for manual sync.
+- Added cooperative 256 KiB or 256-record parser yields and chunked full-content hashing. Full snapshots still retain complete source buffers, and synchronous parsing of one oversized JSON record remains non-preemptible.
+
 ## [0.2.6] - 2026-07-27
 
 - Fixed dashboard scroll jumps caused by restoring dynamic filter focus during background refreshes.

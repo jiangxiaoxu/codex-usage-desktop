@@ -81,6 +81,12 @@ export interface RolloutChunkParseResult {
   readonly trailingPartialLine: boolean;
 }
 
+export interface CooperativeRolloutParseOptions {
+  readonly maxBytesPerSlice: number;
+  readonly maxRecordsPerSlice: number;
+  readonly yieldControl: () => Promise<void>;
+}
+
 interface MutableDiagnostics {
   blankLines: number;
   malformedLines: number;
@@ -483,6 +489,259 @@ export function parseRolloutChunk(input: string | Buffer, fallbackRolloutId: str
     stableByteLength: stable.stableByteLength,
     trailingPartialLine: stable.trailingPartialLine,
   };
+}
+
+async function *cooperativeRawLines(
+  input: Buffer,
+  stableByteLength: number,
+  options: CooperativeRolloutParseOptions,
+): AsyncGenerator<string> {
+  let cursor = 0;
+  let sliceStartedAt = 0;
+  let sliceRecords = 0;
+  let sliceBytes = 0;
+  while (cursor < stableByteLength) {
+    const lineStart = cursor;
+    let searchStart = cursor;
+    while (true) {
+      const searchEnd = Math.min(searchStart + options.maxBytesPerSlice, stableByteLength);
+      const relativeNewline = input.subarray(searchStart, searchEnd).indexOf(0x0a);
+      if (relativeNewline >= 0) {
+        cursor = searchStart + relativeNewline + 1;
+        break;
+      }
+      if (searchEnd >= stableByteLength) {
+        cursor = stableByteLength;
+        break;
+      }
+      searchStart = searchEnd;
+      await options.yieldControl();
+      sliceStartedAt = searchStart;
+      sliceRecords = 0;
+      sliceBytes = 0;
+    }
+    const lineEnd = cursor > lineStart && input[cursor - 1] === 0x0a ? cursor - 1 : cursor;
+    const contentEnd = lineEnd > lineStart && input[lineEnd - 1] === 0x0d ? lineEnd - 1 : lineEnd;
+    yield input.subarray(lineStart, contentEnd).toString("utf8");
+    sliceRecords += 1;
+    sliceBytes += cursor - Math.max(lineStart, sliceStartedAt);
+    if (cursor < stableByteLength
+      && (sliceRecords >= options.maxRecordsPerSlice || sliceBytes >= options.maxBytesPerSlice)) {
+      await options.yieldControl();
+      sliceStartedAt = cursor;
+      sliceRecords = 0;
+      sliceBytes = 0;
+    }
+  }
+}
+
+/** Parse a Buffer cooperatively, materializing events only after the complete record scan. */
+export async function parseRolloutChunkCooperatively(
+  input: Buffer,
+  fallbackRolloutId: string,
+  options: CooperativeRolloutParseOptions,
+  priorState?: RolloutParserState,
+): Promise<RolloutChunkParseResult> {
+  if (!Number.isSafeInteger(options.maxBytesPerSlice) || options.maxBytesPerSlice <= 0) throw new Error("maxBytesPerSlice must be a positive safe integer");
+  if (!Number.isSafeInteger(options.maxRecordsPerSlice) || options.maxRecordsPerSlice <= 0) throw new Error("maxRecordsPerSlice must be a positive safe integer");
+  const trailingPartialLine = input.length > 0 && input[input.length - 1] !== 0x0a;
+  const finalNewline = trailingPartialLine ? input.lastIndexOf(0x0a) : input.length - 1;
+  const stableByteLength = trailingPartialLine ? finalNewline + 1 : input.length;
+  const diagnostics = emptyDiagnostics();
+  const turnModels = new Map<string, string>(priorState?.turnModels);
+  const candidates: TokenCandidate[] = [];
+  let metadataPayload = priorState?.metadataPayload ?? null;
+  let metadataDiscovered = false;
+  let metadata = priorState?.metadata ?? metadataFrom(metadataPayload, fallbackRolloutId);
+  let currentTurnId = priorState?.currentTurnId ?? "";
+  let currentTurnModelOverridden = priorState?.currentTurnModelOverridden ?? false;
+  let currentModel = priorState?.currentModel ?? "unknown";
+  let forkReplay: RolloutForkReplayState = priorState?.forkReplay ?? { status: "inactive" };
+  let stableLineCount = 0;
+  let previousSnapshot = priorState?.previousSnapshot ?? null;
+
+  for await (const rawLine of cooperativeRawLines(input, stableByteLength, options)) {
+    stableLineCount += 1;
+    if (rawLine.trim().length === 0) {
+      diagnostics.blankLines += 1;
+      continue;
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(rawLine) as unknown; } catch {
+      diagnostics.malformedLines += 1;
+      continue;
+    }
+    const event = record(parsed);
+    if (event === null) {
+      diagnostics.nonObjectLines += 1;
+      continue;
+    }
+    const payload = record(event.payload);
+    if (event.type === "session_meta" && metadataPayload === null && payload !== null) {
+      metadataPayload = payload;
+      metadataDiscovered = true;
+      metadata = metadataFrom(metadataPayload, fallbackRolloutId);
+      forkReplay = forkReplayFrom(payload, metadata, event.timestamp);
+      continue;
+    }
+    if (event.type === "turn_context" && payload !== null) {
+      const turnId = nonEmptyString(payload.turn_id);
+      const model = nonEmptyString(payload.model);
+      if (forkReplay.status === "awaiting_turn_context") {
+        if (turnId === forkReplay.turnId) forkReplay = { status: "awaiting_trigger", turnId: forkReplay.turnId, model };
+        continue;
+      }
+      if (forkReplay.status !== "inactive") continue;
+      if (turnId !== null) {
+        if (turnId !== currentTurnId) currentTurnModelOverridden = false;
+        currentTurnId = turnId;
+      }
+      if (turnId !== null && model !== null) turnModels.set(turnId, model);
+      continue;
+    }
+    if (event.type === "inter_agent_communication_metadata" && payload?.trigger_turn === true) {
+      if (forkReplay.status === "awaiting_trigger") forkReplay = { status: "awaiting_recipient", turnId: forkReplay.turnId, model: forkReplay.model };
+      continue;
+    }
+    if (event.type === "response_item" && payload?.type === "agent_message" && forkReplay.status === "awaiting_recipient") {
+      const internalMetadata = record(payload.internal_chat_message_metadata_passthrough);
+      const internalTurnId = nonEmptyString(internalMetadata?.turn_id);
+      if (payload.recipient === metadata.agentPath && (internalTurnId === null || internalTurnId === forkReplay.turnId)) {
+        currentTurnId = forkReplay.turnId;
+        if (forkReplay.model !== null) turnModels.set(forkReplay.turnId, forkReplay.model);
+        forkReplay = { status: "inactive" };
+      }
+      continue;
+    }
+    if (event.type !== "event_msg" || payload === null) continue;
+    if (payload.type === "thread_settings_applied") {
+      const model = nonEmptyString(record(payload.thread_settings)?.model);
+      if (model !== null) {
+        currentModel = model;
+        if (currentTurnId.length > 0) currentTurnModelOverridden = true;
+      }
+      continue;
+    }
+    if (payload.type === "task_started") {
+      const turnId = nonEmptyString(payload.turn_id);
+      if (forkReplay.status === "awaiting_main_live_turn") {
+        if (!isLiveMainForkTurn(payload, forkReplay.forkBoundaryEpochMs)) continue;
+        forkReplay = { status: "inactive" };
+      } else if (forkReplay.status === "unproven") continue;
+      else if (forkReplay.status !== "inactive") {
+        if (turnId !== null) forkReplay = { status: "awaiting_turn_context", turnId };
+        continue;
+      }
+      currentTurnId = turnId ?? currentTurnId;
+      currentTurnModelOverridden = false;
+      continue;
+    }
+    if (payload.type === "task_complete") {
+      const turnId = nonEmptyString(payload.turn_id);
+      if (turnId === null || turnId === currentTurnId) {
+        currentTurnId = "";
+        currentTurnModelOverridden = false;
+      }
+      continue;
+    }
+    if (payload.type !== "token_count" || forkReplay.status !== "inactive") continue;
+    const info = record(payload.info);
+    const usage = tokenTuple(info?.last_token_usage);
+    const total = tokenTuple(info?.total_token_usage);
+    if (usage === null || total === null) {
+      diagnostics.invalidTokenUsageLines += 1;
+      continue;
+    }
+    const cumulativeSnapshot = snapshot(total);
+    if (usage.inputTokens === 0 && usage.cachedInputTokens === 0 && usage.outputTokens === 0 && usage.reasoningOutputTokens === 0) {
+      diagnostics.zeroBreakdownSnapshotsSkipped += 1;
+      continue;
+    }
+    if (usage.cachedInputTokens > usage.inputTokens || usage.reasoningOutputTokens > usage.outputTokens) {
+      diagnostics.invalidTokenRelationshipsSkipped += 1;
+      continue;
+    }
+    if (!validTimestamp(event.timestamp)) {
+      diagnostics.invalidTimestampsSkipped += 1;
+      continue;
+    }
+    if (cumulativeSnapshot === previousSnapshot) {
+      diagnostics.duplicateSnapshotsSkipped += 1;
+      continue;
+    }
+    previousSnapshot = cumulativeSnapshot;
+    const candidateTurnId = nonEmptyString(payload.turn_id) ?? currentTurnId;
+    const activeTurnSetting = currentTurnModelOverridden && candidateTurnId === currentTurnId && currentModel !== "unknown";
+    const settingsFallback = !activeTurnSetting && !turnModels.has(candidateTurnId) && currentModel !== "unknown";
+    candidates.push({
+      timestamp: event.timestamp,
+      turnId: candidateTurnId,
+      model: activeTurnSetting
+        ? { value: currentModel, source: "active-turn-setting" }
+        : settingsFallback ? { value: currentModel, source: "settings-fallback" } : null,
+      usage,
+      cumulativeSnapshot,
+    });
+  }
+
+  if (!metadataDiscovered && priorState === undefined) metadata = metadataFrom(metadataPayload, fallbackRolloutId);
+  const firstTokenEventOrdinal = priorState?.nextTokenEventOrdinal ?? 0;
+  const events: ParsedRolloutUsageEvent[] = [];
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    const candidate = candidates[candidateIndex];
+    const tokenEventOrdinal = firstTokenEventOrdinal + candidateIndex;
+    const activeTurnSetting = candidate.model?.source === "active-turn-setting" ? candidate.model.value : null;
+    const settingsFallback = candidate.model?.source === "settings-fallback" ? candidate.model.value : null;
+    const model = activeTurnSetting ?? turnModels.get(candidate.turnId) ?? settingsFallback ?? "unknown";
+    const deterministicSignature = JSON.stringify([
+      candidate.timestamp,
+      candidate.turnId,
+      candidate.usage.inputTokens,
+      candidate.usage.cachedInputTokens,
+      candidate.usage.outputTokens,
+      candidate.usage.reasoningOutputTokens,
+      candidate.cumulativeSnapshot,
+    ]);
+    events.push({
+      ...metadata,
+      timestampUtc: candidate.timestamp,
+      tokenEventOrdinal,
+      turnId: candidate.turnId,
+      model,
+      inputTokens: candidate.usage.inputTokens,
+      cachedInputTokens: candidate.usage.cachedInputTokens,
+      outputTokens: candidate.usage.outputTokens,
+      reasoningOutputTokens: candidate.usage.reasoningOutputTokens,
+      cumulativeSnapshot: candidate.cumulativeSnapshot,
+      deterministicSignature,
+    });
+    if ((candidateIndex + 1) % options.maxRecordsPerSlice === 0 && candidateIndex + 1 < candidates.length) await options.yieldControl();
+  }
+
+  const unresolvedTurnIds = new Set(priorState?.unresolvedTurnIds ?? []);
+  const provisionalTurnIds = new Set(priorState?.provisionalTurnIds ?? []);
+  for (const event of events) if (event.model === "unknown") unresolvedTurnIds.add(event.turnId);
+  for (const candidate of candidates) {
+    if (candidate.model?.source === "settings-fallback" && candidate.turnId.length > 0 && !turnModels.has(candidate.turnId)) provisionalTurnIds.add(candidate.turnId);
+  }
+  for (const turnId of turnModels.keys()) {
+    unresolvedTurnIds.delete(turnId);
+    provisionalTurnIds.delete(turnId);
+  }
+  const state: RolloutParserState = {
+    metadataPayload,
+    metadata,
+    turnModels: [...turnModels.entries()],
+    currentTurnId,
+    currentTurnModelOverridden,
+    currentModel,
+    forkReplay,
+    previousSnapshot,
+    nextTokenEventOrdinal: firstTokenEventOrdinal + events.length,
+    unresolvedTurnIds: [...unresolvedTurnIds].sort(),
+    provisionalTurnIds: [...provisionalTurnIds].sort(),
+  };
+  return { metadata, events, diagnostics, state, stableLineCount, stableByteLength, trailingPartialLine };
 }
 
 /** Parse only newline-terminated JSONL records. The input is read without mutation. */

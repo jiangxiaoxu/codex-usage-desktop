@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { appendFile, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -31,6 +32,20 @@ const filter: FilterSpec = {
 
 async function query(client: CollectorClient): Promise<QueryResult> {
   return client.request("query", filter);
+}
+
+function collectorState(databasePath: string, key: string): string | null {
+  const ledger = new UsageStore(databasePath);
+  try { return ledger.getCollectorState(key); } finally { ledger.close(); }
+}
+
+async function waitFor(condition: () => Promise<boolean> | boolean, message: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(message);
 }
 
 function nextUsageUpdate(client: CollectorClient): Promise<void> {
@@ -131,6 +146,297 @@ test("collector remains read-only while Codex appends, archives, and deletes sou
   await client.close();
   const database = await readFile(config.databasePath);
   assert.ok(database.byteLength > 0);
+});
+
+test("watcher updates one path without starting a full inventory", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-watcher-targeted-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-targeted.jsonl");
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-targeted", thread_source: "user" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  const inventoryRuns = collectorState(config.databasePath, "full_inventory_run_count");
+  const updated = nextUsageUpdate(client);
+  await appendFile(rolloutPath, token([5, 0, 1, 0, 6], [15, 0, 3, 1, 18], "2026-07-15T02:00:00.000Z"), "utf8");
+  await updated;
+  assert.equal((await query(client)).summary.inputTokens, 15);
+  assert.equal(collectorState(config.databasePath, "full_inventory_run_count"), inventoryRuns);
+});
+
+test("watcher drain retains paths added while earlier batches are processing", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-watcher-drain-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+
+  const rolloutContent = (index: number): string => line("session_meta", { session_id: `conversation-${index}`, id: `rollout-drain-${index}`, thread_source: "user" })
+    + token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2], "2026-07-15T01:00:00.000Z");
+  await Promise.all(Array.from({ length: 40 }, (_, index) => writeFile(path.join(sessions, `rollout-drain-${index}.jsonl`), rolloutContent(index), "utf8")));
+  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  await writeFile(path.join(sessions, "rollout-drain-40.jsonl"), rolloutContent(40), "utf8");
+  await waitFor(async () => (await query(client)).summary.inputTokens === 41, "watcher drain did not ingest all paths", 15_000);
+  assert.equal(collectorState(config.databasePath, "full_inventory_run_count"), "1");
+});
+
+test("watcher archive move marks the old canonical missing and promotes the new path", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-watcher-archive-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  const archived = path.join(codexHome, "archived_sessions");
+  await mkdir(sessions, { recursive: true });
+  await mkdir(archived, { recursive: true });
+  const activePath = path.join(sessions, "rollout-watcher-move.jsonl");
+  const archivedPath = path.join(archived, "rollout-watcher-move.jsonl");
+  await writeFile(activePath,
+    line("session_meta", { session_id: "conversation", id: "rollout-watcher-move", thread_source: "user" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  await rename(activePath, archivedPath);
+  await waitFor(() => collectorState(config.databasePath, "full_inventory_run_count") === "1"
+    && (() => {
+      const ledger = new UsageStore(config.databasePath);
+      try { return ledger.getCanonicalSourcePath("rollout-watcher-move") === archivedPath; } finally { ledger.close(); }
+    })(), "watcher did not promote the archived path");
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  const ledger = new UsageStore(config.databasePath);
+  try {
+    assert.equal(ledger.listSourceFiles().find((source) => source.filePath === activePath)?.isPresent, false);
+    assert.equal(ledger.listSourceFiles().find((source) => source.filePath === archivedPath)?.canonicalStatus, "canonical");
+  } finally {
+    ledger.close();
+  }
+});
+
+test("full inventory discovers missed paths and yields across enumeration and processing", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-inventory-slices-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutContent = (index: number): string => line("session_meta", { session_id: `conversation-${index}`, id: `rollout-slice-${index}`, thread_source: "user" })
+    + token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2], "2026-07-15T01:00:00.000Z");
+  await Promise.all(Array.from({ length: 40 }, (_, index) => writeFile(path.join(sessions, `rollout-slice-${index}.jsonl`), rolloutContent(index), "utf8")));
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  const beforeRuns = Number(collectorState(config.databasePath, "full_inventory_run_count"));
+  await writeFile(path.join(sessions, "rollout-slice-40.jsonl"), rolloutContent(40), "utf8");
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 41);
+  assert.equal(Number(collectorState(config.databasePath, "full_inventory_run_count")), beforeRuns + 1);
+  assert.ok(Number(collectorState(config.databasePath, "full_inventory_last_yield_count")) >= 2);
+});
+
+test("fallback inventory ticks join an active run instead of stacking", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-inventory-no-reentry-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  await Promise.all(Array.from({ length: 70 }, (_, index) => writeFile(path.join(sessions, `ignored-${index}.txt`), "x", "utf8")));
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 10, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await client.initialize(config);
+  await new Promise<void>((resolve) => setTimeout(resolve, 230));
+  await client.close();
+  const runs = Number(collectorState(config.databasePath, "full_inventory_run_count"));
+  assert.ok(runs >= 2, "the shortened fallback interval should start at least one inventory");
+  assert.ok(runs <= 5, `overlapping ticks queued too many inventories: ${runs}`);
+});
+
+test("concurrent manual sync requests share one trailing inventory instead of a stale active run", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-manual-trailing-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  await Promise.all(Array.from({ length: 70 }, (_, index) => writeFile(path.join(sessions, `ignored-${index}.txt`), "x", "utf8")));
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  const beforeRuns = Number(collectorState(config.databasePath, "full_inventory_run_count"));
+  const first = client.request("reconcile", null);
+  const second = client.request("reconcile", null);
+  const third = client.request("reconcile", null);
+  await Promise.all([first, second, third]);
+  assert.equal(Number(collectorState(config.databasePath, "full_inventory_run_count")), beforeRuns + 2);
+});
+
+test("full inventory reports non-ENOENT enumeration failures without advancing success time", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-inventory-enumeration-error-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  const sessionsBackup = path.join(codexHome, "sessions-backup");
+  await mkdir(sessions, { recursive: true });
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  const successfulAt = collectorState(config.databasePath, "last_successful_inventory_epoch_ms");
+  await rename(sessions, sessionsBackup);
+  await writeFile(sessions, "not-a-directory", "utf8");
+  await assert.rejects(() => client.request("reconcile", null), /ENOTDIR|not a directory/i);
+  assert.equal(collectorState(config.databasePath, "last_successful_inventory_epoch_ms"), successfulAt);
+  assert.equal((await client.request("getStatus", null)).phase, "degraded");
+  await rm(sessions);
+  await rename(sessionsBackup, sessions);
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  await client.request("reconcile", null);
+  assert.notEqual(collectorState(config.databasePath, "last_successful_inventory_epoch_ms"), successfulAt);
+});
+
+test("full inventory remains degraded and keeps its success time when one path cannot be parsed", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-inventory-path-error-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  const successfulAt = collectorState(config.databasePath, "last_successful_inventory_epoch_ms");
+  const rolloutPath = path.join(sessions, "rollout-path-error.jsonl");
+  await writeFile(rolloutPath, "not-json\n", "utf8");
+  const failed = await client.request("reconcile", null);
+  assert.equal(failed.status.phase, "degraded");
+  assert.equal(collectorState(config.databasePath, "last_successful_inventory_epoch_ms"), successfulAt);
+
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-path-error", thread_source: "user" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const recovered = await client.request("reconcile", null);
+  assert.equal(recovered.status.phase, "watching");
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  assert.notEqual(collectorState(config.databasePath, "last_successful_inventory_epoch_ms"), successfulAt);
+});
+
+test("one large rollout yields repeatedly inside parsing rather than as one inventory item", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-large-rollout-slices-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-large-slices.jsonl");
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-large-slices", thread_source: "user" })
+      + line("turn_context", { turn_id: "turn", model: "gpt-5.6-sol" })
+      + token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  await appendFile(rolloutPath,
+    Array.from({ length: 1_200 }, (_, index) => line("event_msg", { type: "ignored", index, padding: "x".repeat(256) })).join("")
+      + token([2, 0, 1, 0, 3], [3, 0, 2, 0, 5], "2026-07-15T02:00:00.000Z"),
+    "utf8",
+  );
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 3);
+  assert.ok(Number(collectorState(config.databasePath, "full_inventory_last_yield_count")) >= 4);
+});
+
+test("Windows path identity remains canonical across directory casing changes", { skip: process.platform !== "win32" }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-path-case-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  const originalDirectory = path.join(sessions, "CaseDirectory");
+  const renamedDirectory = path.join(sessions, "casedirectory");
+  await mkdir(originalDirectory, { recursive: true });
+  const originalPath = path.join(originalDirectory, "rollout-case.jsonl");
+  await writeFile(originalPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-case", thread_source: "user" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  let client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  await client.close();
+  const revisionLedger = new UsageStore(config.databasePath);
+  try { revisionLedger.setCollectorState("rollout_parser_revision", "1", Date.now()); } finally { revisionLedger.close(); }
+  await rename(originalDirectory, renamedDirectory);
+  client = new CollectorClient(__dirname);
+  await client.initialize(config);
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  await client.close();
+  client = new CollectorClient(__dirname);
+  await client.initialize(config);
+  const ledger = new UsageStore(config.databasePath);
+  try {
+    const sources = ledger.listSourceFiles().filter((source) => source.rolloutId === "rollout-case");
+    assert.equal(sources.length, 1);
+    assert.equal(sources[0]?.isPresent, true);
+    assert.equal(sources[0]?.canonicalStatus, "canonical");
+  } finally {
+    ledger.close();
+  }
+});
+
+test("watcher reports a locked path as degraded and retries it with backoff", { skip: process.platform !== "win32" }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-watcher-retry-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-retry.jsonl");
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-retry", thread_source: "user" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 500 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  const observedPhases: string[] = [];
+  client.on("usage-updated", (status: { readonly phase: string }) => { observedPhases.push(status.phase); });
+  await appendFile(rolloutPath, token([5, 0, 1, 0, 6], [15, 0, 3, 1, 18], "2026-07-15T02:00:00.000Z"), "utf8");
+  await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+  const locker = spawn("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "$stream=[System.IO.File]::Open($env:CODEX_TEST_LOCK_PATH,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::None); [Console]::Out.WriteLine('locked'); Start-Sleep -Milliseconds 1200; $stream.Dispose()",
+  ], {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, CODEX_TEST_LOCK_PATH: rolloutPath },
+  });
+  await new Promise<void>((resolve, reject) => {
+    locker.once("error", reject);
+    locker.stdout.once("data", () => resolve());
+    locker.once("exit", (code) => { if (code !== null && code !== 0) reject(new Error(`locker exited before acquiring the file: ${code}`)); });
+  });
+  await waitFor(async () => (await query(client)).summary.inputTokens === 15, "watcher retry did not ingest the locked path", 15_000);
+  await new Promise<void>((resolve, reject) => {
+    if (locker.exitCode !== null) { resolve(); return; }
+    locker.once("error", reject);
+    locker.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`locker failed: ${code}`)));
+  });
+  assert.ok(observedPhases.includes("degraded"));
+  assert.equal((await client.request("getStatus", null)).phase, "watching");
 });
 
 test("collector skips manual main fork replay and ingests the first appended live task", async (t) => {
@@ -257,6 +563,187 @@ test("collector rejects a divergent copy without replacing canonical events", as
   await rm(path.join(archived, "rollout-b.jsonl"));
   await client.request("reconcile", null);
   assert.equal((await client.request("getStatus", null)).conflicts, 0, "a removed conflict remains only as historical diagnostics");
+});
+
+test("collector recovers a divergent canonical self-rewrite and resumes incremental append", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-canonical-rewrite-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-self-rewrite.jsonl");
+  const meta = line("session_meta", { session_id: "conversation", id: "rollout-self-rewrite", thread_source: "user" });
+  const model = line("turn_context", { turn_id: "turn", model: "gpt-5.6-sol" });
+  await writeFile(rolloutPath,
+    meta + model
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z")
+      + token([5, 0, 1, 0, 6], [15, 0, 3, 1, 18], "2026-07-15T02:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  assert.equal((await query(client)).summary.inputTokens, 15);
+
+  await writeFile(rolloutPath, meta + model + token([100, 0, 2, 1, 102], [100, 0, 2, 1, 102], "2026-07-15T01:00:00.000Z"), "utf8");
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 100);
+  assert.equal((await client.request("getStatus", null)).conflicts, 0);
+
+  await appendFile(rolloutPath, token([7, 0, 1, 0, 8], [107, 0, 3, 1, 110], "2026-07-15T03:00:00.000Z"), "utf8");
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 107, "the recovered runtime must append once from the replacement boundary");
+  const ledger = new UsageStore(config.databasePath);
+  try {
+    const source = ledger.listSourceFiles().find((candidate) => candidate.filePath === rolloutPath);
+    assert.equal(ledger.getCanonicalSourcePath("rollout-self-rewrite"), rolloutPath);
+    assert.equal(source?.canonicalStatus, "canonical");
+    assert.equal(source?.prefixStatus, "matches");
+    assert.equal(source?.lastError, null);
+  } finally {
+    ledger.close();
+  }
+});
+
+test("collector recovers a shorter canonical self-rewrite", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-canonical-shorter-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-self-shorter.jsonl");
+  const prefix = line("session_meta", { session_id: "conversation", id: "rollout-self-shorter", thread_source: "user" })
+    + line("turn_context", { turn_id: "turn", model: "gpt-5.6-sol" })
+    + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z");
+  await writeFile(rolloutPath, prefix + token([5, 0, 1, 0, 6], [15, 0, 3, 1, 18], "2026-07-15T02:00:00.000Z"), "utf8");
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  assert.equal((await query(client)).summary.inputTokens, 15);
+
+  await writeFile(rolloutPath, prefix, "utf8");
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  assert.equal((await client.request("getStatus", null)).conflicts, 0);
+});
+
+test("collector rejects a canonical rewrite that changes rollout id", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-canonical-id-change-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-id-change.jsonl");
+  const original = line("session_meta", { session_id: "conversation", id: "rollout-original", thread_source: "user" })
+    + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z");
+  await writeFile(rolloutPath, original, "utf8");
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-replacement", thread_source: "user" })
+      + token([999, 0, 2, 1, 1001], [999, 0, 2, 1, 1001], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  assert.equal((await client.request("getStatus", null)).conflicts, 1);
+  const ledger = new UsageStore(config.databasePath);
+  try {
+    const source = ledger.listSourceFiles().find((candidate) => candidate.filePath === rolloutPath);
+    assert.equal(ledger.getCanonicalSourcePath("rollout-original"), rolloutPath);
+    assert.equal(ledger.getCanonicalSourcePath("rollout-replacement"), null);
+    assert.equal(source?.rolloutId, "rollout-original");
+    assert.match(source?.lastError ?? "", /Canonical source rollout changed from rollout-original to rollout-replacement/);
+  } finally {
+    ledger.close();
+  }
+});
+
+test("collector rejects malformed canonical rewrite content", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-canonical-malformed-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-malformed.jsonl");
+  await writeFile(rolloutPath,
+    line("session_meta", { session_id: "conversation", id: "rollout-malformed", thread_source: "user" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+
+  await writeFile(rolloutPath, "not-json\n", "utf8");
+  await client.request("reconcile", null);
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  const ledger = new UsageStore(config.databasePath);
+  try {
+    const source = ledger.listSourceFiles().find((candidate) => candidate.filePath === rolloutPath);
+    assert.equal((await client.request("getStatus", null)).conflicts, 1, JSON.stringify(source));
+    assert.match(source?.lastError ?? "", /Stable JSONL content is malformed/);
+  } finally {
+    ledger.close();
+  }
+});
+
+test("collector does not recover from an unstable canonical rewrite snapshot", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-canonical-unstable-"));
+  const codexHome = path.join(root, ".codex");
+  const sessions = path.join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = path.join(sessions, "rollout-unstable.jsonl");
+  const meta = line("session_meta", { session_id: "conversation", id: "rollout-unstable", thread_source: "user" });
+  const padding = (character: string): string => line("event_msg", { type: "test_padding", value: character.repeat(2_000_000) });
+  await writeFile(rolloutPath,
+    meta
+      + line("turn_context", { turn_id: "turn", model: "gpt-5.6-sol" })
+      + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z")
+      + padding("0"),
+    "utf8",
+  );
+  const config: CollectorConfig = { codexHome, databasePath: path.join(root, "usage.sqlite"), reconcileIntervalMs: 60 * 60_000, watcherDebounceMs: 50 };
+  const client = new CollectorClient(__dirname);
+  t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+  await client.initialize(config);
+  assert.equal((await query(client)).summary.inputTokens, 10);
+  assert.deepEqual((await query(client)).byModel.map((row) => row.key[0]), ["gpt-5.6-sol"]);
+
+  const versionMarker = "0000000000";
+  const replacement = Buffer.from(meta
+    + line("turn_context", { turn_id: "turn", model: "gpt-5.6-terra" })
+    + token([10, 0, 2, 1, 12], [10, 0, 2, 1, 12], "2026-07-15T01:00:00.000Z")
+    + line("event_msg", { type: "test_padding", version: versionMarker, value: "a".repeat(2_000_000) }));
+  const markerOffset = replacement.indexOf(versionMarker);
+  assert.ok(markerOffset >= 0);
+  const handle = await open(rolloutPath, "r+");
+  let keepWriting = true;
+  let resolveFirstWrite: () => void = () => undefined;
+  const firstWrite = new Promise<void>((resolve) => { resolveFirstWrite = resolve; });
+  const writer = (async (): Promise<void> => {
+    let index = 0;
+    while (keepWriting) {
+      replacement.write(String(index).padStart(versionMarker.length, "0"), markerOffset, versionMarker.length, "ascii");
+      const write = await handle.write(replacement, 0, replacement.byteLength, 0);
+      assert.equal(write.bytesWritten, replacement.byteLength);
+      index += 1;
+      if (index === 1) resolveFirstWrite();
+    }
+  })();
+  await firstWrite;
+  try {
+    await client.request("reconcile", null);
+  } finally {
+    keepWriting = false;
+    await writer;
+    await handle.close();
+  }
+  assert.equal((await query(client)).summary.inputTokens, 10, "changing content must not replace the ledger from either recovery snapshot");
+  assert.deepEqual((await query(client)).byModel.map((row) => row.key[0]), ["gpt-5.6-sol"]);
+  assert.equal((await client.request("getStatus", null)).conflicts, 0, "an actively changing source remains a retry warning");
 });
 
 test("an equal non-canonical copy cannot overwrite model attribution", async (t) => {

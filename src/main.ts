@@ -16,7 +16,7 @@ import { resolveUpdaterCacheDirectory } from "./update-storage";
 import { assertOutsideDirectories } from "./write-boundary";
 
 const PRODUCT_NAME = "Codex Usage Desktop";
-const RECONCILE_INTERVAL_MS = 10 * 60_000;
+const RECONCILE_INTERVAL_MS = 5 * 60_000;
 const WATCHER_DEBOUNCE_MS = 2_000;
 const RESTART_REQUEST_PREFIX = "--shutdown-for-restart=";
 const RESTART_DATA_DIRECTORY_PREFIX = "--shutdown-for-data-directory=";

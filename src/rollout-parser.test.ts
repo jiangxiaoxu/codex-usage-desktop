@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseRollout, parseRolloutChunk, type RolloutParserState } from "./rollout-parser";
+import { parseRollout, parseRolloutChunk, parseRolloutChunkCooperatively, type RolloutParserState } from "./rollout-parser";
 
 function line(type: string, payload: Readonly<Record<string, unknown>>, timestamp = "2026-07-15T01:02:03.004Z"): string {
   return JSON.stringify({ timestamp, type, payload });
@@ -521,4 +521,63 @@ test("advances a stable prefix but not its partial tail", () => {
   assert.equal(partialOnly.stableByteLength, 0);
   assert.equal(partialOnly.stableLineCount, 0);
   assert.deepEqual(partialOnly.state, initial.state);
+});
+
+test("cooperative parsing yields across a large JSONL while preserving full-file attribution", async () => {
+  const input = Buffer.from(jsonl(
+    line("session_meta", { id: "cooperative", thread_source: "user" }),
+    taskStarted("late-turn"),
+    token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6]),
+    ...Array.from({ length: 600 }, (_, index) => line("event_msg", { type: "ignored", index, padding: "x".repeat(32) })),
+    line("turn_context", { turn_id: "late-turn", model: "gpt-late" }),
+  ));
+  const expected = parseRolloutChunk(input, "fallback");
+  let yields = 0;
+  const actual = await parseRolloutChunkCooperatively(input, "fallback", {
+    maxBytesPerSlice: 1_024,
+    maxRecordsPerSlice: 20,
+    yieldControl: async () => { yields += 1; await Promise.resolve(); },
+  });
+
+  assert.ok(yields > 10);
+  assert.deepEqual(actual, expected);
+  assert.deepEqual(actual.events.map((event) => [event.turnId, event.model]), [["late-turn", "gpt-late"]]);
+});
+
+test("cooperative parsing yields while scanning one oversized record", async () => {
+  const input = Buffer.from(jsonl(
+    line("session_meta", { id: "oversized", thread_source: "user" }),
+    line("event_msg", { type: "ignored", padding: "x".repeat(64 * 1_024) }),
+    token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6]),
+  ));
+  let yields = 0;
+  const result = await parseRolloutChunkCooperatively(input, "fallback", {
+    maxBytesPerSlice: 1_024,
+    maxRecordsPerSlice: 20,
+    yieldControl: async () => { yields += 1; await Promise.resolve(); },
+  });
+
+  assert.ok(yields > 50);
+  assert.equal(result.events.length, 1);
+});
+
+test("cooperative slice boundaries preserve the final mapping for repeated turn contexts", async () => {
+  const input = Buffer.from(jsonl(
+    line("session_meta", { id: "repeated-turn", thread_source: "user" }),
+    taskStarted("same-turn"),
+    line("turn_context", { turn_id: "same-turn", model: "gpt-a" }),
+    token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6], "2026-07-15T01:00:00.000Z"),
+    ...Array.from({ length: 30 }, (_, index) => line("event_msg", { type: "ignored", index })),
+    line("turn_context", { turn_id: "same-turn", model: "gpt-b" }),
+    token([3, 1, 2, 0, 5], [7, 2, 4, 1, 11], "2026-07-15T02:00:00.000Z"),
+  ));
+  const expected = parseRolloutChunk(input, "fallback");
+  const actual = await parseRolloutChunkCooperatively(input, "fallback", {
+    maxBytesPerSlice: 512,
+    maxRecordsPerSlice: 4,
+    yieldControl: async () => { await Promise.resolve(); },
+  });
+
+  assert.deepEqual(actual, expected);
+  assert.deepEqual(actual.events.map((event) => event.model), ["gpt-b", "gpt-b"]);
 });

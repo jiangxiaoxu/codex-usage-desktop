@@ -68,6 +68,22 @@ export interface PromoteRolloutCandidateInput {
   readonly promotedAtEpochMs: number;
 }
 
+export interface RecoverableCanonicalSourceInput {
+  readonly filePath: string;
+  readonly sizeBytes: number;
+  readonly modifiedAtEpochMs: number;
+  readonly byteOffset: number;
+  readonly prefixHash: string;
+  readonly lastScannedAtEpochMs: number;
+}
+
+export interface RecoverDivergedCanonicalSourceInput {
+  readonly metadata: RolloutMetadataInput;
+  readonly events: readonly UsageEventInput[];
+  readonly source: RecoverableCanonicalSourceInput;
+  readonly observedAtEpochMs: number;
+}
+
 export interface AppendEventsResult {
   readonly inserted: number;
   readonly ignoredAsDuplicate: number;
@@ -331,17 +347,44 @@ export class UsageStore {
     validateSource(source);
     this.writeTransaction(() => {
       this.upsertRollout(input.metadata, input.observedAtEpochMs);
-      this.database.prepare("DELETE FROM usage_events WHERE rollout_id = ?").run(input.metadata.rolloutId);
-      const insert = this.database.prepare(`
-        INSERT INTO usage_events (
-          rollout_id, token_event_ordinal, timestamp_epoch_ms, model,
-          input_tokens, cached_input_tokens, output_tokens,
-          reasoning_output_tokens, event_signature
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const event of input.events) {
-        insert.run(input.metadata.rolloutId, event.tokenEventOrdinal, event.timestampEpochMs, event.model, event.inputTokens, event.cachedInputTokens, event.outputTokens, event.reasoningOutputTokens, event.eventSignature);
+      this.replaceEventsWithinTransaction(input.metadata.rolloutId, input.events);
+      this.upsertSourceFileWithinTransaction(source);
+    });
+  }
+
+  recoverDivergedCanonicalSource(input: RecoverDivergedCanonicalSourceInput): void {
+    this.assertOpen();
+    validateMetadata(input.metadata);
+    requireInputInteger(input.observedAtEpochMs, "input.observedAtEpochMs");
+    for (const event of input.events) validateEvent(event);
+    const source: SourceFileInput = {
+      ...input.source,
+      rolloutId: input.metadata.rolloutId,
+      prefixStatus: "matches",
+      canonicalStatus: "canonical",
+      isPresent: true,
+      lastError: null,
+    };
+    validateSource(source);
+    this.writeTransaction(() => {
+      const rollout = this.database.prepare(`
+        SELECT canonical_source_path FROM rollouts WHERE rollout_id = ?
+      `).get(input.metadata.rolloutId);
+      if (rollout === undefined) throw new Error(`Unknown rollout: ${input.metadata.rolloutId}`);
+      if (rowNullableString(rollout, "canonical_source_path") !== source.filePath) {
+        throw new Error("Recovery source is not the rollout's canonical source");
       }
+
+      const existingSource = this.database.prepare(`
+        SELECT rollout_id FROM source_files WHERE file_path = ?
+      `).get(source.filePath);
+      if (existingSource === undefined) throw new Error("Recovery source does not exist in the ledger");
+      if (rowNullableString(existingSource, "rollout_id") !== input.metadata.rolloutId) {
+        throw new Error("Recovery source belongs to a different rollout");
+      }
+
+      this.upsertRollout(input.metadata, input.observedAtEpochMs);
+      this.replaceEventsWithinTransaction(input.metadata.rolloutId, input.events);
       this.upsertSourceFileWithinTransaction(source);
     });
   }
@@ -817,6 +860,20 @@ export class UsageStore {
       }
     }
     return { inserted, ignoredAsDuplicate: events.length - inserted };
+  }
+
+  private replaceEventsWithinTransaction(rolloutId: string, events: readonly UsageEventInput[]): void {
+    this.database.prepare("DELETE FROM usage_events WHERE rollout_id = ?").run(rolloutId);
+    const insert = this.database.prepare(`
+      INSERT INTO usage_events (
+        rollout_id, token_event_ordinal, timestamp_epoch_ms, model,
+        input_tokens, cached_input_tokens, output_tokens,
+        reasoning_output_tokens, event_signature
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const event of events) {
+      insert.run(rolloutId, event.tokenEventOrdinal, event.timestampEpochMs, event.model, event.inputTokens, event.cachedInputTokens, event.outputTokens, event.reasoningOutputTokens, event.eventSignature);
+    }
   }
 
   private upsertSourceFileWithinTransaction(source: SourceFileInput): void {

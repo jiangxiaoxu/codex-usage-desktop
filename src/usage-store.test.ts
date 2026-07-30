@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import test, { TestContext } from "node:test";
 import {
   CandidateSourceInput,
+  RecoverableCanonicalSourceInput,
   RolloutMetadataInput,
   UsageEventInput,
   UsageStore,
@@ -46,6 +47,18 @@ function source(filePath: string, overrides: Partial<CandidateSourceInput> = {})
     isPresent: true,
     lastScannedAtEpochMs: 3_000,
     lastError: null,
+    ...overrides,
+  };
+}
+
+function recoverableSource(filePath: string, overrides: Partial<RecoverableCanonicalSourceInput> = {}): RecoverableCanonicalSourceInput {
+  return {
+    filePath,
+    sizeBytes: 1_200,
+    modifiedAtEpochMs: 4_000,
+    byteOffset: 1_200,
+    prefixHash: "recovered-prefix",
+    lastScannedAtEpochMs: 5_000,
     ...overrides,
   };
 }
@@ -172,6 +185,198 @@ test("replaceRolloutCandidate rolls back rollout, events, and source together", 
   assert.equal(stored.length, 1);
   assert.equal(stored[0]?.eventSignature, "original");
   assert.equal(stored[0]?.agentRole, "main");
+});
+
+test("recoverDivergedCanonicalSource atomically replaces canonical rollout data and preserves diagnostics", (t) => {
+  const { databasePath, directory } = tempDatabase(t);
+  const store = new UsageStore(databasePath);
+  t.after(() => closeAndRemove(store, directory));
+  const sourcePath = path.join(directory, "canonical.jsonl");
+  store.replaceRolloutCandidate({
+    metadata,
+    events: [usageEvent(0, 1_000, "old")],
+    source: source(sourcePath),
+    observedAtEpochMs: 1_000,
+  });
+  store.promoteRolloutCandidate({ rolloutId: metadata.rolloutId, canonicalFilePath: sourcePath, promotedAtEpochMs: 2_000 });
+  const diagnosticId = store.recordSourceConflict({
+    runId: null,
+    sourceFilePath: sourcePath,
+    code: "source-diverged",
+    message: "Canonical source diverged",
+    detailsJson: "{\"firstDifference\":0}",
+    observedAtEpochMs: 3_000,
+  });
+
+  store.recoverDivergedCanonicalSource({
+    metadata: { ...metadata, agentRole: "recovered" },
+    events: [usageEvent(0, 1_500, "new-0"), usageEvent(1, 2_500, "new-1")],
+    source: recoverableSource(sourcePath),
+    observedAtEpochMs: 5_000,
+  });
+
+  assert.equal(store.getCanonicalSourcePath(metadata.rolloutId), sourcePath);
+  assert.deepEqual(store.getRolloutEventSignatures(metadata.rolloutId), ["new-0", "new-1"]);
+  assert.equal(store.getRolloutMetadata(metadata.rolloutId)?.agentRole, "recovered");
+  assert.deepEqual(store.listSourceFiles(), [{
+    filePath: sourcePath,
+    rolloutId: metadata.rolloutId,
+    sizeBytes: 1_200,
+    modifiedAtEpochMs: 4_000,
+    byteOffset: 1_200,
+    prefixHash: "recovered-prefix",
+    prefixStatus: "matches",
+    canonicalStatus: "canonical",
+    isPresent: true,
+    lastScannedAtEpochMs: 5_000,
+    lastError: null,
+  }]);
+  assert.equal(store.countSourceConflicts(), 0);
+  assert.ok(diagnosticId > 0);
+  const database = new DatabaseSync(databasePath, { readBigInts: true });
+  try {
+    assert.equal(database.prepare("SELECT count(*) AS count FROM collector_diagnostics").get()?.count, 1n);
+  } finally {
+    database.close();
+  }
+});
+
+test("recoverDivergedCanonicalSource rolls back metadata, events, and source on replacement failure", (t) => {
+  const { databasePath, directory } = tempDatabase(t);
+  const store = new UsageStore(databasePath);
+  t.after(() => closeAndRemove(store, directory));
+  const sourcePath = path.join(directory, "canonical.jsonl");
+  store.replaceRolloutCandidate({
+    metadata,
+    events: [usageEvent(0, 1_000, "old")],
+    source: source(sourcePath, { prefixStatus: "diverged", canonicalStatus: "conflict", lastError: "diverged" }),
+    observedAtEpochMs: 1_000,
+  });
+  store.promoteRolloutCandidate({ rolloutId: metadata.rolloutId, canonicalFilePath: sourcePath, promotedAtEpochMs: 2_000 });
+
+  assert.throws(() => store.recoverDivergedCanonicalSource({
+    metadata: { ...metadata, agentRole: "must-roll-back" },
+    events: [usageEvent(0, 2_000, "duplicate"), usageEvent(1, 3_000, "duplicate")],
+    source: recoverableSource(sourcePath),
+    observedAtEpochMs: 5_000,
+  }), /UNIQUE constraint failed/);
+
+  assert.equal(store.getRolloutMetadata(metadata.rolloutId)?.agentRole, "main");
+  assert.deepEqual(store.getRolloutEventSignatures(metadata.rolloutId), ["old"]);
+  assert.deepEqual(store.listSourceFiles()[0], {
+    filePath: sourcePath,
+    rolloutId: metadata.rolloutId,
+    sizeBytes: 1_000,
+    modifiedAtEpochMs: 2_000,
+    byteOffset: 1_000,
+    prefixHash: "prefix",
+    prefixStatus: "diverged",
+    canonicalStatus: "canonical",
+    isPresent: true,
+    lastScannedAtEpochMs: 2_000,
+    lastError: "diverged",
+  });
+  assert.equal(store.getCanonicalSourcePath(metadata.rolloutId), sourcePath);
+});
+
+test("recoverDivergedCanonicalSource enforces source identity while allowing a missing canonical source to reappear", (t) => {
+  const { databasePath, directory } = tempDatabase(t);
+  const store = new UsageStore(databasePath);
+  t.after(() => closeAndRemove(store, directory));
+  const sourcePath = path.join(directory, "canonical.jsonl");
+  const recovery = {
+    metadata,
+    events: [usageEvent(0, 2_000, "recovered")],
+    source: recoverableSource(sourcePath),
+    observedAtEpochMs: 5_000,
+  } as const;
+
+  assert.throws(() => store.recoverDivergedCanonicalSource(recovery), /Unknown rollout/);
+
+  store.replaceRolloutCandidate({
+    metadata,
+    events: [usageEvent(0, 1_000, "old")],
+    source: source(sourcePath),
+    observedAtEpochMs: 1_000,
+  });
+  assert.throws(() => store.recoverDivergedCanonicalSource(recovery), /not the rollout's canonical source/);
+
+  store.promoteRolloutCandidate({ rolloutId: metadata.rolloutId, canonicalFilePath: sourcePath, promotedAtEpochMs: 2_000 });
+  store.markSourceMissing(sourcePath, 3_000);
+  store.recoverDivergedCanonicalSource(recovery);
+  assert.deepEqual(store.getRolloutEventSignatures(metadata.rolloutId), ["recovered"]);
+  assert.deepEqual(store.listSourceFiles()[0], {
+    filePath: sourcePath,
+    rolloutId: metadata.rolloutId,
+    sizeBytes: 1_200,
+    modifiedAtEpochMs: 4_000,
+    byteOffset: 1_200,
+    prefixHash: "recovered-prefix",
+    prefixStatus: "matches",
+    canonicalStatus: "canonical",
+    isPresent: true,
+    lastScannedAtEpochMs: 5_000,
+    lastError: null,
+  });
+
+  const otherMetadata: RolloutMetadataInput = {
+    ...metadata,
+    rolloutId: "rollout-2",
+    conversationId: "conversation-2",
+  };
+  store.appendEvents(otherMetadata, [], 3_500);
+  store.upsertSourceFile({ ...source(sourcePath), rolloutId: otherMetadata.rolloutId });
+  assert.throws(() => store.recoverDivergedCanonicalSource(recovery), /belongs to a different rollout/);
+
+  const database = new DatabaseSync(databasePath, { readBigInts: true });
+  try {
+    database.prepare("DELETE FROM source_files WHERE file_path = ?").run(sourcePath);
+  } finally {
+    database.close();
+  }
+  assert.throws(() => store.recoverDivergedCanonicalSource(recovery), /does not exist in the ledger/);
+
+  assert.equal(store.getRolloutMetadata(metadata.rolloutId)?.agentRole, "main");
+  assert.deepEqual(store.getRolloutEventSignatures(metadata.rolloutId), ["recovered"]);
+  assert.equal(store.getCanonicalSourcePath(metadata.rolloutId), sourcePath);
+});
+
+test("recoverDivergedCanonicalSource does not alter sibling sources for the rollout", (t) => {
+  const { databasePath, directory } = tempDatabase(t);
+  const store = new UsageStore(databasePath);
+  t.after(() => closeAndRemove(store, directory));
+  const canonicalPath = path.join(directory, "canonical.jsonl");
+  const siblingPath = path.join(directory, "archived.jsonl");
+  store.replaceRolloutCandidate({
+    metadata,
+    events: [usageEvent(0, 1_000, "old")],
+    source: source(canonicalPath),
+    observedAtEpochMs: 1_000,
+  });
+  store.upsertSourceFile({
+    ...source(siblingPath, {
+      prefixHash: "sibling-prefix",
+      prefixStatus: "diverged",
+      canonicalStatus: "conflict",
+      lastScannedAtEpochMs: 2_500,
+      lastError: "sibling conflict",
+    }),
+    rolloutId: metadata.rolloutId,
+  });
+  store.promoteRolloutCandidate({ rolloutId: metadata.rolloutId, canonicalFilePath: canonicalPath, promotedAtEpochMs: 3_000 });
+  const siblingBefore = store.listSourceFiles().find((entry) => entry.filePath === siblingPath);
+
+  store.recoverDivergedCanonicalSource({
+    metadata,
+    events: [usageEvent(0, 2_000, "new")],
+    source: recoverableSource(canonicalPath),
+    observedAtEpochMs: 5_000,
+  });
+
+  assert.deepEqual(store.listSourceFiles().find((entry) => entry.filePath === siblingPath), siblingBefore);
+  assert.equal(store.listSourceFiles().find((entry) => entry.filePath === canonicalPath)?.canonicalStatus, "canonical");
+  assert.equal(store.countSourceConflicts(), 1);
+  assert.equal(store.getCanonicalSourcePath(metadata.rolloutId), canonicalPath);
 });
 
 test("marking a source missing does not delete permanent usage", (t) => {

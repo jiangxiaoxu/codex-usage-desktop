@@ -22,9 +22,11 @@ There is no `flock`, Windows file lock, exclusive-open flag, rename-based handof
 
 ## Read behavior and consistency
 
-The watcher observes `add`, `change` and `unlink` events for `sessions` and `archived_sessions`. `chokidar` first waits for its 2 second `awaitWriteFinish` stability threshold. The worker then applies its own 2 second reconciliation debounce, so a quiet change normally reaches reconciliation after two delay phases. A complete inventory runs at startup and every 10 minutes, which covers missed watcher events.
+The watcher observes `add`, `change` and `unlink` events for `sessions` and `archived_sessions`. `chokidar` first waits for its 2 second `awaitWriteFinish` stability threshold. After a 2 second worker debounce, path events are deduplicated and processed in batches of up to 16 without triggering a full inventory. Failed paths have bounded retries and keep status `degraded`. A non-reentrant full inventory runs at startup, on manual sync and every 5 minutes to cover missed watcher events. Its outer discovery and processing work targets at most 32 items or about 8 ms per slice, then yields to the event loop for about 50 ms.
 
-For an append-only source, the worker remembers a byte offset and a SHA-256 boundary hash. It reads only the appended stable bytes if the prior prefix still matches. If the source became shorter, its prefix hash changed, the parser needs to resolve a prior unknown model, or canonicalization requires it, the worker reparses the current source. No source mutation is used to establish consistency.
+For an append-only source, the worker remembers a byte offset and a SHA-256 boundary hash. It reads only the appended stable bytes if the prior prefix still matches. If the source became shorter, its prefix hash changed, the parser needs to resolve a prior unknown model, or canonicalization requires it, the worker reparses the current source. Parsing yields after about 256 KiB of scanning or 256 records, and full-content hashing yields between 256 KiB chunks. A full snapshot still holds the complete source `Buffer`, and one oversized record's synchronous `JSON.parse` is not preemptible; these yields do not establish strict memory or single-frame bounds.
+
+A shorter or diverged canonical file is eligible for automatic ledger recovery only at the same path with the same `rolloutId`, after a complete parse and two identical stable snapshots. Recovery replaces that rollout atomically in SQLite; failure retains the prior ledger state. Cross-path or ID changes, malformed input and unstable snapshots remain conflicts. No source mutation is used to establish consistency or recovery.
 
 ## Data retained locally
 
@@ -37,5 +39,5 @@ Archiving or later deleting a Codex rollout file does not delete previously coll
 - Keep the application data directory outside `%USERPROFILE%\.codex\sessions`, `archived_sessions` and `agents`.
 - Close the application before copying or restoring `usage.sqlite`, `usage.sqlite-wal` or `usage.sqlite-shm`. A clean exit checkpoints WAL; copying while running can otherwise omit recent WAL frames.
 - Do not use a network-synced location for the live SQLite ledger unless its synchronization behavior is known to be safe for SQLite WAL files.
-- If source conflicts or degraded status appear, preserve the ledger and source files first. Use `Sync now` or restart to retry observation; do not edit rollout JSONL to make it parse.
+- If source conflicts or degraded status appear, preserve the ledger and source files first. Use `Sync now` or restart to retry observation or eligible automatic recovery; do not edit rollout JSONL to make it parse.
 - The application has no remote audit API integration. Its source of truth is local Codex rollout history plus its own ledger.

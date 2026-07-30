@@ -18,9 +18,10 @@ The application observes local Codex rollout JSONL files under `%USERPROFILE%\.c
 Features:
 
 - A manually started, single-instance tray application; a Windows Startup launch opens directly in the notification area, and closing the dashboard keeps collection active.
-- Watcher-driven append ingestion with a periodic full inventory as a reliability fallback.
+- Deduplicated watcher-path ingestion in bounded batches without a full rescan, plus cooperative, non-reentrant full inventories at startup, on manual sync and every 5 minutes as a reliability fallback. Manual sync queues a fresh trailing inventory when one is already active.
 - Permanent SQLite accounting under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
 - Canonical rollout promotion across active and archived paths without duplicate accounting or ledger rollback.
+- Automatic atomic ledger recovery when the same canonical rollout file is safely rewritten, while ambiguous rewrites remain visible conflicts and Codex JSONL stays read-only.
 - Visible collector health, source conflicts, last inventory, SQLite path, and offline observation gaps.
 - One continuous live range slider with clickable, evenly spaced 30-minute, 4h, 12h, 1-day, 2-day, 4-day, 7-day, and 14-day anchors. The thumb can stop between anchors for ranges such as 1.5 or 10 days, and custom Singapore-time ranges are collapsed by default and available on demand.
 - Inline live filtering by model and observed role, with all models and subjects selected by default. Roles come from actual rollout/session thread metadata: the main-thread role is normalized to `root`, while subagents retain each recorded role for independent filtering and aggregation and fall back to `unknown` when missing.
