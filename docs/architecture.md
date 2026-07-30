@@ -2,72 +2,75 @@
 
 ## Scope
 
-Codex Usage Desktop is a local Electron application. It observes Codex rollout JSONL files below `%USERPROFILE%\.codex`, persists normalized usage records to its own SQLite ledger, and presents token and estimated API cost views. It does not upload observed data. Its only network client is the Main-process updater for NSIS-installed Windows builds. It checks this project's public GitHub Release metadata at startup and every four hours, then downloads a SHA-512-verified installer only after the user requests an update. Portable and development builds do not run the updater.
+Codex Usage Desktop 是本地 .NET 8 / WinUI 3 application.它只读观察 `%USERPROFILE%\.codex` 下的 rollout JSONL,将 normalized usage records 写入应用自己的 SQLite ledger,并显示 token 与标准 API 费用估算.应用不使用 WebView2,不加载 remote content,也不上传观测数据.
 
 ## Process and data flow
 
 ```text
-Codex sessions / archived_sessions JSONL --- read-only stat, readFile, open("r") --->
-                    collector-worker.ts owns chokidar and reconciliation
-                                  |
-                                  +-> rollout-parser.ts -> usage-store.ts -> usage.sqlite
-                                  |          |                    |
-                                  |          v                    v
-                                  |   normalized UsageEvent    query/export
-                                  v
-                          collector-client.ts <-> main.ts IPC <-> preload.ts <-> renderer.ts
+Codex sessions / archived_sessions JSONL
+                | read-only stat/open/read
+                v
+UsageCollector -> RolloutParser -> UsageStore -> usage.sqlite
+      |               |              |
+      |               v              v
+      |          UsageEvent      query/export
+      v                              |
+DashboardApplicationService --------+
+                |
+                v
+DashboardViewModel -> WinUI 3 XAML
 ```
 
-## Electron layers
+这些 component 位于一个 native .NET process 中,但职责边界保持独立:
 
-- `src/main.ts` owns the Electron lifecycle. It creates the `BrowserWindow`, the tray menu, the single-instance lock and the `CollectorClient`. Closing the window hides it; the collector continues in the tray until `Exit` is selected.
-- `src/preload.ts` exposes only `window.usageApi` through `contextBridge`. The renderer has `contextIsolation: true`, `nodeIntegration: false` and `sandbox: true`.
-- `src/renderer.html`, `src/renderer.ts` and `src/styles.css` implement the local dashboard. Renderer state is limited to UI filters and query results; it does not open source files or SQLite directly.
-- `src/collector-client.ts` starts `collector-worker.js` as a Node `Worker`, correlates request IDs, applies a 10 minute timeout to initialization/reconciliation and a 60 second timeout to other requests, and forwards `usage-updated` events to `main.ts`. It does not own the filesystem watcher.
-- `src/collector-worker.ts` serializes all worker operations through one promise queue. It owns source discovery, watch-triggered reconciliation, parser revision rebuild, SQLite access and CSV writing.
-- `src/update-manager.ts` owns the typed update state machine. `src/electron-update-client.ts` adapts `electron-updater` only in Main. Before installer launch, Main closes the collector, and updater cache plus staging state are validated outside protected Codex directories.
+- `CodexUsage.App` 拥有 WinUI lifecycle、window、tray、HKCU Run startup、native dialogs、Efficiency Mode 和 UI dispatcher.
+- `CodexUsage.Application` 编排 collector、query、export 和 platform service,并向 UI 暴露类型化 contract.
+- `CodexUsage.Infrastructure` 拥有 FileSystemWatcher、collector actor、SQLite access 和 protected-path policy.
+- `CodexUsage.Domain` 验证不受信任 JSONL,执行 canonicalization、filtering 和 accounting.
 
-## IPC contract
+UI 不直接打开 rollout 或 SQLite.耗时任务不占用 UI thread;Application layer 将不可变 snapshot dispatch 回 view model.
 
-`main.ts` registers the following IPC handlers. They are the only renderer-to-main operations exposed by `UsageApi`.
+## Lifecycle and Windows integration
 
-| Channel | Input | Result | Worker operation |
-| --- | --- | --- | --- |
-| `usage:sync` | none | `SyncResult` | `reconcile` |
-| `usage:query` | `FilterSpec` | `QueryResult` | `query` |
-| `usage:status` | none | `CollectorStatus` | `getStatus` |
-| `usage:export` | `FilterSpec` | saved path and count | `exportCsv` |
-| `updates:check` | none | `UpdateStatus` | asks the Main-process NSIS updater to check GitHub release metadata |
-| `updates:download-and-install` | none | none | downloads a verified installer, stops the collector, silently installs, and restarts |
-| `updates:status` | main-to-renderer event | `UpdateStatus` | typed update state and download progress |
-| `usage:updated` | main-to-renderer event | `CollectorStatus` | forwarded worker event |
+应用使用 single-instance coordination.普通的第二次启动激活现有 window.HKCU Run launch 可以直接进入 tray.关闭 dashboard 只隐藏 window,tray `Exit` 才停止 collector、checkpoint ledger 并退出 process.
 
-The worker protocol in `src/collector-protocol.ts` additionally contains `initialize` and `shutdown`; these are private to main/worker coordination. `FilterSpec` uses a half-open UTC interval `[startUtc, endUtc)`. `models: null` and `subjects: null` mean all available categories, while an empty array means none.
+进程启动后以 best effort 请求 Windows Efficiency Mode:设置 process power throttling 的 execution-speed flag,并尝试使用 below-normal priority.失败不会改变 accounting correctness,但状态会向 UI 报告.
 
-## Collection and canonicalization
+应用以 unpackaged、self-contained 的 win-x64 payload 发布,由 NSIS 提供全用户 setup、旧 Electron 0.2.6 原位升级、Program Files ownership、快捷方式、自启动迁移和卸载.安装器在覆盖程序前备份 LocalAppData ledger;应用数据不属于卸载 manifest,因此默认保留.当前 release feed 未配置,升级通过更高版本的 setup EXE 完成.
 
-The worker inventories `sessions` and `archived_sessions` recursively and only considers files named `rollout-*.jsonl`. Watcher path events are deduplicated and reconciled directly in batches of up to 16 without triggering a full inventory. Failed path processing has five bounded retries with backoff, and the collector remains `degraded` while retry or conflict state remains.
+## Collection actor
 
-A non-reentrant full inventory runs at startup, on manual sync and every 5 minutes as a fallback. If manual sync arrives during an active inventory, it queues one fresh trailing run instead of returning the active run's result. Discovery streams through `opendir`, and outer inventory work targets at most 32 items or about 8 ms before yielding for about 50 ms. These are cooperative duty-cycle targets, not strict per-item latency bounds.
+`UsageCollector` 通过单 consumer channel 串行化状态变更.FileSystemWatcher callback 只规范化路径并入队,不会读取或解析完整 JSONL.重复 path event 经过 debounce 和去重,每批最多处理 16 个 path.失败 path 使用有界 retry 和 backoff;仍有 retry 或 conflict 时状态为 `degraded`.
 
-The worker tracks source size, mtime, committed byte offset and a SHA-256 hash over the final 64 KiB of the consumed prefix. A stable source is read by stat-before/read/stat-after checks. Incremental reads verify the prior boundary before parsing appended bytes; otherwise the file is fully reparsed. Full parsing cooperatively yields after about 256 KiB of scanning or 256 records, and full-content SHA-256 updates use 256 KiB chunks with yields between chunks.
+full inventory 在 startup、manual sync 和每 5 分钟的兜底 reconciliation 运行.它不可重入;活动期间的手动同步最多排队一个 trailing run.目录采用 breadth-first 分片 enumeration,outer work 和 parser/hash work 在小片之间 cooperative yield,降低长时间占用 CPU 的峰值.这些值是 duty-cycle target,不是严格的单条 record latency 或 memory bound.
 
-Each rollout has one canonical source in SQLite. Active and archived copies can therefore represent the same rollout without duplicate usage. If the canonical file at the same path is rewritten shorter or diverges, the worker can rebuild that rollout in the application ledger only after the complete file parses successfully and two stable snapshots are identical. The parsed `rolloutId` must still match the canonical rollout. Replacement of that rollout's events and source metadata is one SQLite transaction, so failure preserves the prior ledger state. Cross-path divergence, a changed rollout ID, malformed input and unstable snapshots remain source conflicts. Codex JSONL is never changed during recovery.
+collector 记录 source size、mtime、committed byte offset 和 consumed prefix boundary hash.稳定读取使用 stat-before/read/stat-after.追加读取先验证既有 boundary;验证失败时执行完整 reparse.
 
-A missing source is marked absent but its already-accounted permanent ledger history is retained. When `ROLLOUT_PARSER_REVISION` changes, each currently present viable rollout is replaced transactionally. The revision marker advances only after every required candidate has been discovered successfully and its selected rollout replacement succeeds. Completed rollout replacements can persist if a later candidate fails, and a later reconciliation retries the incomplete rebuild; there is no global atomic rebuild.
+## Canonicalization and recovery
 
-## Parser and normalized records
+每个 rollout 在 ledger 中只有一个 canonical source.active 与 archived copy 因此不会重复计费.同一路径的 canonical file 变短或 diverge 时,只有同时满足以下条件才恢复:
 
-`rollout-parser.ts` accepts only newline-terminated JSONL records. A trailing partial line is deliberately deferred until it becomes complete. It derives rollout metadata from `session_meta`, resolves models from `turn_context`, `thread_settings_applied` and `task_started`, and extracts `token_count` deltas from `last_token_usage`.
+- 当前文件完整解析成功.
+- parsed `rolloutId` 与 canonical rollout 一致.
+- 两次独立 stable snapshot 完全一致.
 
-Cooperative parsing does not impose a strict memory or single-frame execution bound. A full snapshot still holds the complete source `Buffer`, and the final synchronous `JSON.parse` of one oversized JSON record cannot be preempted.
+恢复在一个 SQLite transaction 中替换该 rollout 的 event 和 source metadata.失败保留旧 ledger.Cross-path divergence、ID 变化、malformed input 或 unstable snapshot 保持 conflict.Codex JSONL 永不作为恢复步骤被修改.
 
-The parser drops invalid token relationships, invalid timestamps, zero-breakdown snapshots and only adjacent complete cumulative snapshots. `reasoning_output_tokens` must not exceed `output_tokens`, and `cached_input_tokens` must not exceed `input_tokens`. Forked rollout replay is excluded so copied historical tokens are not double counted. Manual main-thread forks become live when `task_started.started_at` and, when needed, the UUIDv7 turn timestamp prove that the task began after the fork boundary. Subagent forks retain the addressed-child handshake proof.
+source 消失时仅标记 absent,已经记账的历史 event 保留.parser revision 变化时,当前可发现 rollout 逐个 transaction rebuild;所有候选成功后才推进 revision marker.
 
-`UsageEvent` is the normalized unit: timestamp, rollout and conversation identity, thread classification, agent metadata, model, input, cache input, output and reasoning output. `usage-core.ts` applies filters, facet calculation, grouping and cost aggregation after SQLite returns the time-scoped events.
+## Parser and accounting
+
+parser 只接受 newline-terminated JSONL record,尾部 partial line 延后处理.所有不受信任 field 在进入 aggregation 或 persistence 前经过 runtime validation.它解析 session metadata、model attribution、thread/role 和 `last_token_usage` delta.
+
+invalid token relationship、zero-breakdown snapshot、相邻 complete cumulative duplicate 和 fork replay 被排除.`reasoning_output_tokens` 必须不大于 `output_tokens`,`cached_input_tokens` 必须不大于 `input_tokens`.
 
 ## SQLite ledger
 
-`usage-store.ts` owns `usage.sqlite`, with schema version in `PRAGMA user_version`. The schema stores `rollouts`, `usage_events`, `source_files`, `collector_runs`, `collector_diagnostics` and `collector_state`. Source and usage writes run in `BEGIN IMMEDIATE` transactions. The application ledger uses foreign keys, WAL mode and a 5 second SQLite busy timeout. On clean shutdown it performs `wal_checkpoint(TRUNCATE)` before closing the database.
+`UsageStore` 管理 `usage.sqlite` 和 schema version.ledger 存储 rollouts、usage events、source state、collector runs、diagnostics 和 collector state.写操作使用 transaction,SQLite 启用 foreign keys、WAL 和 5 second busy timeout.clean shutdown 执行 checkpoint.
 
-All application modes store the default ledger at `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`, unless `CODEX_USAGE_DATA_DIR` is set. This keeps the ledger independent of executable, portable-copy, and NSIS installation paths.
+```text
+Default:  %LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite
+Override: %CODEX_USAGE_DATA_DIR%\usage.sqlite
+```
+
+data directory 与 Program Files install location 解耦,并且不得 resolve 到受保护 Codex source tree.

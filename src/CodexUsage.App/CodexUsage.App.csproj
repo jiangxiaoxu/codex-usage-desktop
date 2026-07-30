@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>CodexUsage.App</RootNamespace>
+    <AssemblyName>Codex Usage Desktop</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <DisableXamlGeneratedMain>true</DisableXamlGeneratedMain>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <ProjectReference Include="../CodexUsage.Application/CodexUsage.Application.csproj" />
+    <ProjectReference Include="../CodexUsage.Infrastructure/CodexUsage.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\assets\dashboard-preview.jpg" Link="Assets\app-logo.jpg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Target Name="CopyUnpackagedXamlResourcesToPublish" AfterTargets="Publish" Condition="'$(WindowsPackageType)' == 'None'">
+    <ItemGroup>
+      <_AppXamlBinary Include="$(TargetDir)**\*.xbf" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(TargetDir)$(AssemblyName).pri')" Text="The unpackaged WinUI publish is missing the application PRI source: $(TargetDir)$(AssemblyName).pri" />
+    <Error Condition="'@(_AppXamlBinary)' == ''" Text="The unpackaged WinUI publish did not produce any XBF resources under $(TargetDir)." />
+    <Copy
+      SourceFiles="@(_AppXamlBinary)"
+      DestinationFiles="@(_AppXamlBinary->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+    <Copy
+      SourceFiles="$(TargetDir)$(AssemblyName).pri"
+      DestinationFolder="$(PublishDir)"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

@@ -2,42 +2,48 @@
 
 ## Protected Codex directories
 
-The following paths form the strict no-write boundary:
+以下路径构成严格 no-write boundary:
 
 - `%USERPROFILE%\.codex\sessions`
 - `%USERPROFILE%\.codex\archived_sessions`
 - `%USERPROFILE%\.codex\agents`
 
-The application observes `sessions` and `archived_sessions` read-only. It must never open any file below these paths for writing, lock it, rename it, delete it, truncate it, repair it or create an output beneath it. The `agents` directory remains protected by the same no-write boundary, but the collector does not read or watch it.
+collector 只读观察 `sessions` 和 `archived_sessions`.`agents` 不被读取或 watch,但受相同保护.应用不得在这些路径内写入、创建、锁定、重命名、删除、截断、修复或移动任何文件.
 
-## How the boundary is enforced
+## Enforcement
 
-- `main.ts` validates the data directory before and after it creates it. `write-boundary.ts` resolves real existing ancestors and rejects a candidate located inside any protected directory. This prevents a configured ledger directory from being a protected directory itself, including through an existing symlink or junction ancestor.
-- The CSV save path is checked by the same boundary validator before the worker writes it.
-- `collector-worker.ts` reads rollout files with `stat`, `readFile` and `open(filePath, "r")`. `chokidar` watches the rollout source directories but does not change their contents.
-- The worker opens and writes only the application SQLite ledger and a user-selected CSV path that has passed the protected-directory check.
-- `src/write-boundary.test.ts` currently covers direct protected-path rejection for fixture `sessions` and `agents` directories, plus a junction-mediated `agents` path. It does not yet provide standalone fixture coverage for `archived_sessions` or Windows case-variant paths.
+- `ProtectedPathPolicy` 对 ledger、export 和其他 output path 执行 absolute-path normalization,解析现有 reparse point 和 ancestor,拒绝位于 protected tree 内的 candidate.
+- rollout source 只以 read access 打开.FileSystemWatcher 只订阅 notification,不会改变 source.
+- `UsageStore` 只写应用拥有的 SQLite ledger.
+- CSV save path 在打开 output stream 前验证.
+- 测试中的 source mutation 仅作用于 disposable fixture directory,绝不指向用户真实 `.codex`.
 
-There is no `flock`, Windows file lock, exclusive-open flag, rename-based handoff or file-repair behavior for Codex source paths. A source that changes during a stat/read/stat window is not accepted as stable; the worker records a retry diagnostic and waits for later reconciliation rather than modifying the source.
+source 在 stat/read/stat window 中变化时,当前 snapshot 不会被接受.collector 记录 retry diagnostic 并等待后续 event 或 reconciliation,不会修复 source.
 
-## Read behavior and consistency
+## Consistency and recovery
 
-The watcher observes `add`, `change` and `unlink` events for `sessions` and `archived_sessions`. `chokidar` first waits for its 2 second `awaitWriteFinish` stability threshold. After a 2 second worker debounce, path events are deduplicated and processed in batches of up to 16 without triggering a full inventory. Failed paths have bounded retries and keep status `degraded`. A non-reentrant full inventory runs at startup, on manual sync and every 5 minutes to cover missed watcher events. Its outer discovery and processing work targets at most 32 items or about 8 ms per slice, then yields to the event loop for about 50 ms.
+watch event 经过 debounce、deduplication 和有界 batch.不可重入 full inventory 在 startup、manual sync 和每 5 分钟运行.目录、解析和 hashing work 被切片,在片之间 cooperative yield,以降低后台 CPU 峰值.
 
-For an append-only source, the worker remembers a byte offset and a SHA-256 boundary hash. It reads only the appended stable bytes if the prior prefix still matches. If the source became shorter, its prefix hash changed, the parser needs to resolve a prior unknown model, or canonicalization requires it, the worker reparses the current source. Parsing yields after about 256 KiB of scanning or 256 records, and full-content hashing yields between 256 KiB chunks. A full snapshot still holds the complete source `Buffer`, and one oversized record's synchronous `JSON.parse` is not preemptible; these yields do not establish strict memory or single-frame bounds.
+append-only source 可以从 verified byte offset 继续读取.如果 source 变短、prefix boundary 改变或 canonicalization 需要,collector 重新解析当前 stable snapshot.
 
-A shorter or diverged canonical file is eligible for automatic ledger recovery only at the same path with the same `rolloutId`, after a complete parse and two identical stable snapshots. Recovery replaces that rollout atomically in SQLite; failure retains the prior ledger state. Cross-path or ID changes, malformed input and unstable snapshots remain conflicts. No source mutation is used to establish consistency or recovery.
+同路径 canonical rewrite 只有在 `rolloutId` 不变、完整 parse 成功且两次 stable snapshot 一致时才原子替换 ledger.任何失败都保留旧 ledger.Cross-path divergence、ID 变化、malformed input 和 unstable snapshot 保持 conflict.恢复过程不修改 Codex source.
 
-## Data retained locally
+## Local data
 
-The permanent ledger contains rollout metadata, token event fields, source-file metadata, collector run status, diagnostics and parser revision state. It may contain local agent paths, nicknames, conversation IDs and rollout IDs. Treat `usage.sqlite`, exported CSV files and packaged application logs as local usage data.
+```text
+Default:  %LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite
+Override: %CODEX_USAGE_DATA_DIR%\usage.sqlite
+```
 
-Archiving or later deleting a Codex rollout file does not delete previously collected events. The ledger marks a source absent, preserving history. This is intentional for accounting continuity and means deletion of a source file is not a deletion request for the ledger.
+ledger 可包含 token event、source metadata、collector diagnostics、agent path、nickname、conversation ID 和 rollout ID.CSV 与 log 也可能包含本地 usage data,应使用相同访问控制.
+
+source 被 archive 或删除不会删除已采集 event.ledger 保留历史以维持 accounting continuity;source deletion 不是 ledger deletion request.
 
 ## Operational safeguards
 
-- Keep the application data directory outside `%USERPROFILE%\.codex\sessions`, `archived_sessions` and `agents`.
-- Close the application before copying or restoring `usage.sqlite`, `usage.sqlite-wal` or `usage.sqlite-shm`. A clean exit checkpoints WAL; copying while running can otherwise omit recent WAL frames.
-- Do not use a network-synced location for the live SQLite ledger unless its synchronization behavior is known to be safe for SQLite WAL files.
-- If source conflicts or degraded status appear, preserve the ledger and source files first. Use `Sync now` or restart to retry observation or eligible automatic recovery; do not edit rollout JSONL to make it parse.
-- The application has no remote audit API integration. Its source of truth is local Codex rollout history plus its own ledger.
+- data directory 必须位于三个 protected directory 以外.
+- 复制或恢复 `usage.sqlite` 前退出应用,并一起处理可能存在的 `-wal` 与 `-shm` companion.
+- 不要在不明确支持 SQLite WAL 的 network-synced location 中运行 live ledger.
+- conflict 或 degraded 状态出现时先保留 ledger 和 source,再使用 `Sync now` 或重启重试.不要编辑 rollout JSONL 以强制 parse.
+- 旧 ledger 迁移脚本只复制、校验和备份,不会删除 source.
+- 应用默认 offline,没有 remote audit API.

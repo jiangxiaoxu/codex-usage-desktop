@@ -55,6 +55,6 @@ This application treats every observed rollout as Codex subscription usage. Inpu
 
 ## Time, filters and percentages
 
-The renderer converts Singapore local control values to UTC and queries the half-open range `[startUtc, endUtc)`. Model and subject facets are calculated over all events in that time range before the current model/subject selection, so one filter does not make the other filter's choices disappear. Agent path search is applied after model and subject matching.
+The WinUI view model converts Singapore local control values to UTC and queries the half-open range `[startUtc, endUtc)`. Model and subject facets are calculated over all events in that time range before the current model/subject selection, so one filter does not make the other filter's choices disappear. Agent path search is applied after model and subject matching.
 
 Displayed USD values are formatted to one decimal place. A displayed price share is `group.cost.total / selected.summary.cost.total`; it is a cost share, not a token share. When the selected total cost is zero, a meaningful positive price share is not available. CSV exports retain a higher-precision decimal `total_cost_usd` value. Their fields are `timestamp_sgt`, `conversation_id`, `rollout_id`, `thread_type`, `agent_role`, `agent_path`, `model_category`, `source_model`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `other_output_tokens` and `total_cost_usd`.

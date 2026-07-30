@@ -1,12 +1,12 @@
-# Python
-/.ven/
-/__pycache__/
-*.py[cod]
-
-# Node and Electron
+# Build and package output
 /node_modules/
 /dist/
 /release*/
+
+# .NET and WinUI generated output
+**/bin/
+**/obj/
+**/AppPackages/
 
 # Generated reports and scratch state
 *.csv

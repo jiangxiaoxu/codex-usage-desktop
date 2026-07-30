@@ -2,16 +2,16 @@
 
 ## Complete cross-drive move
 
-This procedure moves the complete local project from `C:\Projects\codex-usage-desktop` to `D:\Projects\codex-usage-desktop`. It preserves Git history, tracked and untracked files, and ignored local material that exists under the source tree. This is deliberately not a lean clone.
+本流程将完整 local workspace 从 `C:\Projects\codex-usage-desktop` 复制到 `D:\Projects\codex-usage-desktop`,保留 Git history、tracked/untracked files 和 ignored local material.它不是 lean clone.
 
-The copy scope includes `.git`, `node_modules`, `dist`, every `release*` directory, `outputs`, `work`, `task-memory`, `.ven`, `__pycache__`, local `codex-usage-data` directories, `.env` and `.env.*` files, and other local scratch files below the source root. `%USERPROFILE%\.codex\sessions`, `archived_sessions` and `agents` are not project files and must remain in place. The application observes `sessions` and `archived_sessions` read-only; `agents` remains inside the protected no-write boundary but is not read or watched.
+copy scope 包括 `.git`、`bin`、`obj`、`AppPackages`、`dist`、`release*`、`outputs`、`work`、`task-memory`、`.ven`、local ledger、`.env` 和其他 source-tree scratch.用户的 `%USERPROFILE%\.codex\sessions`、`archived_sessions` 和 `agents` 不是 project file,必须留在原处.
 
-The copied tree can contain sensitive local data: SQLite ledger records, CSV exports, `.env` secrets, package cache material and task scratch state. Restrict access to `D:\Projects\codex-usage-desktop` before copying, and do not place it in a shared or synchronized location without an explicit data-handling decision.
+完整 workspace 可能包含 SQLite ledger、CSV export、environment secret、package cache 和 task scratch.目标目录不应位于未经明确批准的 shared/synchronized location.
 
 ## Preconditions
 
-1. Exit the tray application from its `Exit` menu. Close Electron development runs, package builds, terminals and editors that can write below the source tree.
-2. Record the source state while it is quiescent:
+1. 从 tray `Exit` 退出应用,关闭 build、terminal 和可能写入 workspace 的 editor.
+2. 记录 quiescent source state:
 
    ```powershell
    Set-Location 'C:\Projects\codex-usage-desktop'
@@ -20,33 +20,27 @@ The copied tree can contain sensitive local data: SQLite ledger records, CSV exp
    git rev-parse HEAD
    ```
 
-3. In the desktop app, note the resolved ledger path. The default ledger lives at `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`; an external `CODEX_USAGE_DATA_DIR` ledger needs the separate handling described below.
-4. Confirm that `D:` is available, `D:\Projects` has enough capacity for the entire source tree, and `D:\Projects\codex-usage-desktop` does not already exist.
-5. Do not use `git clean`, `git reset --hard`, forced checkout or any operation that discards uncommitted work.
+3. 记录 dashboard 显示的 ledger path.默认是 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`;`CODEX_USAGE_DATA_DIR` 可能指向其他位置.
+4. 确认目标 drive 容量足够且 `D:\Projects\codex-usage-desktop` 不存在.
+5. 不使用会丢弃 uncommitted work 的 clean、hard reset 或 forced checkout.
 
 ## Copy and verify
 
-Run PowerShell after the application has exited. This copies all source-tree contents, including ignored files, across drives. It does not delete the source.
+应用退出后运行:
 
 ```powershell
 $source = [IO.Path]::GetFullPath('C:\Projects\codex-usage-desktop').TrimEnd('\\')
 $target = [IO.Path]::GetFullPath('D:\Projects\codex-usage-desktop').TrimEnd('\\')
 
-if ($source -eq $target) {
-  throw 'Source and target must differ.'
-}
-if (Test-Path -LiteralPath $target) {
-  throw "Target already exists: $target"
-}
+if ($source -eq $target) { throw 'Source and target must differ.' }
+if (Test-Path -LiteralPath $target) { throw "Target already exists: $target" }
 
 New-Item -ItemType Directory -Force -Path 'D:\Projects' | Out-Null
 robocopy $source $target /E /COPY:DAT /DCOPY:DAT /R:1 /W:1
-if ($LASTEXITCODE -gt 7) {
-  throw "robocopy failed with exit code $LASTEXITCODE"
-}
+if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
 ```
 
-Verify the byte content before building or starting anything in the target. The manifest includes hidden `.git` files and ignored files.
+在 target build 前比较 byte manifest:
 
 ```powershell
 function Get-TreeManifest([string]$root) {
@@ -63,50 +57,46 @@ function Get-TreeManifest([string]$root) {
 $difference = Compare-Object (Get-TreeManifest $source) (Get-TreeManifest $target)
 if ($null -ne $difference) {
   $difference | Format-Table -AutoSize
-  throw 'Copy verification failed. Keep the source and recopy after resolving the difference.'
+  throw 'Copy verification failed. Keep the source and resolve the difference.'
 }
 ```
 
-Then validate the target repository and rebuild there. These commands may update target build output after the copy verification; that is expected.
+然后验证 target:
 
 ```powershell
 Set-Location 'D:\Projects\codex-usage-desktop'
 git status --short
 git branch --show-current
 git rev-parse HEAD
-npm run typecheck
-npm test
-npm run package:portable
+dotnet restore CodexUsageDesktop.sln
+dotnet build CodexUsageDesktop.sln -c Release --no-restore
+dotnet test CodexUsageDesktop.sln -c Release --no-build
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.0
 ```
 
-Compare the three Git outputs with the values recorded from the source. A different status, branch or revision means the relocation is incomplete or the source changed during copying; stop and recopy rather than reconstructing changes manually.
+Git status、branch 和 revision 必须与 source 记录一致.差异意味着 copy 不完整或 source 在 copy 期间发生变化;应停止并重新验证,不要手工猜测缺失内容.installer 输出应为 `release\winui-installer\codex-usage-desktop-setup-0.3.0-x64.exe`;缺少 NSIS 3.x 或 `makensis.exe` 时,build script 会明确失败.
 
-## Ledger and environment handling
+## Ledger and environment
 
-The source-tree copy already includes every co-located Portable ledger, `usage.sqlite-wal` and `usage.sqlite-shm` file. Do not copy a live ledger: the tray application must be exited first.
+不要复制 live ledger.应用退出后,将 `usage.sqlite` 与存在的 `-wal`、`-shm` companion 作为一个集合处理.如果使用 `CODEX_USAGE_DATA_DIR`,新路径必须是 protected Codex tree 以外的绝对可写目录.
 
-If the noted ledger path is outside the source tree because `CODEX_USAGE_DATA_DIR` is set or the application uses the default LocalAppData location, copy `usage.sqlite` together with its WAL companion files after the application exits. To move that ledger into the target, use a target-owned directory such as `D:\Projects\codex-usage-desktop\data`, verify it with the same manifest approach, and configure the target launch environment to set `CODEX_USAGE_DATA_DIR` to that directory before launching. Do not copy only `usage.sqlite` while WAL companion files exist.
+`.env` 和其他 machine-local file 会被 full-tree copy.运行 target 前审阅其中 absolute path 和 secret,保留 original copy 直到验收完成.
 
-`.env` and `.env.*` files are included by the full-tree copy. Review their absolute paths, credentials and machine-specific settings before running the target. Preserve an original copy until the target has completed validation.
+若 workspace 中存在旧 `release\codex-usage-data`,可在 target 运行一次 non-destructive migration:
 
-## Cutover, smoke and source deletion
+```powershell
+./scripts/migrate-usage-ledger.ps1 -WhatIf
+./scripts/migrate-usage-ledger.ps1
+```
 
-1. Start only the target application after the old tray instance has exited. Update any shortcut that still points at the old launcher.
-2. Run the release checks in [testing.md](testing.md). The real Electron smoke is read-only with respect to Codex sources: query, filter, tray, export and data-directory checks are allowed; editing rollout JSONL or `agents/*.toml` is not.
-3. Confirm the dashboard reports the intended ledger path and that it is outside `%USERPROFILE%\.codex`.
-4. Keep the original source tree as rollback until the target build, application startup and read-only smoke all succeed.
-5. Only after that acceptance and an explicit decision that the rollback window has ended, remove the old tree. This is irreversible and must be run manually, never as part of the copy script:
+该工具固定写入 `%LOCALAPPDATA%\Codex Usage Desktop`,执行 path boundary、确认、backup 和 hash verification,且不删除旧 source.
 
-   ```powershell
-   Remove-Item -LiteralPath 'C:\Projects\codex-usage-desktop' -Recurse -Force
-   ```
+## Cutover and rollback
 
-## Rollback
+1. original app 完全退出后只启动 target app.
+2. 执行 [testing.md](testing.md) 中的 native smoke,真实 Codex source 保持 read-only.
+3. 确认 dashboard 显示预期 ledger path,且路径不在 `%USERPROFILE%\.codex` 下.
+4. target 的 build、startup、tray、query、export 和 NSIS setup smoke 全部成功前保留 original tree.若验证从 Electron 0.2.6 升级,使用已备份 ledger 的 disposable install,确认 WinUI 3 原位替换、自启动迁移及 LocalAppData ledger 连续.
+5. rollback window 结束后,source tree 删除必须由用户单独明确决定,copy/migration script 不执行删除.
 
-Before source deletion, rollback means exiting the target app and relaunching the original app with its original ledger. Keep both trees unchanged until the target is accepted.
-
-After source deletion, do not alter `%USERPROFILE%\.codex`. Restore the original project location by copying the verified target tree back to a new or empty original path, then restore or point `CODEX_USAGE_DATA_DIR` at the matching copied ledger. Retain the failed target tree for diagnosis rather than overwriting it.
-
-## Alternative not selected: lean migration
-
-A lean migration would create a fresh clone at `D:\Projects\codex-usage-desktop`, run `npm ci`, rebuild `dist` and `release`, and intentionally omit ignored dependencies, ledgers, environment files and scratch state. It is useful for a clean development checkout, but it is not the selected procedure because it does not preserve the complete local working environment.
+rollback 时退出 target,恢复 original workspace 或其 verified copy,并指向 matching ledger.不要修改 `%USERPROFILE%\.codex` 作为 rollback 手段.
