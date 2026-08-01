@@ -52,6 +52,7 @@ public sealed partial class MainWindow : Window
         StartupDiagnostics.Write("MainWindow.InitializeComponent starting");
         InitializeComponent();
         StartupDiagnostics.Write("MainWindow.InitializeComponent completed");
+        TitleBarText.Text = $"Codex Usage Desktop v{CurrentReleaseVersion}";
         _requestApplicationExit = requestApplicationExit;
         _enableAutomaticUpdateChecks = enableAutomaticUpdateChecks;
 
@@ -116,7 +117,7 @@ public sealed partial class MainWindow : Window
         var windowId = Win32Interop.GetWindowIdFromWindow(_windowHandle);
         _appWindow = AppWindow.GetFromWindowId(windowId);
         StartupDiagnostics.Write("AppWindow acquired");
-        _appWindow.Title = "Codex Usage Desktop";
+        _appWindow.Title = $"Codex Usage Desktop v{CurrentReleaseVersion}";
         var appIconPath = Path.Combine(
             AppContext.BaseDirectory,
             "Assets",
@@ -161,7 +162,7 @@ public sealed partial class MainWindow : Window
             var version = typeof(MainWindow).Assembly.GetName().Version;
             return version is { Major: >= 0, Minor: >= 0, Build: >= 0 }
                 ? $"{version.Major}.{version.Minor}.{version.Build}"
-                : "0.3.1";
+                : "0.3.2";
         }
     }
 

@@ -13,6 +13,8 @@
 /outputs/
 /work/
 /task-memory/
+__pycache__/
+*.py[cod]
 
 # Local ledgers, logs, and environment files
 *.sqlite

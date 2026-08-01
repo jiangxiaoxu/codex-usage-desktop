@@ -4,6 +4,11 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-01
+
+- Enlarged the cost composition price total, legend labels, and color swatches while preserving the compact responsive layout and safe wrapping at the minimum window width.
+- Added the current software version to the native title bar and ignored Python cache artifacts in the repository.
+
 ## [0.3.1] - 2026-08-01
 
 - Added SHA-256-only GitHub Release checks and downloads for the unsigned experimental update channel. Metadata is checked at startup and every six hours; installer launch requires explicit confirmation plus a final local SHA-256 and generation check.

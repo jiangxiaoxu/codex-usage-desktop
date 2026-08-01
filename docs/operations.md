@@ -67,10 +67,10 @@ CSV export 是明确 user action.选定 snapshot 只会写入通过 protected-pa
 生成 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
 ```
 
-脚本生成 self-contained x64 publish,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.1-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /T /F` 终止 process tree,确认退出后才替换程序文件;无法确认退出时安装失败.
+脚本生成 self-contained x64 publish,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.2-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /T /F` 终止 process tree,确认退出后才替换程序文件;无法确认退出时安装失败.
 
 setup 支持从旧 Electron 0.2.6 原位升级.覆盖前会把 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 及存在的 WAL/SHM 备份到 `ledger-backups\preinstall-*`,然后移除旧 Electron payload.旧 Startup shortcut 会迁移为 HKCU Run entry,安装页允许保留或改变该选择.检测到更高版本时拒绝降级,相同版本可执行 repair install.
 

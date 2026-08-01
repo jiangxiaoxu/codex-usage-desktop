@@ -71,10 +71,10 @@ git rev-parse HEAD
 dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
 ```
 
-Git status、branch 和 revision 必须与 source 记录一致.差异意味着 copy 不完整或 source 在 copy 期间发生变化;应停止并重新验证,不要手工猜测缺失内容.installer 输出应为 `release\winui-installer\codex-usage-desktop-setup-0.3.1-x64.exe`;缺少 NSIS 3.x 或 `makensis.exe` 时,build script 会明确失败.
+Git status、branch 和 revision 必须与 source 记录一致.差异意味着 copy 不完整或 source 在 copy 期间发生变化;应停止并重新验证,不要手工猜测缺失内容.installer 输出应为 `release\winui-installer\codex-usage-desktop-setup-0.3.2-x64.exe`;缺少 NSIS 3.x 或 `makensis.exe` 时,build script 会明确失败.
 
 ## Ledger and environment
 

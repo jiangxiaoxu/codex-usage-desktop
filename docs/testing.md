@@ -9,7 +9,7 @@ dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
 git diff --check
 ```
 

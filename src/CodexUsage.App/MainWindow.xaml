@@ -101,6 +101,7 @@
                 Background="{StaticResource PrimaryFillBrush}"
                 CornerRadius="3" />
             <TextBlock
+                x:Name="TitleBarText"
                 Grid.Column="1"
                 Margin="10,0,0,0"
                 VerticalAlignment="Center"
@@ -338,7 +339,7 @@
                                 Grid.Column="1"
                                 MaxWidth="240"
                                 VerticalAlignment="Center"
-                                FontSize="12"
+                                FontSize="14"
                                 FontWeight="SemiBold"
                                 Foreground="{StaticResource SecondaryTextBrush}"
                                 TextWrapping="WrapWholeWords">
@@ -350,31 +351,31 @@
                             Height="10"
                             Background="{StaticResource ProgressTrackBrush}"
                             Items="{Binding CostSlices}" />
-                        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="14">
-                            <Grid Column="0" ColumnDefinitions="8,*" ColumnSpacing="8">
-                                <Rectangle Width="8" Height="8" VerticalAlignment="Top" Margin="0,4,0,0" Fill="{StaticResource CostUncachedBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
+                        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="16">
+                            <Grid Column="0" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
+                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostUncachedBrush}" />
+                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
                                     <Run Text="无缓存输入 " />
                                     <Run Text="{Binding CostSlices[0].Detail}" />
                                 </TextBlock>
                             </Grid>
-                            <Grid Grid.Column="1" ColumnDefinitions="8,*" ColumnSpacing="8">
-                                <Rectangle Width="8" Height="8" VerticalAlignment="Top" Margin="0,4,0,0" Fill="{StaticResource CostCachedBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
+                            <Grid Grid.Column="1" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
+                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostCachedBrush}" />
+                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
                                     <Run Text="缓存输入 " />
                                     <Run Text="{Binding CostSlices[1].Detail}" />
                                 </TextBlock>
                             </Grid>
-                            <Grid Grid.Column="2" ColumnDefinitions="8,*" ColumnSpacing="8">
-                                <Rectangle Width="8" Height="8" VerticalAlignment="Top" Margin="0,4,0,0" Fill="{StaticResource CostReasoningBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
+                            <Grid Grid.Column="2" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
+                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostReasoningBrush}" />
+                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
                                     <Run Text="思考输出 " />
                                     <Run Text="{Binding CostSlices[2].Detail}" />
                                 </TextBlock>
                             </Grid>
-                            <Grid Grid.Column="3" ColumnDefinitions="8,*" ColumnSpacing="8">
-                                <Rectangle Width="8" Height="8" VerticalAlignment="Top" Margin="0,4,0,0" Fill="{StaticResource CostOtherBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
+                            <Grid Grid.Column="3" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
+                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostOtherBrush}" />
+                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
                                     <Run Text="其他输出 " />
                                     <Run Text="{Binding CostSlices[3].Detail}" />
                                 </TextBlock>

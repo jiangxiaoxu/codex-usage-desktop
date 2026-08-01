@@ -14,7 +14,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     [Fact]
     public async Task CheckAcceptsOnlyTheExpectedNewerGitHubReleaseAsset()
     {
-        var manifest = CreateManifest("v0.3.2", "installer bytes");
+        var manifest = CreateManifest("v0.3.3", "installer bytes");
         using var client = CreateClient([JsonResponse(manifest)]);
         var dataDirectory = CreateDataDirectory();
         try
@@ -26,10 +26,10 @@ public sealed class GitHubReleaseUpdateServiceTests
             Assert.True(result.IsAvailable);
             Assert.True(result.IsUpdateAvailable);
             Assert.NotNull(result.Package);
-            Assert.Equal("0.3.2", result.Package.Version);
-            Assert.Equal("v0.3.2", result.Package.ReleaseTag);
+            Assert.Equal("0.3.3", result.Package.Version);
+            Assert.Equal("v0.3.3", result.Package.ReleaseTag);
             Assert.Equal(
-                "https://github.com/jiangxiaoxu/codex-usage-desktop/releases/download/v0.3.2/codex-usage-desktop-setup-0.3.2-x64.exe",
+                "https://github.com/jiangxiaoxu/codex-usage-desktop/releases/download/v0.3.3/codex-usage-desktop-setup-0.3.3-x64.exe",
                 result.Package.DownloadUri.AbsoluteUri);
             Assert.Contains("未签名实验版本", result.Message, StringComparison.Ordinal);
         }
@@ -42,7 +42,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     [Fact]
     public async Task CheckRejectsMultipleAssetsEvenWhenOneAssetLooksValid()
     {
-        var manifest = CreateManifest("v0.3.2", "installer bytes", assetCount: 2);
+        var manifest = CreateManifest("v0.3.3", "installer bytes", assetCount: 2);
         using var client = CreateClient([JsonResponse(manifest)]);
         var dataDirectory = CreateDataDirectory();
         try
@@ -65,7 +65,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     [Fact]
     public async Task CheckRejectsAReleaseFromAnotherRepository()
     {
-        var manifest = CreateManifest("v0.3.2", "installer bytes").Replace(
+        var manifest = CreateManifest("v0.3.3", "installer bytes").Replace(
             "github.com/jiangxiaoxu/codex-usage-desktop",
             "github.com/not-owner/not-repository",
             StringComparison.Ordinal);
@@ -87,11 +87,11 @@ public sealed class GitHubReleaseUpdateServiceTests
     [Fact]
     public async Task CheckRejectsNonSemanticVersionTagsAndMissingDigest()
     {
-        var invalidVersion = CreateManifest("v0.3.2", "installer bytes").Replace(
-            "v0.3.2",
+        var invalidVersion = CreateManifest("v0.3.3", "installer bytes").Replace(
+            "v0.3.3",
             "v0.3",
             StringComparison.Ordinal);
-        var missingDigestNode = JsonNode.Parse(CreateManifest("v0.3.2", "installer bytes"))!.AsObject();
+        var missingDigestNode = JsonNode.Parse(CreateManifest("v0.3.3", "installer bytes"))!.AsObject();
         missingDigestNode["assets"]!.AsArray()[0]!.AsObject().Remove("digest");
         var missingDigest = missingDigestNode.ToJsonString();
         var dataDirectory = CreateDataDirectory();
@@ -118,7 +118,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     public async Task DownloadWritesOnlyTheValidatedSha256Installer()
     {
         const string payload = "installer bytes";
-        var manifest = CreateManifest("v0.3.2", payload);
+        var manifest = CreateManifest("v0.3.3", payload);
         using var client = CreateClient(
             [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -153,7 +153,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     {
         const string expected = "expected installer bytes";
         const string received = "modified installer bytes";
-        var manifest = CreateManifest("v0.3.2", expected);
+        var manifest = CreateManifest("v0.3.3", expected);
         using var client = CreateClient(
             [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -183,7 +183,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     public async Task InstallerVerificationRejectsAFileModifiedAfterDownload()
     {
         const string payload = "installer bytes";
-        var manifest = CreateManifest("v0.3.2", payload);
+        var manifest = CreateManifest("v0.3.3", payload);
         using var client = CreateClient(
             [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -214,7 +214,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     public async Task DownloadRejectsAnUnexpectedRedirectHost()
     {
         const string payload = "installer bytes";
-        var manifest = CreateManifest("v0.3.2", payload);
+        var manifest = CreateManifest("v0.3.3", payload);
         using var client = CreateClient(
             [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -273,7 +273,7 @@ public sealed class GitHubReleaseUpdateServiceTests
             var error = Assert.Throws<InvalidOperationException>(() => new GitHubReleaseUpdateService(
                 client,
                 dataDirectory,
-                "0.3.1",
+                "0.3.2",
                 new ProtectedPathPolicy([dataDirectory])));
 
             Assert.Contains("read-only observation sources", error.Message, StringComparison.Ordinal);
@@ -293,7 +293,7 @@ public sealed class GitHubReleaseUpdateServiceTests
     private static GitHubReleaseUpdateService CreateService(HttpClient client, string dataDirectory) => new(
         client,
         dataDirectory,
-        "0.3.1",
+        "0.3.2",
         new ProtectedPathPolicy([Path.Combine(dataDirectory, "protected-codex-source")]));
 
     private static HttpResponseMessage JsonResponse(string content) => new(HttpStatusCode.OK)

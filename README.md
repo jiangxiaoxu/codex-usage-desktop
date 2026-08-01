@@ -65,10 +65,10 @@ git diff --check
 生成 x64 全用户安装包:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
 ```
 
-脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.1-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.2-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
 该安装包支持从旧 Electron 0.2.6 原位升级到 WinUI 3.安装器在替换文件前检测并强制终止仍在运行的 Codex Usage Desktop process,保留 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`,并将 ledger、WAL 和 SHM 复制到 `ledger-backups\preinstall-*`.旧 Startup shortcut 会迁移为当前用户的 HKCU Run entry.新版卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 ledger.
 
