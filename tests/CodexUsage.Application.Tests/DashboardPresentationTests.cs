@@ -303,20 +303,32 @@ public sealed class DashboardPresentationTests
     }
 
     [Theory]
-    [InlineData(CollectorPhase.Watching, "\uE73E", DashboardHeaderStatusTone.Success)]
-    [InlineData(CollectorPhase.Partial, "\uE7BA", DashboardHeaderStatusTone.Warning)]
-    [InlineData(CollectorPhase.Syncing, "\uE895", DashboardHeaderStatusTone.Accent)]
-    [InlineData(CollectorPhase.Degraded, "\uE7BA", DashboardHeaderStatusTone.Danger)]
-    [InlineData(CollectorPhase.Stopped, "\uE711", DashboardHeaderStatusTone.Muted)]
+    [InlineData(CollectorPhase.Watching, "正在监测", "\uE73E", DashboardHeaderStatusTone.Success)]
+    [InlineData(CollectorPhase.Partial, "正在监测 · 部分数据可能不完整", "\uE7BA", DashboardHeaderStatusTone.Warning)]
+    [InlineData(CollectorPhase.Syncing, "正在同步", "\uE895", DashboardHeaderStatusTone.Accent)]
+    [InlineData(CollectorPhase.Degraded, "正在重试", "\uE7BA", DashboardHeaderStatusTone.Danger)]
+    [InlineData(CollectorPhase.Stopped, "已暂停", "\uE711", DashboardHeaderStatusTone.Muted)]
     public void HeaderStatusPresentationUsesDistinctNonSuccessTonesForNonHealthyPhases(
         CollectorPhase phase,
+        string text,
         string glyph,
         DashboardHeaderStatusTone tone)
     {
         var presentation = DashboardHeaderStatusPresentation.From(phase);
 
+        Assert.Equal(text, presentation.Text);
         Assert.Equal(glyph, presentation.Glyph);
         Assert.Equal(tone, presentation.Tone);
+    }
+
+    [Fact]
+    public void HeaderStatusPresentationUsesStartingTextForAnUnknownPhase()
+    {
+        var presentation = DashboardHeaderStatusPresentation.From((CollectorPhase)int.MaxValue);
+
+        Assert.Equal("正在启动", presentation.Text);
+        Assert.Equal("\uE895", presentation.Glyph);
+        Assert.Equal(DashboardHeaderStatusTone.Muted, presentation.Tone);
     }
 
     [Fact]

@@ -657,6 +657,8 @@
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1">
                     <Expander
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
                         Padding="12,4"
                         AutomationProperties.Name="诊断详情"
                         Header="诊断"

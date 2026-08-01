@@ -4,6 +4,11 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-01
+
+- Made the collector status header use concise user-facing descriptions instead of technical phase and reconciliation text.
+- Expanded the diagnostics panel to use the available window width while preserving responsive horizontal scrolling.
+
 ## [0.3.5] - 2026-08-01
 
 - Installer process shutdown no longer recursively kills its own in-app update launcher.

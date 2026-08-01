@@ -44,7 +44,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private string _realtimeVoiceSessionsText = "0";
     private string _retryQueueText = "0";
     private string _watcherStatusText = "启动中";
-    private string _headerStatusText = "启动中 · 上次对账 —";
+    private string _headerStatusText = "正在启动";
     private string _headerStatusGlyph = "\uE895";
     private Brush _headerStatusBrush = new SolidColorBrush(Color.FromArgb(0xFF, 0x82, 0x90, 0xA3));
     private string _coverageText = "等待首次对账";
@@ -776,8 +776,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var coverage = CoveragePresentation.From(status.ObservationCoverage, status.ObservationGap);
         CoverageText = coverage.Text;
         CollectorStatusText = status.Message;
-        HeaderStatusText = $"{WatcherStatusText} · 上次对账 {LastReconciliationText}";
         var headerPresentation = DashboardHeaderStatusPresentation.From(status.Phase);
+        HeaderStatusText = headerPresentation.Text;
         HeaderStatusGlyph = headerPresentation.Glyph;
         HeaderStatusBrush = HeaderStatusBrushFor(headerPresentation.Tone);
         if (synchronizeDiagnostics) SynchronizeStatusDiagnostics();
