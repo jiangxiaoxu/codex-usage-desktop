@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+- Installer upgrades now directly replace the legacy payload without creating or restoring a ledger backup.
+- Self-contained publish now removes unused Windows AI/ML native runtime assets, including ONNX Runtime and DirectML.
+- Installer builds now create and validate a 7-Zip LZMA2 payload, embed it with the standalone `7zr.exe` extractor, and avoid NSIS double compression.
+
 ## [0.3.3] - 2026-08-01
 
 - Default the installer start-at-sign-in option to checked for new installations while preserving the existing choice during upgrades.

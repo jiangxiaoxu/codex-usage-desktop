@@ -58,4 +58,17 @@
       SkipUnchangedFiles="true" />
   </Target>
 
+  <!-- The application does not use Windows App SDK AI/ML APIs. Keep the
+       self-contained payload minimal by removing their native runtime assets. -->
+  <Target Name="PruneUnusedWindowsAiMachineLearningPayload" AfterTargets="Publish">
+    <ItemGroup>
+      <_UnusedWindowsAiMachineLearningPayload Include="$(PublishDir)DirectML.dll" />
+      <_UnusedWindowsAiMachineLearningPayload Include="$(PublishDir)onnxruntime.dll" />
+      <_UnusedWindowsAiMachineLearningPayload Include="$(PublishDir)Microsoft.ML.OnnxRuntime.dll" />
+      <_UnusedWindowsAiMachineLearningPayload Include="$(PublishDir)Microsoft.Windows.AI.MachineLearning.dll" />
+      <_UnusedWindowsAiMachineLearningPayload Include="$(PublishDir)Microsoft.Windows.AI.MachineLearning.Projection.dll" />
+    </ItemGroup>
+    <Delete Files="@(_UnusedWindowsAiMachineLearningPayload)" />
+  </Target>
+
 </Project>

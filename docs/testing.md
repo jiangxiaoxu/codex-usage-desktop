@@ -9,7 +9,9 @@ dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3
+$sevenZip = 'C:\Tools\7-Zip\7za.exe'
+$sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
@@ -48,7 +50,7 @@ git diff --check
 
 1. 在 clean Windows 11 x64 环境运行 setup,确认 UAC、全用户 Program Files 安装、开始菜单/桌面选项和 launch.
 2. 在已安装 Electron 0.2.6 且含真实副本 ledger 的环境运行更高版本 setup,确认原位替换、旧 Electron payload 清理和 WinUI 3 launch.
-3. 使用 `/S /CURRENTADMIN=1` 执行 silent upgrade,确认升级前在 `%LOCALAPPDATA%\Codex Usage Desktop Ledger Backups\preinstall-*` 创建当前管理员的 ledger、WAL 和 SHM 备份.比较安装前、备份和升级后的文件 hash,并确认 ledger path、schema、event total 和自启动选择连续.
+3. 使用 `/S /CURRENTADMIN=1` 执行 silent upgrade,确认安装器不创建 `Codex Usage Desktop Ledger Backups\preinstall-*` 备份,直接调用旧 Electron uninstaller 并完成 payload replacement.旧 Electron uninstaller 可能删除旧 ledger,因此升级前需明确接受该数据行为.
 4. 分别验证旧 Startup shortcut 和现有 HKCU Run entry 的迁移,并确认 `--startup` launch 进入预期 lifecycle.
 5. 验证应用运行时 installer 强制终止旧 process tree 后完成 upgrade/repair;无法确认退出时拒绝替换,较新版本存在时 downgrade 被拒绝.
 6. 卸载后确认 Program Files payload、快捷方式和 HKCU Run entry 已删除,但 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 保留.

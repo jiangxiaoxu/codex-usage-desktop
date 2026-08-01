@@ -1,7 +1,10 @@
 Unicode true
 
-!ifndef PUBLISH_DIR
-  !error "PUBLISH_DIR is required"
+!ifndef PAYLOAD_ARCHIVE
+  !error "PAYLOAD_ARCHIVE is required"
+!endif
+!ifndef PAYLOAD_EXTRACTOR
+  !error "PAYLOAD_EXTRACTOR is required"
 !endif
 !ifndef OUTPUT_FILE
   !error "OUTPUT_FILE is required"
@@ -50,8 +53,9 @@ OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel admin
-SetCompressor /SOLID lzma
-SetCompressorDictSize 64
+; The payload archive is embedded with SetCompress off in DeployPayload so NSIS
+; does not spend time recompressing 7-Zip output.
+SetCompressor zlib
 CRCCheck on
 ShowInstDetails show
 ShowUninstDetails show
@@ -102,8 +106,6 @@ LangString DowngradeBlocked ${LANG_SIMPCHINESE} "检测到较新的版本 $Insta
 LangString DowngradeBlocked ${LANG_ENGLISH} "A newer version ($InstalledVersion) is installed. Downgrade to ${PRODUCT_VERSION} is blocked to protect your data."
 LangString UnsafeInstallDir ${LANG_SIMPCHINESE} "安装目录不安全。请选择以 '${PRODUCT_NAME}' 结尾的专用目录。"
 LangString UnsafeInstallDir ${LANG_ENGLISH} "The install directory is unsafe. Choose a dedicated directory ending in '${PRODUCT_NAME}'."
-LangString BackupFailed ${LANG_SIMPCHINESE} "无法备份 usage ledger，安装已中止。请检查 %LOCALAPPDATA% 的磁盘空间和权限。"
-LangString BackupFailed ${LANG_ENGLISH} "The usage ledger could not be backed up. Setup was aborted. Check free space and permissions under %LOCALAPPDATA%."
 LangString ProfileMismatch ${LANG_SIMPCHINESE} "当前用户 profile、HKCU 和 LocalAppData 不一致。安装已中止，以避免操作错误账户的数据。"
 LangString ProfileMismatch ${LANG_ENGLISH} "The current user profile, HKCU, and LocalAppData do not agree. Setup was aborted to avoid changing another account's data."
 LangString ProcessCheckFailed ${LANG_SIMPCHINESE} "无法可靠关闭或确认 Codex Usage Desktop 进程已经退出。安装已中止。"
@@ -112,10 +114,8 @@ LangString RemoveFailed ${LANG_SIMPCHINESE} "无法删除已知的旧程序文�
 LangString RemoveFailed ${LANG_ENGLISH} "Known old application files could not be removed. Setup was aborted without deleting user data."
 LangString LegacyUninstallFailed ${LANG_SIMPCHINESE} "旧 Electron 版本卸载失败。安装已中止，且不会继续覆盖程序文件。"
 LangString LegacyUninstallFailed ${LANG_ENGLISH} "The legacy Electron version could not be uninstalled. Setup was aborted without replacing application files."
-LangString LedgerRestoreFailed ${LANG_SIMPCHINESE} "旧版本卸载后无法恢复 usage ledger。安装已中止；备份仍保留在 LocalAppData。"
-LangString LedgerRestoreFailed ${LANG_ENGLISH} "The usage ledger could not be restored after uninstalling the legacy version. Setup was aborted; the backup remains under LocalAppData."
-LangString DeployFailed ${LANG_SIMPCHINESE} "无法替换程序文件。安装已中止；usage ledger 备份仍保留在 LocalAppData。"
-LangString DeployFailed ${LANG_ENGLISH} "Application files could not be replaced. Setup was aborted; the usage ledger backup remains under LocalAppData."
+LangString DeployFailed ${LANG_SIMPCHINESE} "无法替换程序文件。安装已中止。"
+LangString DeployFailed ${LANG_ENGLISH} "Application files could not be replaced. Setup was aborted."
 LangString RegistrationFailed ${LANG_SIMPCHINESE} "无法写入安装注册信息。安装已中止。"
 LangString RegistrationFailed ${LANG_ENGLISH} "Installation registration could not be written. Setup was aborted."
 LangString SilentAdminOptInRequired ${LANG_SIMPCHINESE} "静默安装必须显式传入 /CURRENTADMIN=1，以确认 HKCU 和 LocalAppData 属于目标管理员账户。"
@@ -129,7 +129,6 @@ LangString StartupCheckboxLabel ${LANG_ENGLISH} "Start Codex Usage Desktop when 
 
 Var InstalledVersion
 Var AppRunning
-Var BackupPath
 Var StartupCheckbox
 Var StartupRequested
 Var LegacyStartupDetected
@@ -428,81 +427,6 @@ Function ValidateInstallDirectory
   valid:
 FunctionEnd
 
-Function BackupLedger
-  StrCpy $BackupPath ""
-  ${IfNot} ${FileExists} "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite"
-    Return
-  ${EndIf}
-
-  ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
-  ; Keep the backup outside the legacy data directory because the Electron
-  ; uninstaller may remove that entire directory.
-  StrCpy $BackupPath "$LOCALAPPDATA\${PRODUCT_NAME} Ledger Backups\preinstall-${PRODUCT_VERSION}-$2$1$0-$4$5$6"
-  CreateDirectory "$BackupPath"
-  IfErrors backup_failed
-
-  ClearErrors
-  CopyFiles /SILENT "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite" "$BackupPath\usage.sqlite"
-  IfErrors backup_failed
-  IfFileExists "$BackupPath\usage.sqlite" +2 backup_failed
-
-  ${If} ${FileExists} "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-wal"
-    ClearErrors
-    CopyFiles /SILENT "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-wal" "$BackupPath\usage.sqlite-wal"
-    IfErrors backup_failed
-    IfFileExists "$BackupPath\usage.sqlite-wal" +2 backup_failed
-  ${EndIf}
-
-  ${If} ${FileExists} "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-shm"
-    ClearErrors
-    CopyFiles /SILENT "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-shm" "$BackupPath\usage.sqlite-shm"
-    IfErrors backup_failed
-    IfFileExists "$BackupPath\usage.sqlite-shm" +2 backup_failed
-  ${EndIf}
-  DetailPrint "Ledger backup: $BackupPath"
-  Return
-
-  backup_failed:
-    MessageBox MB_ICONSTOP "$(BackupFailed)" /SD IDOK
-    SetErrorLevel 12
-    Quit
-FunctionEnd
-
-Function RestoreLedgerAfterLegacyUninstall
-  ${If} $BackupPath == ""
-    Return
-  ${EndIf}
-  CreateDirectory "$LOCALAPPDATA\${PRODUCT_NAME}"
-  IfErrors ledger_restore_failed
-
-  ${IfNot} ${FileExists} "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite"
-    ClearErrors
-    CopyFiles /SILENT "$BackupPath\usage.sqlite" "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite"
-    IfErrors ledger_restore_failed
-    IfFileExists "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite" +2 ledger_restore_failed
-  ${EndIf}
-  ${If} ${FileExists} "$BackupPath\usage.sqlite-wal"
-  ${AndIfNot} ${FileExists} "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-wal"
-    ClearErrors
-    CopyFiles /SILENT "$BackupPath\usage.sqlite-wal" "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-wal"
-    IfErrors ledger_restore_failed
-    IfFileExists "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-wal" +2 ledger_restore_failed
-  ${EndIf}
-  ${If} ${FileExists} "$BackupPath\usage.sqlite-shm"
-  ${AndIfNot} ${FileExists} "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-shm"
-    ClearErrors
-    CopyFiles /SILENT "$BackupPath\usage.sqlite-shm" "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-shm"
-    IfErrors ledger_restore_failed
-    IfFileExists "$LOCALAPPDATA\${PRODUCT_NAME}\usage.sqlite-shm" +2 ledger_restore_failed
-  ${EndIf}
-  Return
-
-  ledger_restore_failed:
-    MessageBox MB_ICONSTOP "$(LedgerRestoreFailed)" /SD IDOK
-    SetErrorLevel 22
-    Quit
-FunctionEnd
-
 Function UninstallLegacyElectron
   ${If} $LegacyInstallDetected != "1"
     Return
@@ -520,7 +444,6 @@ Function UninstallLegacyElectron
   ${If} $0 != "0"
     Goto legacy_uninstall_failed
   ${EndIf}
-  Call RestoreLedgerAfterLegacyUninstall
   Return
 
   legacy_uninstall_failed:
@@ -565,11 +488,25 @@ Function RemoveInstalledPayload
 FunctionEnd
 
 Function DeployPayload
-  CreateDirectory "$INSTDIR"
+  InitPluginsDir
   ClearErrors
-  SetOutPath "$INSTDIR"
-  File /r "${PUBLISH_DIR}\*.*"
+  SetOutPath "$PLUGINSDIR"
+  SetCompress off
+  File /oname=payload.7z "${PAYLOAD_ARCHIVE}"
+  SetCompress auto
+  File /oname=7zr.exe "${PAYLOAD_EXTRACTOR}"
   IfErrors deploy_failed
+  IfFileExists "$PLUGINSDIR\payload.7z" 0 deploy_failed
+  IfFileExists "$PLUGINSDIR\7zr.exe" 0 deploy_failed
+  CreateDirectory "$INSTDIR"
+  IfErrors deploy_failed
+  DetailPrint "Extracting application payload."
+  nsExec::ExecToStack '"$PLUGINSDIR\7zr.exe" x -y -bd -o"$INSTDIR" "$PLUGINSDIR\payload.7z"'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+    Goto deploy_failed
+  ${EndIf}
   ClearErrors
   WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
   IfErrors deploy_failed
@@ -622,8 +559,6 @@ Section "$(SectionProgram)" SEC_PROGRAM
   SetShellVarContext all
   Call ValidateInstallDirectory
   Call EnsureAppClosed
-  SetShellVarContext current
-  Call BackupLedger
   Call UninstallLegacyElectron
   SetShellVarContext all
   Call RemoveInstalledPayload

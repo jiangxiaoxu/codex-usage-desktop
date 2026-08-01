@@ -67,12 +67,14 @@ CSV export 是明确 user action.选定 snapshot 只会写入通过 protected-pa
 生成 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3
+$sevenZip = 'C:\Tools\7-Zip\7za.exe'
+$sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-脚本生成 self-contained x64 publish,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.3-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /T /F` 终止 process tree,确认退出后才替换程序文件;无法确认退出时安装失败.
+构建需要本地 7-Zip Extra 的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载工具.脚本生成 self-contained x64 publish,用 7-Zip LZMA2 生成并校验 payload archive,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.3-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /T /F` 终止 process tree,确认退出后才替换程序文件;无法确认退出时安装失败.
 
-setup 支持从旧 Electron 0.2.6 原位升级.覆盖前会把 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 及存在的 WAL/SHM 备份到 `ledger-backups\preinstall-*`,然后移除旧 Electron payload.旧 Startup shortcut 会迁移为 HKCU Run entry,安装页允许保留或改变该选择.检测到更高版本时拒绝降级,相同版本可执行 repair install.
+setup 支持从旧 Electron 0.2.6 原位升级.安装器直接结束旧 process、调用旧 Electron uninstaller 并覆盖 payload,不再创建 ledger 备份.旧 Electron uninstaller 可能删除 `%LOCALAPPDATA%\Codex Usage Desktop` 下的 ledger.旧 Startup shortcut 会迁移为 HKCU Run entry,安装页允许保留或改变该选择.检测到更高版本时拒绝降级,相同版本可执行 repair install.
 
 卸载器删除 Program Files payload、快捷方式、HKCU Run entry 和 uninstall registration,默认不删除 `%LOCALAPPDATA%\Codex Usage Desktop` 或 ledger.需要清理数据时,应在确认不再需要审计历史且应用已退出后单独处理.
 

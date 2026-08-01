@@ -24,7 +24,7 @@ Repository state at handoff:
 - Collector retains strict read-only access to `%USERPROFILE%\.codex\sessions`, `archived_sessions`, and `agents`.
 - Safe source-conflict recovery writes only the application ledger. It accepts only stable metadata-exact candidates with `Equal` or `Extension` semantics,selects deterministically,and retains the last valid ledger with internal degraded diagnostics and background retry for unsafe candidates. Source conflict is not displayed in the GUI.
 - Ledger remains under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
-- Installer performs direct break-replace migration, terminates old processes without prompting, invokes the legacy Electron uninstaller when detected, preserves the ledger, and installs into Program Files.
+- Installer performs direct break-replace migration, terminates old processes without prompting, invokes the legacy Electron uninstaller when detected, and installs into Program Files without creating a ledger backup. The legacy uninstaller may remove the old LocalAppData ledger.
 - Installer builds require PowerShell Core 7.4 or later through `pwsh`.
 - Publish validation requires the application PRI/XBF resources, and `--smoke-test` initializes the real WinUI composition against temporary data.
 
@@ -63,7 +63,9 @@ Run from the repository root:
 dotnet restore CodexUsageDesktop.sln
 dotnet test CodexUsageDesktop.sln -c Release
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3
+$sevenZip = 'C:\Tools\7-Zip\7za.exe'
+$sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
@@ -81,7 +83,7 @@ Then perform installed validation:
 - Independent review of the no-throttle revision completed without an actionable finding.
 - The final installer build, installed smoke test, and real-ledger validation completed. Existing totals appeared at inventory `0/3327`, remained queryable during reconciliation, and updated when background processing completed.
 - The first real Electron replacement exposed an NSIS uninstaller child-process race. The installer now copies the legacy uninstaller to `$PLUGINSDIR` and invokes it with final `_?=$INSTDIR`; an independent review and a repeated real upgrade confirmed the fix.
-- The installed payload matched all 520 published files, the ledger was preserved, and no new matching Application Error, Windows Error Reporting, or .NET Runtime crash event was recorded.
+- The historical installed payload matched all 520 published files, the ledger was preserved in that validation, and no new matching Application Error, Windows Error Reporting, or .NET Runtime crash event was recorded. That validation predates the current direct-upgrade/no-backup policy.
 - Focus-aware Efficiency Mode and process-priority behavior remains deferred.
 - A single synchronous SQLite query or write is not internally preemptible, although full inventory no longer blocks the actor for hours.
 - The setup and binaries are unsigned. Authenticode signing and a stable release identity remain required before public distribution.
@@ -90,5 +92,5 @@ Then perform installed validation:
 ## Safety boundaries
 
 - Never write, rename, lock, repair, truncate, or delete anything under the observed `.codex` source directories.
-- Do not delete or overwrite the LocalAppData ledger during install or test.
+- Do not point an upgrade test at valuable ledger data: the current direct-upgrade path invokes the legacy uninstaller without a ledger backup, and that uninstaller may remove the old LocalAppData ledger.
 - Do not stage build output, `node_modules`, local databases, logs, or `task-memory`.

@@ -11,6 +11,10 @@ param(
 
     [string]$RuntimeIdentifier = 'win-x64',
 
+    [string]$SevenZipPath,
+
+    [string]$SevenZipRuntimePath,
+
     [switch]$ValidateOnly
 )
 
@@ -33,6 +37,8 @@ $outputRoot = Join-Path $workspace 'release\winui-installer'
 $publishDirectory = Join-Path $outputRoot 'publish'
 $workDirectory = Join-Path $outputRoot 'work'
 $uninstallInclude = Join-Path $workDirectory 'uninstall-publish-files.nsh'
+$payloadArchive = Join-Path $workDirectory 'payload.7z'
+$payloadValidationDirectory = Join-Path $workDirectory 'payload-validation'
 $setupPath = Join-Path $outputRoot "codex-usage-desktop-setup-$Version-x64.exe"
 
 function Assert-ChildPath {
@@ -132,6 +138,213 @@ function Find-MakeNsis {
     throw 'makensis.exe was not found. Install NSIS 3.x or add makensis.exe to PATH.'
 }
 
+function Resolve-RequiredExecutable {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ParameterName,
+        [Parameter(Mandatory)][string]$Description
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "$Description is required. Pass -$ParameterName with an explicit local executable path. The installer build does not download or install 7-Zip."
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (-not [System.IO.File]::Exists($fullPath)) {
+        throw "$Description was not found: $fullPath. Pass -$ParameterName with an existing local executable path."
+    }
+    if (-not $fullPath.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Description must be an .exe file: $fullPath"
+    }
+
+    return $fullPath
+}
+
+function Invoke-CheckedExecutable {
+    param(
+        [Parameter(Mandatory)][string]$ExecutablePath,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$Operation,
+        [string]$WorkingDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        $null = & $ExecutablePath @Arguments
+    }
+    else {
+        Push-Location -LiteralPath $WorkingDirectory
+        try {
+            $null = & $ExecutablePath @Arguments
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Operation failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Assert-SafePayloadRelativePath {
+    param(
+        [Parameter(Mandatory)][string]$RelativePath,
+        [Parameter(Mandatory)][string]$Context
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or
+        [System.IO.Path]::IsPathRooted($RelativePath) -or
+        $RelativePath.Contains(':') -or
+        $RelativePath.Contains('"') -or
+        $RelativePath.Contains('$')) {
+        throw "Unsafe payload path in ${Context}: $RelativePath"
+    }
+
+    foreach ($segment in $RelativePath.Replace('/', '\').Split([char]'\')) {
+        if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq '.' -or $segment -eq '..') {
+            throw "Unsafe payload path in ${Context}: $RelativePath"
+        }
+    }
+}
+
+function Get-DirectoryPayloadManifest {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $root = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $manifest = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in Get-ChildItem -LiteralPath $root -Recurse -Force | Sort-Object FullName) {
+        $relative = (Get-RelativeChildPath -Parent $root -Child $entry.FullName).Replace('/', '\')
+        Assert-SafePayloadRelativePath -RelativePath $relative -Context "directory $root"
+        $kind = if ($entry.PSIsContainer) { 'D' } else { "F:$((Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash)" }
+        if (-not $manifest.TryAdd($relative, $kind)) {
+            throw "Payload manifest contains a case-insensitive duplicate: $relative"
+        }
+    }
+
+    if ($manifest.Count -eq 0) {
+        throw "Payload directory is empty: $root"
+    }
+    return $manifest
+}
+
+function Get-ArchivePayloadManifest {
+    param(
+        [Parameter(Mandatory)][string]$SevenZipPath,
+        [Parameter(Mandatory)][string]$ArchivePath
+    )
+
+    $listing = & $SevenZipPath 'l' '-slt' '-sccUTF-8' $ArchivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Listing payload archive failed with exit code $LASTEXITCODE."
+    }
+
+    $manifest = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $inEntries = $false
+    $entryPath = $null
+    $entryIsDirectory = $false
+    foreach ($line in $listing) {
+        if ($line -eq '----------') {
+            $inEntries = $true
+            continue
+        }
+        if (-not $inEntries) {
+            continue
+        }
+
+        if ($line.StartsWith('Path = ', [System.StringComparison]::Ordinal)) {
+            if ($null -ne $entryPath) {
+                Assert-SafePayloadRelativePath -RelativePath $entryPath -Context "archive $ArchivePath"
+                $kind = if ($entryIsDirectory) { 'D' } else { 'F' }
+                if (-not $manifest.TryAdd($entryPath, $kind)) {
+                    throw "Payload archive contains a duplicate path: $entryPath"
+                }
+            }
+            $entryPath = $line.Substring('Path = '.Length).Replace('/', '\')
+            $entryIsDirectory = $false
+            continue
+        }
+        if ($line.StartsWith('Attributes = ', [System.StringComparison]::Ordinal)) {
+            $entryIsDirectory = $line.Substring('Attributes = '.Length).Contains('D')
+        }
+    }
+
+    if ($null -ne $entryPath) {
+        Assert-SafePayloadRelativePath -RelativePath $entryPath -Context "archive $ArchivePath"
+        $kind = if ($entryIsDirectory) { 'D' } else { 'F' }
+        if (-not $manifest.TryAdd($entryPath, $kind)) {
+            throw "Payload archive contains a duplicate path: $entryPath"
+        }
+    }
+    if ($manifest.Count -eq 0) {
+        throw "Payload archive contains no entries: $ArchivePath"
+    }
+    return $manifest
+}
+
+function Assert-PayloadManifestMatches {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.Dictionary[string, string]]$Expected,
+        [Parameter(Mandatory)][System.Collections.Generic.Dictionary[string, string]]$Actual,
+        [Parameter(Mandatory)][string]$Context,
+        [switch]$AllowFileHashes
+    )
+
+    if ($Expected.Count -ne $Actual.Count) {
+        throw "Payload manifest count mismatch for $Context. Expected $($Expected.Count), found $($Actual.Count)."
+    }
+    foreach ($entry in $Expected.GetEnumerator()) {
+        $actualValue = ''
+        if (-not $Actual.TryGetValue($entry.Key, [ref]$actualValue)) {
+            throw "Payload manifest is missing '$($entry.Key)' in $Context."
+        }
+        $expectedKind = if ($entry.Value.StartsWith('F:', [System.StringComparison]::Ordinal)) { 'F' } else { $entry.Value }
+        $actualKind = if ($actualValue.StartsWith('F:', [System.StringComparison]::Ordinal)) { 'F' } else { $actualValue }
+        if ($expectedKind -ne $actualKind) {
+            throw "Payload manifest type mismatch for '$($entry.Key)' in $Context."
+        }
+        if ($AllowFileHashes -and $entry.Value -ne $actualValue) {
+            throw "Payload manifest hash mismatch for '$($entry.Key)' in $Context."
+        }
+    }
+}
+
+function New-PayloadArchive {
+    param(
+        [Parameter(Mandatory)][string]$BuilderPath,
+        [Parameter(Mandatory)][string]$ExtractorPath,
+        [Parameter(Mandatory)][string]$PublishPath,
+        [Parameter(Mandatory)][string]$ArchivePath,
+        [Parameter(Mandatory)][string]$ValidationPath
+    )
+
+    $expectedManifest = Get-DirectoryPayloadManifest -Path $PublishPath
+    Write-Host "Compressing publish payload with 7-Zip LZMA2 multi-threading: $ArchivePath"
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Invoke-CheckedExecutable -ExecutablePath $BuilderPath -Arguments @(
+        'a', '-t7z', '-m0=lzma2', '-mmt=on', '-mx=5', '-bd', $ArchivePath, '*'
+    ) -Operation '7-Zip payload compression' -WorkingDirectory $PublishPath
+    $stopwatch.Stop()
+
+    if (-not [System.IO.File]::Exists($ArchivePath) -or (Get-Item -LiteralPath $ArchivePath).Length -le 0) {
+        throw "7-Zip did not produce a non-empty payload archive: $ArchivePath"
+    }
+
+    Invoke-CheckedExecutable -ExecutablePath $ExtractorPath -Arguments @('t', '-bd', $ArchivePath) -Operation '7-Zip payload integrity test'
+    $archiveManifest = Get-ArchivePayloadManifest -SevenZipPath $BuilderPath -ArchivePath $ArchivePath
+    Assert-PayloadManifestMatches -Expected $expectedManifest -Actual $archiveManifest -Context 'archive entries'
+
+    Reset-GeneratedDirectory -Path $ValidationPath
+    Invoke-CheckedExecutable -ExecutablePath $ExtractorPath -Arguments @('x', '-y', '-bd', "-o$ValidationPath", $ArchivePath) -Operation '7-Zip payload extraction'
+    $extractedManifest = Get-DirectoryPayloadManifest -Path $ValidationPath
+    Assert-PayloadManifestMatches -Expected $expectedManifest -Actual $extractedManifest -Context 'extracted payload' -AllowFileHashes
+
+    return [pscustomobject]@{
+        ArchivePath = $ArchivePath
+        ArchiveSize = (Get-Item -LiteralPath $ArchivePath).Length
+        CompressionElapsed = $stopwatch.Elapsed
+    }
+}
+
 function Convert-ToNsisPath {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -226,15 +439,16 @@ function Assert-InstallerSafety {
     $source = [System.IO.File]::ReadAllText($Path)
     foreach ($required in @(
         'Call EnsureAppClosed',
-        'Call BackupLedger',
         'Call UninstallLegacyElectron',
         'Call RemoveInstalledPayload',
         'Call DeployPayload',
         'taskkill.exe',
         '/S /allusers',
-        'Call RestoreLedgerAfterLegacyUninstall',
         '!include "${UNINSTALL_FILES_INCLUDE}"',
-        'File /r "${PUBLISH_DIR}\*.*"',
+        '!ifndef PAYLOAD_ARCHIVE',
+        '!ifndef PAYLOAD_EXTRACTOR',
+        'File /oname=payload.7z "${PAYLOAD_ARCHIVE}"',
+        'File /oname=7zr.exe "${PAYLOAD_EXTRACTOR}"',
         '!ifndef APP_ICON_FILE',
         '!define MUI_ICON "${APP_ICON_FILE}"',
         '!define MUI_UNICON "${APP_ICON_FILE}"',
@@ -248,18 +462,21 @@ function Assert-InstallerSafety {
     if ($source.IndexOf('RMDir /r "$INSTDIR"', [System.StringComparison]::Ordinal) -ge 0) {
         throw 'Installer contains a recursive deletion of INSTDIR.'
     }
+    if ($source.IndexOf('File /r "${PUBLISH_DIR}\*.*"', [System.StringComparison]::Ordinal) -ge 0 -or
+        $source.IndexOf('PUBLISH_DIR', [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Installer must embed only the pre-compressed payload archive, not the publish directory.'
+    }
     $coreStart = $source.IndexOf('Section "$(SectionProgram)"', [System.StringComparison]::Ordinal)
     $coreEnd = $source.IndexOf('SectionEnd', $coreStart, [System.StringComparison]::Ordinal)
     $core = $source.Substring($coreStart, $coreEnd - $coreStart)
-    $userLedgerContextPattern = [System.Text.RegularExpressions.Regex]::new(
-        'Call EnsureAppClosed\s+SetShellVarContext current\s+Call BackupLedger\s+Call UninstallLegacyElectron\s+SetShellVarContext all\s+Call RemoveInstalledPayload',
+    $replacementOrderPattern = [System.Text.RegularExpressions.Regex]::new(
+        'Call EnsureAppClosed\s+Call UninstallLegacyElectron\s+SetShellVarContext all\s+Call RemoveInstalledPayload',
         [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
-    if (-not $userLedgerContextPattern.IsMatch($core)) {
-        throw 'Installer must use the current-user shell context for ledger backup and legacy restore, then restore the all-users context before replacing program files.'
+    if (-not $replacementOrderPattern.IsMatch($core)) {
+        throw 'Installer must close the application and remove the legacy payload before replacing program files.'
     }
     $orderedCalls = @(
         'Call EnsureAppClosed',
-        'Call BackupLedger',
         'Call UninstallLegacyElectron',
         'Call RemoveInstalledPayload',
         'Call DeployPayload'
@@ -269,6 +486,39 @@ function Assert-InstallerSafety {
         $index = $core.IndexOf($call, [System.StringComparison]::Ordinal)
         if ($index -le $previousIndex) {
             throw "Installer replacement order is invalid at: $call"
+        }
+        $previousIndex = $index
+    }
+    foreach ($forbidden in @(
+        'Function BackupLedger',
+        'Function RestoreLedgerAfterLegacyUninstall',
+        'preinstall-${PRODUCT_VERSION}',
+        'usage ledger backup'
+    )) {
+        if ($source.IndexOf($forbidden, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "Installer must not retain ledger backup behavior: $forbidden"
+        }
+    }
+    $deployStart = $source.IndexOf('Function DeployPayload', [System.StringComparison]::Ordinal)
+    $deployEnd = $source.IndexOf('FunctionEnd', $deployStart, [System.StringComparison]::Ordinal)
+    $deployPayload = $source.Substring($deployStart, $deployEnd - $deployStart)
+    $deploySteps = @(
+        'InitPluginsDir',
+        'SetOutPath "$PLUGINSDIR"',
+        'SetCompress off',
+        'File /oname=payload.7z "${PAYLOAD_ARCHIVE}"',
+        'SetCompress auto',
+        'File /oname=7zr.exe "${PAYLOAD_EXTRACTOR}"',
+        'IfFileExists "$PLUGINSDIR\payload.7z" 0 deploy_failed',
+        'IfFileExists "$PLUGINSDIR\7zr.exe" 0 deploy_failed',
+        'nsExec::ExecToStack ''"$PLUGINSDIR\7zr.exe" x -y -bd -o"$INSTDIR" "$PLUGINSDIR\payload.7z"''',
+        'WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"'
+    )
+    $previousIndex = -1
+    foreach ($step in $deploySteps) {
+        $index = $deployPayload.IndexOf($step, [System.StringComparison]::Ordinal)
+        if ($index -le $previousIndex) {
+            throw "Installer payload deployment is invalid at: $step"
         }
         $previousIndex = $index
     }
@@ -350,6 +600,19 @@ function Assert-WinUiPublish {
     if ($publishedHash -ne $sourceHash) {
         throw "Published application icon does not match the tracked source asset: $publishedIcon"
     }
+
+    foreach ($relativePath in @(
+        'DirectML.dll',
+        'onnxruntime.dll',
+        'Microsoft.ML.OnnxRuntime.dll',
+        'Microsoft.Windows.AI.MachineLearning.dll',
+        'Microsoft.Windows.AI.MachineLearning.Projection.dll'
+    )) {
+        $path = Join-Path $PublishPath $relativePath
+        if ([System.IO.File]::Exists($path)) {
+            throw "Unused Windows AI/ML runtime asset was published: $path"
+        }
+    }
 }
 
 function Invoke-PublishedSmokeTest {
@@ -383,6 +646,8 @@ if ($ValidateOnly) {
     Write-Host "Installer static validation passed: $installerScript"
     return
 }
+$sevenZipBuilder = Resolve-RequiredExecutable -Path $SevenZipPath -ParameterName 'SevenZipPath' -Description 'The x64 7za.exe compression tool'
+$sevenZipRuntime = Resolve-RequiredExecutable -Path $SevenZipRuntimePath -ParameterName 'SevenZipRuntimePath' -Description 'The 7zr.exe extraction tool to embed in the installer'
 
 [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
 Reset-GeneratedDirectory -Path $publishDirectory
@@ -426,8 +691,16 @@ try {
     }
 
     Assert-WinUiPublish -PublishPath $publishDirectory -IconPath $appIconFile
-    Invoke-PublishedSmokeTest -ExecutablePath $applicationExe
     Write-UninstallManifest -PublishPath $publishDirectory -Destination $uninstallInclude
+    $payload = New-PayloadArchive -BuilderPath $sevenZipBuilder -ExtractorPath $sevenZipRuntime -PublishPath $publishDirectory -ArchivePath $payloadArchive -ValidationPath $payloadValidationDirectory
+    $extractedApplicationExe = Join-Path $payloadValidationDirectory 'Codex Usage Desktop.exe'
+    if (-not [System.IO.File]::Exists($extractedApplicationExe)) {
+        throw "Extracted payload did not produce the expected executable: $extractedApplicationExe"
+    }
+    Assert-WinUiPublish -PublishPath $payloadValidationDirectory -IconPath $appIconFile
+    Write-Host "Payload archive size: $($payload.ArchiveSize) bytes"
+    Write-Host "Payload compression elapsed: $($payload.CompressionElapsed)"
+
     $makeNsis = Find-MakeNsis
     $fileVersion = "$Version.0"
     $makeNsisArguments = @(
@@ -436,7 +709,8 @@ try {
         '/INPUTCHARSET', 'UTF8',
         "/DPRODUCT_VERSION=$Version",
         "/DPRODUCT_FILE_VERSION=$fileVersion",
-        "/DPUBLISH_DIR=$(Convert-ToNsisPath $publishDirectory)",
+        "/DPAYLOAD_ARCHIVE=$(Convert-ToNsisPath $payload.ArchivePath)",
+        "/DPAYLOAD_EXTRACTOR=$(Convert-ToNsisPath $sevenZipRuntime)",
         "/DOUTPUT_FILE=$(Convert-ToNsisPath $pendingSetupPath)",
         "/DUNINSTALL_FILES_INCLUDE=$(Convert-ToNsisPath $uninstallInclude)",
         "/DLICENSE_FILE=$(Convert-ToNsisPath $licenseFile)",
@@ -449,6 +723,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+    Invoke-PublishedSmokeTest -ExecutablePath $extractedApplicationExe
 
     $published = Publish-InstallerSetup -PendingPath $pendingSetupPath -SetupPath $setupPath
     Write-Host "Setup: $($published.Path)"
@@ -460,6 +735,9 @@ try {
         Size = $published.Size
         SHA256 = $published.SHA256
         MakeNsis = $makeNsis
+        PayloadArchive = $payload.ArchivePath
+        PayloadSize = $payload.ArchiveSize
+        PayloadCompressionElapsed = $payload.CompressionElapsed
     }
 }
 finally {
