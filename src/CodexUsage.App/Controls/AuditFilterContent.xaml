@@ -1,85 +1,246 @@
 <UserControl
     x:Class="CodexUsage.App.Controls.AuditFilterContent"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CodexUsage.App.Controls">
 
-    <StackPanel Spacing="14">
-        <Expander Header="时间范围 (SGT)" IsExpanded="True">
-            <StackPanel Padding="0,10,0,2" Spacing="8">
-                <TextBlock Style="{StaticResource CaptionStyle}" Text="连续范围" />
+    <Grid x:Name="FilterRoot">
+        <Grid.Resources>
+            <Style x:Key="FilterLabelStyle" TargetType="TextBlock">
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="FontWeight" Value="Medium" />
+            </Style>
+            <Style x:Key="SelectAllButtonStyle" TargetType="Button">
+                <Setter Property="MinWidth" Value="64" />
+                <Setter Property="Padding" Value="12,6" />
+                <Setter Property="VerticalAlignment" Value="Top" />
+            </Style>
+        </Grid.Resources>
+
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="FilterLayoutStates">
+                <VisualState x:Name="Compact">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="0" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="TimeLabelColumn.Width" Value="Auto" />
+                        <Setter Target="TimeValueColumn.Width" Value="96" />
+                        <Setter Target="ModelLabelColumn.Width" Value="Auto" />
+                        <Setter Target="AgentLabelColumn.Width" Value="Auto" />
+                        <Setter Target="SearchLabelColumn.Width" Value="Auto" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="Medium">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="1000" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="TimeLabelColumn.Width" Value="112" />
+                        <Setter Target="TimeValueColumn.Width" Value="108" />
+                        <Setter Target="ModelLabelColumn.Width" Value="112" />
+                        <Setter Target="AgentLabelColumn.Width" Value="112" />
+                        <Setter Target="SearchLabelColumn.Width" Value="112" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="Wide">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="1280" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="TimeLabelColumn.Width" Value="148" />
+                        <Setter Target="TimeValueColumn.Width" Value="120" />
+                        <Setter Target="ModelLabelColumn.Width" Value="148" />
+                        <Setter Target="AgentLabelColumn.Width" Value="148" />
+                        <Setter Target="SearchLabelColumn.Width" Value="148" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="1" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="1" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="1" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Padding="0,8" ColumnSpacing="12" RowSpacing="0">
+            <Grid.RowDefinitions>
+                <RowDefinition MinHeight="40" Height="Auto" />
+                <RowDefinition MinHeight="20" Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="TimeLabelColumn" Width="148" />
+                <ColumnDefinition x:Name="TimeValueColumn" Width="120" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock
+                MaxWidth="148"
+                MinWidth="112"
+                Style="{StaticResource FilterLabelStyle}"
+                Text="时间范围 (SGT)"
+                TextWrapping="WrapWholeWords" />
+            <Border
+                Grid.Column="1"
+                MinHeight="36"
+                Margin="0,2"
+                Padding="10,6"
+                VerticalAlignment="Stretch"
+                Background="{StaticResource InputSurfaceBrush}"
+                BorderBrush="{StaticResource ControlBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="3">
                 <TextBlock
-                    FontSize="12"
+                    VerticalAlignment="Center"
+                    FontSize="13"
+                    FontWeight="SemiBold"
                     Foreground="{StaticResource PrimaryTextBrush}"
-                    Text="{Binding RangeLabel}" />
-                <Slider
-                    Minimum="0.5"
-                    Maximum="336"
-                    StepFrequency="0.5"
-                    Value="{Binding RangeHours, Mode=TwoWay}" />
-                <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,*,Auto,*,Auto">
-                    <TextBlock Grid.Column="0" Style="{StaticResource CaptionStyle}" Text="30分" />
-                    <TextBlock Grid.Column="2" Style="{StaticResource CaptionStyle}" Text="12h" />
-                    <TextBlock Grid.Column="4" Style="{StaticResource CaptionStyle}" Text="1天" />
-                    <TextBlock Grid.Column="6" Style="{StaticResource CaptionStyle}" Text="7天" />
-                    <TextBlock Grid.Column="8" Style="{StaticResource CaptionStyle}" Text="14天" />
-                </Grid>
-            </StackPanel>
-        </Expander>
+                    Text="{Binding RangeLabel}"
+                    TextTrimming="CharacterEllipsis" />
+            </Border>
+            <controls:PiecewiseTimeSlider
+                x:Name="TimeSlider"
+                Grid.Column="2"
+                MinWidth="220"
+                MinHeight="40"
+                AutomationProperties.HelpText="{Binding RangeLabel}"
+                AutomationProperties.Name="连续时间范围"
+                Value="{Binding RangeScalePosition, Mode=TwoWay}" />
+            <Grid
+                Grid.Row="1"
+                Grid.Column="2"
+                ColumnDefinitions="Auto,*,Auto,*,Auto,*,Auto,*,Auto">
+                <TextBlock Grid.Column="0" Style="{StaticResource CaptionStyle}" Text="0.5小时" />
+                <TextBlock Grid.Column="2" Style="{StaticResource CaptionStyle}" Text="12小时" />
+                <TextBlock Grid.Column="4" Style="{StaticResource CaptionStyle}" Text="1天" />
+                <TextBlock Grid.Column="6" Style="{StaticResource CaptionStyle}" Text="7天" />
+                <TextBlock Grid.Column="8" Style="{StaticResource CaptionStyle}" Text="14天" />
+            </Grid>
+            <Button
+                Grid.Column="3"
+                Margin="0"
+                VerticalAlignment="Top"
+                Click="OnOpenCustomDateRange">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                    <SymbolIcon Symbol="Calendar" />
+                    <TextBlock FontSize="13" Text="自定义日期" />
+                </StackPanel>
+            </Button>
+        </Grid>
 
-        <Expander Header="模型" IsExpanded="True">
-            <StackPanel Padding="0,10,0,2" Spacing="8">
-                <TextBlock Style="{StaticResource CaptionStyle}" Text="默认全选" />
-                <ItemsControl ItemsSource="{Binding ModelOptions}">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="3" />
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <ToggleButton
-                                Margin="0,0,6,6"
-                                IsChecked="{Binding IsSelected, Mode=TwoWay}"
-                                Content="{Binding Label}" />
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </StackPanel>
-        </Expander>
+        <Rectangle Grid.Row="1" Fill="{StaticResource TableDividerBrush}" />
 
-        <Expander Header="执行主体" IsExpanded="True">
-            <StackPanel Padding="0,10,0,2" Spacing="8">
-                <TextBlock Style="{StaticResource CaptionStyle}" Text="模型与执行主体独立选择" TextWrapping="Wrap" />
-                <ItemsControl ItemsSource="{Binding AgentOptions}">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="7" />
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <ToggleButton
-                                Margin="0,0,6,6"
-                                IsChecked="{Binding IsSelected, Mode=TwoWay}"
-                                Content="{Binding Label}" />
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </StackPanel>
-        </Expander>
+        <Grid Grid.Row="2" Padding="0,6" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="ModelLabelColumn" Width="148" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="模型" />
+            <ItemsControl Grid.Column="1" ItemsSource="{Binding ModelOptions}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <controls:ChipWrapPanel HorizontalSpacing="8" VerticalSpacing="8" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <ToggleButton
+                            MinHeight="36"
+                            Padding="10,6"
+                            AutomationProperties.Name="{Binding Label}"
+                            HorizontalContentAlignment="Left"
+                            IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                            Style="{StaticResource FilterToggleButtonStyle}"
+                            ToolTipService.ToolTip="{Binding Label}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon FontSize="11" Glyph="{Binding SelectionGlyph}" />
+                                <TextBlock FontSize="13" Text="{Binding Label}" />
+                            </StackPanel>
+                        </ToggleButton>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Button
+                Grid.Column="2"
+                AutomationProperties.Name="全选模型"
+                Click="OnSelectAllModels"
+                Content="全选"
+                Style="{StaticResource SelectAllButtonStyle}" />
+        </Grid>
 
-        <StackPanel Spacing="6">
-            <TextBlock Style="{StaticResource CaptionStyle}" Text="线程检索" />
+        <Rectangle Grid.Row="3" Fill="{StaticResource TableDividerBrush}" />
+
+        <Grid Grid.Row="4" Padding="0,6" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="AgentLabelColumn" Width="148" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="执行主体" />
+            <ItemsControl Grid.Column="1" ItemsSource="{Binding AgentOptions}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <controls:ChipWrapPanel HorizontalSpacing="8" VerticalSpacing="8" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <ToggleButton
+                            MinHeight="36"
+                            Padding="10,6"
+                            AutomationProperties.Name="{Binding Label}"
+                            HorizontalContentAlignment="Left"
+                            IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                            Style="{StaticResource FilterToggleButtonStyle}"
+                            ToolTipService.ToolTip="{Binding Label}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon FontSize="11" Glyph="{Binding SelectionGlyph}" />
+                                <TextBlock FontSize="13" Text="{Binding Label}" />
+                            </StackPanel>
+                        </ToggleButton>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Button
+                Grid.Column="2"
+                AutomationProperties.Name="全选执行主体"
+                Click="OnSelectAllAgents"
+                Content="全选"
+                Style="{StaticResource SelectAllButtonStyle}" />
+        </Grid>
+
+        <Rectangle Grid.Row="5" Fill="{StaticResource TableDividerBrush}" />
+
+        <Grid Grid.Row="6" Padding="0,6" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="SearchLabelColumn" Width="148" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="路径检索" />
             <TextBox
-                PlaceholderText="agent path / nickname / rollout ID"
+                Grid.Column="1"
+                MinHeight="36"
+                AutomationProperties.Name="线程检索"
+                Background="{StaticResource InputSurfaceBrush}"
+                BorderBrush="{StaticResource ControlBorderBrush}"
+                CornerRadius="3"
+                PlaceholderText="输入 agent path / nickname / rollout ID"
                 Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-        </StackPanel>
-
-        <Button Click="OnResetFilters" HorizontalAlignment="Left">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <SymbolIcon Symbol="Refresh" />
-                <TextBlock Text="恢复全部筛选" />
-            </StackPanel>
-        </Button>
-    </StackPanel>
+            <Button Grid.Column="2" Click="OnResetFilters">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <SymbolIcon Symbol="Refresh" />
+                    <TextBlock Text="恢复全部筛选" />
+                </StackPanel>
+            </Button>
+        </Grid>
+    </Grid>
 </UserControl>

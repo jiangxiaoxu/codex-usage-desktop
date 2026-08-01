@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Security;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using CodexUsage.Domain;
@@ -13,7 +16,10 @@ namespace CodexUsage.Infrastructure.Collection;
 public sealed class UsageCollector : IUsageCollector
 {
     private const int BoundaryWindowBytes = 64 * 1024;
-    private const int ParserRevision = 6;
+    private const long ReverseReconciliationMaximumBytes = 64L * 1024 * 1024;
+    private const int ParserRevision = 11;
+    private const string PartialSourceErrorPrefix = "partial-opaque-oversized:";
+    private static readonly TimeSpan RepeatedFailureDiagnosticInterval = TimeSpan.FromMinutes(5);
     private const string ParserRevisionStateKey = "rollout_parser_revision";
     private const string LastInventoryStateKey = "last_successful_inventory_epoch_ms";
     private const string InventoryRunCountStateKey = "full_inventory_run_count";
@@ -30,12 +36,20 @@ public sealed class UsageCollector : IUsageCollector
     private readonly Dictionary<string, string> _canonicalByRollout = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _pendingPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _watcherInbox = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int> _retryAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RetryState> _retryStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, FailureDiagnosticState> _failureDiagnostics = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _partialSourceKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _conflictsAttempted = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _unknownModelsAttempted = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly Queue<CollectorCommand> _deferredCommands = [];
     private readonly MutableDiagnostics _diagnostics = new();
+    private IReadOnlyList<string> _latestInventoryPaths = [];
+    private readonly Dictionary<string, RecoverySnapshotCacheEntry> _recoverySnapshotsByPath =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<RecoverySeed>> _fullRecoveryIndexByRollout =
+        new(StringComparer.Ordinal);
+    private bool _fullRecoveryIndexBuilt;
 
     private UsageStore? _store;
     private PeriodicTimer? _inventoryTimer;
@@ -49,6 +63,7 @@ public sealed class UsageCollector : IUsageCollector
     private long? _lastSuccessfulInventoryEpochMs;
     private long? _lastHeartbeatEpochMs;
     private long _changedFilesLastSync;
+    private long _usageRevision;
     private long _inventoryPathsEnumerated;
     private long _inventoryPathsProcessed;
     private long _lastInventoryProgressPublishedTimestamp;
@@ -62,11 +77,14 @@ public sealed class UsageCollector : IUsageCollector
     private int _timerInventoryQueued;
     private bool _inventoryActive;
     private long _lastInventoryCompletedTimestamp;
+    private long _fullReconcileBytesRead;
+    private long _appendBytesRead;
     private int _watcherWakeQueued;
     private string? _watcherErrorInbox;
     private int _disposeStarted;
     private int _lifetimeDisposed;
     private readonly CollectorTestHooks? _testHooks;
+    private readonly ISourceIdentityReader _sourceIdentityReader;
 
     public UsageCollector(CollectorOptions options) : this(options, null)
     {
@@ -82,6 +100,7 @@ public sealed class UsageCollector : IUsageCollector
             DatabasePath = options.DatabasePath == ":memory:" ? options.DatabasePath : Path.GetFullPath(options.DatabasePath),
         };
         _testHooks = testHooks;
+        _sourceIdentityReader = testHooks?.SourceIdentityReader ?? new WindowsSourceIdentityReader();
         _observationRoots =
         [
             Path.Combine(_options.CodexHome, "sessions"),
@@ -219,9 +238,11 @@ public sealed class UsageCollector : IUsageCollector
                         await DrainWatcherPathsAsync(cancellationToken).ConfigureAwait(false);
                         break;
                     case RetryPathCommand retry:
-                        if (_retryAttempts.TryGetValue(NormalizeKey(retry.FilePath), out var attempt)
-                            && attempt == retry.Attempt)
+                        if (_retryStates.TryGetValue(NormalizeKey(retry.FilePath), out var retryState)
+                            && retryState.Generation == retry.Generation
+                            && retryState.Scheduled)
                         {
+                            retryState.Scheduled = false;
                             AddPendingPath(retry.FilePath);
                             ScheduleDebounce(TimeSpan.Zero);
                         }
@@ -255,7 +276,7 @@ public sealed class UsageCollector : IUsageCollector
         }
     }
 
-    private Task<CollectorStatus> StartCoreAsync(CancellationToken _)
+    private async Task<CollectorStatus> StartCoreAsync(CancellationToken cancellationToken)
     {
         if (_started) throw new InvalidOperationException("Collector is already started.");
         _store = new UsageStore(_options.DatabasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(_options.CodexHome));
@@ -286,6 +307,7 @@ public sealed class UsageCollector : IUsageCollector
 
         _runId = Guid.NewGuid().ToString();
         _store.BeginCollectorRun(new CollectorRunStartInput(_runId, "application-session", _runStartedEpochMs));
+        await RehydrateCheckpointsAsync(cancellationToken).ConfigureAwait(false);
         _started = true;
         if (_options.EnableWatchers) StartWatchers();
         StartTimers();
@@ -294,8 +316,302 @@ public sealed class UsageCollector : IUsageCollector
         PublishStatus();
         if (!_commands.Writer.TryWrite(new InitialInventoryCommand()))
             throw new ObjectDisposedException(nameof(UsageCollector));
-        return Task.FromResult(CreateStatus());
+        return CreateStatus();
     }
+
+    private async Task RehydrateCheckpointsAsync(CancellationToken cancellationToken)
+    {
+        var store = RequireStore();
+        var hits = 0;
+        var misses = 0;
+        long bytesRead = 0;
+        foreach (var checkpoint in store.ListRolloutCheckpoints())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CheckpointRehydrateResult result;
+            try
+            {
+                result = await TryRehydrateCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (IsCheckpointSourceAccessFailure(exception))
+            {
+                result = CheckpointRehydrateResult.Miss($"Checkpoint source is unavailable: {exception.Message}");
+            }
+            bytesRead = checked(bytesRead + result.BytesRead);
+            if (result.Runtime is { } runtime)
+            {
+                _runtimeByPath[NormalizeKey(checkpoint.FilePath)] = runtime;
+                hits++;
+                continue;
+            }
+
+            misses++;
+            store.DeleteRolloutCheckpoint(checkpoint.FilePath);
+            AddDiagnostic(
+                checkpoint.FilePath,
+                "checkpoint-invalidated",
+                result.Reason ?? "Checkpoint validation failed.",
+                DiagnosticSeverity.Info);
+        }
+
+        if (hits > 0 || misses > 0)
+        {
+            store.AddDiagnostic(new CollectorDiagnosticInput(
+                _runId,
+                null,
+                DiagnosticSeverity.Info,
+                "checkpoint-rehydrate-summary",
+                $"Rehydrated {hits} rollout checkpoints; invalidated {misses}; read {bytesRead} source bytes.",
+                JsonSerializer.Serialize(new { hits, misses, bytesRead }),
+                NowEpochMs()));
+        }
+    }
+
+    private static bool IsCheckpointSourceAccessFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or SecurityException or Win32Exception;
+
+    private async Task<CheckpointRehydrateResult> TryRehydrateCheckpointAsync(
+        RolloutCheckpointRecord checkpoint,
+        CancellationToken cancellationToken)
+    {
+        if (checkpoint.CheckpointFormatRevision != RolloutParserStateCodec.FormatRevision)
+            return CheckpointRehydrateResult.Miss("Checkpoint format revision changed.");
+        if (checkpoint.ParserRevision != ParserRevision)
+            return CheckpointRehydrateResult.Miss("Parser revision changed.");
+        if (checkpoint.SourceIdentity.Kind != SourceIdentityKind.WindowsFileId)
+            return CheckpointRehydrateResult.Miss("Source filesystem identity is unavailable; full reconciliation is required.");
+        if (!_sourcesByPath.TryGetValue(NormalizeKey(checkpoint.FilePath), out var source)
+            || !source.IsPresent
+            || source.CanonicalStatus != CanonicalStatus.Canonical
+            || !string.Equals(source.RolloutId, checkpoint.RolloutId, StringComparison.Ordinal)
+            || source.ByteOffset != checkpoint.StableCompleteOffset
+            || !string.Equals(source.PrefixHash, checkpoint.BoundaryHash, StringComparison.Ordinal)
+            || GetCanonical(checkpoint.RolloutId) is not { } canonical
+            || !PathsEqual(canonical, checkpoint.FilePath))
+            return CheckpointRehydrateResult.Miss("Checkpoint no longer matches the canonical source ledger row.");
+        if (!IsResolvedObservedRollout(checkpoint.FilePath))
+            return CheckpointRehydrateResult.Miss("Checkpoint source is outside the resolved observation boundary.");
+
+        var parserStateHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(checkpoint.ParserStateJson)))
+            .ToLowerInvariant();
+        if (!string.Equals(parserStateHash, checkpoint.ParserStateHash, StringComparison.Ordinal))
+            return CheckpointRehydrateResult.Miss("Checkpoint parser state hash changed.");
+        if (!RolloutParserStateCodec.TryDeserialize(checkpoint.ParserStateJson, out var state, out var stateError)
+            || state is null)
+            return CheckpointRehydrateResult.Miss($"Checkpoint parser state is invalid: {stateError}");
+        if (!state.HasMetadata || !string.Equals(state.Metadata.RolloutId, checkpoint.RolloutId, StringComparison.Ordinal))
+            return CheckpointRehydrateResult.Miss("Checkpoint parser metadata does not match the rollout.");
+        if (state.ForkReplay.Status == ForkReplayStatus.Unproven)
+            return CheckpointRehydrateResult.Miss("Checkpoint fork replay state is unproven.");
+        var eventCursor = RequireStore().GetRolloutEventCursor(checkpoint.RolloutId);
+        if (eventCursor.EventCount != state.NextTokenEventOrdinal
+            || eventCursor.NextTokenEventOrdinal != state.NextTokenEventOrdinal)
+            return CheckpointRehydrateResult.Miss("Checkpoint parser ordinal does not match the ledger event cursor.");
+        if (state.NextTokenEventOrdinal > 0 && state.PreviousSnapshot is null)
+            return CheckpointRehydrateResult.Miss("Checkpoint parser cumulative token snapshot is missing.");
+
+        var before = GetFileStat(checkpoint.FilePath);
+        if (before.Size < checkpoint.ObservedSizeBytes
+            || before.Size < checkpoint.StableCompleteOffset
+            || before.Size == checkpoint.ObservedSizeBytes
+            && before.ModifiedAtEpochMs != checkpoint.ObservedModifiedAtEpochMs)
+            return CheckpointRehydrateResult.Miss("Checkpoint source was truncated or rewritten.");
+        var boundaryLength = checked((int)Math.Min(BoundaryWindowBytes, checkpoint.StableCompleteOffset));
+        var boundaryBytes = new byte[boundaryLength];
+        await using var stream = OpenReadOnlyShared(checkpoint.FilePath);
+        if (stream.Length != before.Size)
+            return CheckpointRehydrateResult.Miss("Checkpoint source changed before validation.");
+        var identity = _sourceIdentityReader.Read(stream, checkpoint.FilePath, before.Size, before.ModifiedAtEpochMs);
+        if (identity != checkpoint.SourceIdentity)
+            return CheckpointRehydrateResult.Miss("Checkpoint source file identity changed.");
+        stream.Position = checkpoint.StableCompleteOffset - boundaryLength;
+        await ReadStreamCooperativelyAsync(stream, boundaryBytes, null, cancellationToken).ConfigureAwait(false);
+        long validationBytes = boundaryLength;
+        if (checkpoint.StableCompleteOffset > 0 && boundaryBytes[^1] != (byte)'\n')
+            return new CheckpointRehydrateResult(null, "Checkpoint stable offset is not newline-terminated.", validationBytes);
+        var reverse = await ReconcileLatestTokenAsync(
+            stream,
+            checkpoint.StableCompleteOffset,
+            checkpoint.RolloutId,
+            state,
+            RequireStore().GetRolloutLedgerTail(checkpoint.RolloutId),
+            cancellationToken).ConfigureAwait(false);
+        validationBytes = checked(validationBytes + reverse.BytesRead);
+        if (!reverse.Succeeded)
+            return new CheckpointRehydrateResult(null, reverse.Reason, validationBytes);
+        var after = GetFileStat(checkpoint.FilePath);
+        if (before != after || stream.Length != before.Size)
+            return new CheckpointRehydrateResult(null, "Checkpoint source changed during validation.", validationBytes);
+        var boundaryHash = Convert.ToHexString(SHA256.HashData(boundaryBytes)).ToLowerInvariant();
+        if (!string.Equals(boundaryHash, checkpoint.BoundaryHash, StringComparison.Ordinal))
+            return new CheckpointRehydrateResult(null, "Checkpoint boundary hash changed.", validationBytes);
+
+        return new CheckpointRehydrateResult(
+            new SourceRuntime(
+                checkpoint.RolloutId,
+                checkpoint.StableCompleteOffset,
+                checkpoint.BoundaryHash,
+                state,
+                checkpoint.SafeOpaqueOversizedRecords,
+                checkpoint.SafeNullPaddingRecords,
+                checkpoint.SourceIdentity,
+                checkpoint.ObservedModifiedAtEpochMs),
+            null,
+            validationBytes);
+    }
+
+    private async Task<ReverseTokenReconciliationResult> ReconcileLatestTokenAsync(
+        FileStream stream,
+        long stableCompleteOffset,
+        string fallbackRolloutId,
+        RolloutParserState state,
+        RolloutLedgerTail? ledgerTail,
+        CancellationToken cancellationToken)
+    {
+        if (state.NextTokenEventOrdinal == 0)
+        {
+            return state.PreviousSnapshot is null && ledgerTail is null
+                ? new ReverseTokenReconciliationResult(true, null, 0)
+                : ReverseTokenReconciliationResult.Failure("Empty parser state does not match the ledger tail.");
+        }
+        else if (ledgerTail is null || ledgerTail.TokenEventOrdinal != state.NextTokenEventOrdinal - 1)
+        {
+            return ReverseTokenReconciliationResult.Failure("Checkpoint ordinal does not match the latest ledger event.");
+        }
+
+        long bytesRead = 0;
+        var lineEnd = stableCompleteOffset == 0 ? 0 : stableCompleteOffset - 1;
+        while (lineEnd > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var boundary = await FindPreviousLineBoundaryAsync(
+                stream, lineEnd, bytesRead, cancellationToken).ConfigureAwait(false);
+            bytesRead = checked(bytesRead + boundary.BytesRead);
+            if (boundary.BudgetExceeded)
+                return new ReverseTokenReconciliationResult(false,
+                    "Reverse token reconciliation exceeded its bounded read budget.", bytesRead);
+            var lineLength = lineEnd - boundary.LineStart;
+            if (lineLength > 0 && lineLength <= RolloutParser.CooperativeHardMaximumRecordBytes)
+            {
+                if (bytesRead + lineLength > ReverseReconciliationMaximumBytes)
+                    return new ReverseTokenReconciliationResult(false,
+                        "Reverse token reconciliation exceeded its bounded read budget.", bytesRead);
+                var line = new byte[checked((int)lineLength)];
+                stream.Position = boundary.LineStart;
+                await stream.ReadExactlyAsync(line, cancellationToken).ConfigureAwait(false);
+                _testHooks?.SourceBytesRead?.Invoke(line.Length);
+                bytesRead = checked(bytesRead + line.Length);
+                var parsed = ParseReverseTokenLine(line, fallbackRolloutId);
+                if (parsed.Disposition == ReverseLineDisposition.Malformed)
+                    return new ReverseTokenReconciliationResult(false,
+                        "Reverse token reconciliation encountered malformed stable JSONL.", bytesRead);
+                if (parsed.Token is { } token)
+                {
+                    if (state.PreviousSnapshot is null)
+                        return new ReverseTokenReconciliationResult(false,
+                            "Source contains token usage but checkpoint state does not.", bytesRead);
+                    if (!string.Equals(token.CumulativeSnapshot, state.PreviousSnapshot, StringComparison.Ordinal))
+                        return new ReverseTokenReconciliationResult(false,
+                            "Latest source cumulative token snapshot differs from the checkpoint.", bytesRead);
+                    if (ledgerTail is not null && TokenTailMatches(token, ledgerTail))
+                        return new ReverseTokenReconciliationResult(true, null, bytesRead);
+                }
+            }
+            lineEnd = boundary.PreviousLineEnd;
+        }
+
+        return state.PreviousSnapshot is null && ledgerTail is null
+            ? new ReverseTokenReconciliationResult(true, null, bytesRead)
+            : new ReverseTokenReconciliationResult(false,
+                "Latest checkpoint token snapshot was not found in the bounded source tail.", bytesRead);
+    }
+
+    private async Task<ReverseLineBoundaryResult> FindPreviousLineBoundaryAsync(
+        FileStream stream,
+        long lineEnd,
+        long bytesAlreadyRead,
+        CancellationToken cancellationToken)
+    {
+        var searchEnd = lineEnd;
+        long callBytesRead = 0;
+        while (searchEnd > 0)
+        {
+            var chunkLength = checked((int)Math.Min(BoundaryWindowBytes, searchEnd));
+            if (bytesAlreadyRead + callBytesRead + chunkLength > ReverseReconciliationMaximumBytes)
+                return new ReverseLineBoundaryResult(0, 0, 0, true);
+            var chunkStart = searchEnd - chunkLength;
+            var chunk = new byte[chunkLength];
+            stream.Position = chunkStart;
+            await stream.ReadExactlyAsync(chunk, cancellationToken).ConfigureAwait(false);
+            _testHooks?.SourceBytesRead?.Invoke(chunkLength);
+            callBytesRead = checked(callBytesRead + chunkLength);
+            var newline = Array.LastIndexOf(chunk, (byte)'\n');
+            if (newline >= 0)
+            {
+                var previousLineEnd = chunkStart + newline;
+                return new ReverseLineBoundaryResult(previousLineEnd + 1, previousLineEnd, callBytesRead, false);
+            }
+            searchEnd = chunkStart;
+        }
+        return new ReverseLineBoundaryResult(0, 0, callBytesRead, false);
+    }
+
+    private static ReverseLineParseResult ParseReverseTokenLine(byte[] line, string fallbackRolloutId)
+    {
+        if (line.All(value => value is (byte)' ' or (byte)'\t' or (byte)'\r'))
+            return new ReverseLineParseResult(ReverseLineDisposition.NonToken, null);
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return new ReverseLineParseResult(ReverseLineDisposition.Malformed, null);
+            if (!root.TryGetProperty("type", out var outerType)
+                || outerType.ValueKind != JsonValueKind.String
+                || outerType.GetString() != "event_msg"
+                || !root.TryGetProperty("payload", out var payload)
+                || payload.ValueKind != JsonValueKind.Object
+                || !payload.TryGetProperty("type", out var payloadType)
+                || payloadType.ValueKind != JsonValueKind.String
+                || payloadType.GetString() != "token_count")
+                return new ReverseLineParseResult(ReverseLineDisposition.NonToken, null);
+        }
+        catch (JsonException)
+        {
+            return new ReverseLineParseResult(ReverseLineDisposition.Malformed, null);
+        }
+
+        var record = new byte[line.Length + 1];
+        line.CopyTo(record, 0);
+        record[^1] = (byte)'\n';
+        var parsed = RolloutParser.Parse(record, fallbackRolloutId);
+        if (parsed.Diagnostics.MalformedLines > 0 || parsed.Diagnostics.NonObjectLines > 0
+            || parsed.Diagnostics.HasUnsafeOversizedRecords)
+            return new ReverseLineParseResult(ReverseLineDisposition.Malformed, null);
+        if (parsed.Events.Length == 0)
+            return new ReverseLineParseResult(ReverseLineDisposition.NonToken, null);
+        var usageEvent = parsed.Events.Single();
+        return new ReverseLineParseResult(
+            ReverseLineDisposition.Token,
+            new ReverseTokenRecord(
+                usageEvent.CumulativeSnapshot,
+                DateTimeOffset.Parse(usageEvent.TimestampUtc).ToUnixTimeMilliseconds(),
+                usageEvent.InputTokens,
+                usageEvent.CachedInputTokens,
+                usageEvent.OutputTokens,
+                usageEvent.ReasoningOutputTokens));
+    }
+
+    private static bool TokenTailMatches(ReverseTokenRecord token, RolloutLedgerTail ledger) =>
+        token.TimestampEpochMs == ledger.TimestampEpochMs
+        && token.InputTokens == ledger.InputTokens
+        && token.CachedInputTokens == ledger.CachedInputTokens
+        && token.OutputTokens == ledger.OutputTokens
+        && token.ReasoningOutputTokens == ledger.ReasoningOutputTokens;
 
     private void StartWatchers()
     {
@@ -344,6 +660,11 @@ public sealed class UsageCollector : IUsageCollector
 
     internal (int UniquePaths, int WakeSignals) GetWatcherBufferMetricsForTest() =>
         (_watcherInbox.Count, Volatile.Read(ref _watcherWakeQueued));
+
+    internal TimeSpan? GetRetryRemainingDelayForTest(string filePath) =>
+        _retryStates.TryGetValue(NormalizeKey(filePath), out var state)
+            ? RemainingRetryDelay(state.NextAllowedRetryTimestamp)
+            : null;
 
     private void EnqueueWatcherObservation(string filePath)
     {
@@ -454,6 +775,7 @@ public sealed class UsageCollector : IUsageCollector
         finally
         {
             _inventoryActive = false;
+            ClearRecoveryInventoryCache();
             _lastInventoryCompletedTimestamp = Stopwatch.GetTimestamp();
             _testHooks?.AfterInventoryCompleted?.Invoke();
         }
@@ -475,12 +797,17 @@ public sealed class UsageCollector : IUsageCollector
         var inventorySucceeded = true;
         var usageChanged = false;
         long changedFiles = 0;
+        var fullBytesBefore = _fullReconcileBytesRead;
+        var appendBytesBefore = _appendBytesRead;
+        _conflictsAttempted.Clear();
+        ClearRecoveryInventoryCache();
 
         var currentCount = long.TryParse(store.GetCollectorState(InventoryRunCountStateKey), out var count) ? count : 0;
         store.SetCollectorState(InventoryRunCountStateKey, checked(currentCount + 1).ToString(), NowEpochMs());
         if (_testHooks?.BeforeInventoryEnumerationAsync is { } inventoryHook)
             await AwaitWhileServingInteractiveAsync(inventoryHook(cancellationToken), cancellationToken).ConfigureAwait(false);
         var inventory = await ListRolloutsAsync(yields, cancellationToken).ConfigureAwait(false);
+        _latestInventoryPaths = inventory.Paths;
         _inventoryPathsEnumerated = inventory.Paths.Count;
         _inventoryPathsProcessed = 0;
         PublishInventoryProgress("Inventory discovered");
@@ -578,10 +905,13 @@ public sealed class UsageCollector : IUsageCollector
                 var canonicalUnavailable = known?.RolloutId is { } rolloutId
                     && GetCanonical(rolloutId) is { } canonical
                     && !present.ContainsKey(NormalizeKey(canonical));
+                var canonicalNeedsCheckpoint = known?.CanonicalStatus == CanonicalStatus.Canonical
+                    && !_runtimeByPath.ContainsKey(key);
                 var changed = known is null || !known.IsPresent || known.SizeBytes != stat.Size
-                    || known.ModifiedAtEpochMs != stat.ModifiedAtEpochMs || known.ByteOffset < stat.Size
+                    || known.ModifiedAtEpochMs != stat.ModifiedAtEpochMs
+                    || (known.CanonicalStatus == CanonicalStatus.Conflict && !_conflictsAttempted.Contains(key))
                     || (sourcesWithUnknownModels.Contains(key) && !_unknownModelsAttempted.Contains(key))
-                    || canonicalUnavailable;
+                    || canonicalUnavailable || canonicalNeedsCheckpoint;
                 if (changed)
                 {
                     changedFiles++;
@@ -589,16 +919,18 @@ public sealed class UsageCollector : IUsageCollector
                         filePath, FullParseContext.Inventory, yields, cancellationToken).ConfigureAwait(false);
                     usageChanged |= processed.Changed;
                     inventorySucceeded &= processed.Succeeded;
-                    if (processed.Succeeded) _retryAttempts.Remove(key);
+                    if (processed.Succeeded) ClearSourceFailure(key);
                 }
             }
             catch (FileNotFoundException)
             {
                 if (known?.IsPresent == true) MarkMissing(known.FilePath);
+                ClearSourceFailure(key);
             }
             catch (DirectoryNotFoundException)
             {
                 if (known?.IsPresent == true) MarkMissing(known.FilePath);
+                ClearSourceFailure(key);
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -610,19 +942,35 @@ public sealed class UsageCollector : IUsageCollector
         }
 
         _changedFilesLastSync = changedFiles;
+        var fullBytesRead = _fullReconcileBytesRead - fullBytesBefore;
+        var appendBytesRead = _appendBytesRead - appendBytesBefore;
+        store.AddDiagnostic(new CollectorDiagnosticInput(
+            _runId,
+            null,
+            DiagnosticSeverity.Info,
+            "checkpoint-inventory-io",
+            $"Inventory read {fullBytesRead} full-reconciliation bytes and {appendBytesRead} append bytes.",
+            JsonSerializer.Serialize(new { fullBytesRead, appendBytesRead, changedFiles }),
+            NowEpochMs()));
         _diagnostics.CooperativeYieldCount += yields.Count;
-        if (inventorySucceeded)
+        var inventoryFullyCovered = inventorySucceeded && _partialSourceKeys.Count == 0;
+        if (inventoryFullyCovered)
         {
             _lastSuccessfulInventoryEpochMs = NowEpochMs();
             store.SetCollectorState(LastInventoryStateKey, _lastSuccessfulInventoryEpochMs.Value.ToString(), _lastSuccessfulInventoryEpochMs.Value);
             store.SetCollectorState(InventoryYieldCountStateKey, yields.Count.ToString(), _lastSuccessfulInventoryEpochMs.Value);
         }
-        _phase = inventorySucceeded && _watcherHealthy && store.CountSourceConflicts() == 0 && _retryAttempts.Count == 0
-            ? CollectorPhase.Watching
-            : CollectorPhase.Degraded;
+        var inventoryHealthy = inventorySucceeded && _watcherHealthy
+            && store.CountSourceConflicts() == 0 && _retryStates.Count == 0;
+        _phase = !inventoryHealthy
+            ? CollectorPhase.Degraded
+            : inventoryFullyCovered ? CollectorPhase.Watching : CollectorPhase.Partial;
         _message = !inventorySucceeded
             ? $"Inventory incomplete after processing {changedFiles} changed sources"
+            : _partialSourceKeys.Count > 0
+                ? $"Inventory current with {_partialSourceKeys.Count} partially parsed sources"
             : changedFiles == 0 ? "Inventory is current" : $"Processed {changedFiles} changed sources";
+        AdvanceUsageRevision(usageChanged);
         ServiceInteractiveCommands();
         var status = CreateStatus();
         PublishStatus(status);
@@ -748,6 +1096,7 @@ public sealed class UsageCollector : IUsageCollector
                             }
                         }
                     }
+                    ClearSourceFailure(key);
                     continue;
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
@@ -761,7 +1110,7 @@ public sealed class UsageCollector : IUsageCollector
                 var result = await ProcessFileAsync(path, FullParseContext.Inventory, null, cancellationToken).ConfigureAwait(false);
                 usageChanged |= result.Changed;
                 processed++;
-                if (result.Succeeded) _retryAttempts.Remove(key);
+                if (result.Succeeded) ClearSourceFailure(key);
                 else
                 {
                     ScheduleRetry(path);
@@ -771,11 +1120,17 @@ public sealed class UsageCollector : IUsageCollector
             if (_pendingPaths.Count > 0) await YieldToMailboxAsync(cancellationToken).ConfigureAwait(false);
         }
         _changedFilesLastSync = processed;
-        _phase = succeeded && _watcherHealthy && RequireStore().CountSourceConflicts() == 0 && _retryAttempts.Count == 0
-            ? CollectorPhase.Watching : CollectorPhase.Degraded;
+        var watcherHealthy = succeeded && _watcherHealthy
+            && RequireStore().CountSourceConflicts() == 0 && _retryStates.Count == 0;
+        _phase = !watcherHealthy
+            ? CollectorPhase.Degraded
+            : _partialSourceKeys.Count == 0 ? CollectorPhase.Watching : CollectorPhase.Partial;
         _message = !succeeded
             ? $"Watcher retry scheduled after processing {processed} paths"
+            : _partialSourceKeys.Count > 0
+                ? $"Watcher current with {_partialSourceKeys.Count} partially parsed sources"
             : processed == 0 ? "Watcher changes are current" : $"Processed {processed} watcher paths";
+        AdvanceUsageRevision(usageChanged);
         if (processed > 0 || usageChanged || !succeeded) PublishStatus();
     }
 
@@ -783,7 +1138,11 @@ public sealed class UsageCollector : IUsageCollector
     {
         if (_stopping || !IsResolvedObservedRollout(filePath)) return;
         var key = NormalizeKey(filePath);
-        _retryAttempts.Remove(key);
+        if (_retryStates.TryGetValue(key, out var retryState))
+        {
+            ScheduleObservedRetry(Path.GetFullPath(filePath), retryState);
+            return;
+        }
         _pendingPaths[key] = Path.GetFullPath(filePath);
         ScheduleDebounce(_options.WatcherDebounce);
     }
@@ -806,16 +1165,58 @@ public sealed class UsageCollector : IUsageCollector
     private void ScheduleRetry(string filePath)
     {
         var key = NormalizeKey(filePath);
-        var attempt = _retryAttempts.GetValueOrDefault(key) + 1;
-        _retryAttempts[key] = attempt;
-        if (attempt > _options.RetryAttempts) return;
-        var multiplier = 1L << (attempt - 1);
+        if (!_retryStates.TryGetValue(key, out var state))
+        {
+            state = new RetryState();
+            _retryStates.Add(key, state);
+        }
+        state.ConsecutiveFailures = checked(state.ConsecutiveFailures + 1);
+        var exponent = Math.Min(Math.Min(state.ConsecutiveFailures, _options.RetryAttempts) - 1, 30);
+        var multiplier = 1L << exponent;
         var delayMs = Math.Min(_options.RetryBaseDelay.TotalMilliseconds * multiplier, 4_000);
+        state.NextAllowedRetryTimestamp = RetryDeadlineAfter(TimeSpan.FromMilliseconds(delayMs));
+        if (state.ConsecutiveFailures > _options.RetryAttempts) return;
+        ScheduleRetryCommand(Path.GetFullPath(filePath), state, TimeSpan.FromMilliseconds(delayMs));
+    }
+
+    private void ScheduleObservedRetry(string filePath, RetryState state)
+    {
+        if (state.Scheduled) return;
+        var remaining = RemainingRetryDelay(state.NextAllowedRetryTimestamp);
+        var delay = remaining > _options.WatcherDebounce ? remaining : _options.WatcherDebounce;
+        ScheduleRetryCommand(filePath, state, delay);
+    }
+
+    private void ScheduleRetryCommand(string filePath, RetryState state, TimeSpan delay)
+    {
+        state.Generation = checked(state.Generation + 1);
+        state.Scheduled = true;
         _ = EnqueueAfterDelayAsync(
-            new RetryPathCommand(Path.GetFullPath(filePath), attempt),
-            TimeSpan.FromMilliseconds(delayMs),
+            new RetryPathCommand(filePath, state.Generation),
+            delay,
             _lifetime.Token);
     }
+
+    private long RetryDeadlineAfter(TimeSpan delay)
+    {
+        var frequency = RetryTimestampFrequency();
+        var delta = checked((long)Math.Ceiling(delay.TotalSeconds * frequency));
+        return checked(RetryTimestamp() + delta);
+    }
+
+    private TimeSpan RemainingRetryDelay(long deadline)
+    {
+        var remaining = Math.Max(0, deadline - RetryTimestamp());
+        return TimeSpan.FromSeconds(remaining / (double)RetryTimestampFrequency());
+    }
+
+    private long RetryTimestamp() =>
+        _testHooks?.GetMonotonicTimestamp?.Invoke() ?? Stopwatch.GetTimestamp();
+
+    private long RetryTimestampFrequency() =>
+        _testHooks?.MonotonicTimestampFrequency is > 0 and var frequency
+            ? frequency
+            : Stopwatch.Frequency;
 
     private async Task EnqueueAfterDelayAsync(CollectorCommand command, TimeSpan delay, CancellationToken cancellationToken)
     {
@@ -845,7 +1246,9 @@ public sealed class UsageCollector : IUsageCollector
                 ? await ProcessFullFileAsync(filePath, context, yields, cancellationToken).ConfigureAwait(false)
                 : await ProcessIncrementalFileAsync(filePath, runtime, yields, cancellationToken).ConfigureAwait(false);
             _diagnostics.FilesScanned++;
-            return new ProcessResult(changed, true);
+            var unresolvedConflict = _sourcesByPath.TryGetValue(key, out var processedSource)
+                && processedSource.CanonicalStatus == CanonicalStatus.Conflict;
+            return new ProcessResult(changed, !unresolvedConflict);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -867,6 +1270,11 @@ public sealed class UsageCollector : IUsageCollector
             return await ProcessFullFileAsync(
                 filePath, new FullParseContext(ParseReason.CanonicalPrefixRewrite, runtime.RolloutId), yields, cancellationToken).ConfigureAwait(false);
         var snapshot = await ReadStableAppendSnapshotAsync(filePath, runtime.ByteOffset, cancellationToken).ConfigureAwait(false);
+        if (runtime.SourceIdentity != snapshot.SourceIdentity
+            || snapshot.Stat.Size == runtime.ByteOffset
+            && snapshot.Stat.ModifiedAtEpochMs != runtime.ObservedModifiedAtEpochMs)
+            return await ProcessFullFileAsync(
+                filePath, new FullParseContext(ParseReason.CanonicalPrefixRewrite, runtime.RolloutId), yields, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(snapshot.OldBoundaryHash, runtime.BoundaryHash, StringComparison.Ordinal))
             return await ProcessFullFileAsync(
                 filePath, new FullParseContext(ParseReason.CanonicalPrefixRewrite, runtime.RolloutId), yields, cancellationToken).ConfigureAwait(false);
@@ -879,18 +1287,59 @@ public sealed class UsageCollector : IUsageCollector
         if (runtime.State.UnresolvedTurnIds.Concat(runtime.State.ProvisionalTurnIds).Any(resolvedTurns.Contains))
             return await ProcessFullFileAsync(
                 filePath, new FullParseContext(ParseReason.LateModelResolution, runtime.RolloutId), yields, cancellationToken).ConfigureAwait(false);
-        AddDiagnostics(result.Diagnostics);
-        if (result.StableByteLength == 0) return false;
+        AddDiagnostics(filePath, result.Diagnostics);
+        if (result.StableByteLength == 0)
+        {
+            var partialSource = SourceFrom(
+                filePath, snapshot.Stat, runtime.ByteOffset, runtime.BoundaryHash,
+                CanonicalStatus.Canonical, PrefixStatus.Matches,
+                runtime.SafeOpaqueOversizedRecordsSkipped > 0 || runtime.SafeNullPaddingRecordsSkipped > 0
+                    ? PartialSourceMessage(runtime.SafeOpaqueOversizedRecordsSkipped, runtime.SafeNullPaddingRecordsSkipped)
+                    : null);
+            var partialCheckpoint = CreateCheckpoint(
+                filePath, snapshot.Stat, snapshot.SourceIdentity, runtime.ByteOffset, runtime.BoundaryHash,
+                result.State, runtime.SafeOpaqueOversizedRecordsSkipped, runtime.SafeNullPaddingRecordsSkipped,
+                snapshot.Stat.Size - runtime.ByteOffset);
+            RequireStore().AppendRolloutSource(new AppendRolloutSourceInput(
+                result.Metadata, [], partialSource, NowEpochMs(), partialCheckpoint));
+            RememberSource(new SourceFileInput(
+                partialSource.FilePath, result.Metadata.RolloutId, partialSource.SizeBytes,
+                partialSource.ModifiedAtEpochMs, partialSource.ByteOffset, partialSource.PrefixHash,
+                partialSource.PrefixStatus, partialSource.CanonicalStatus, partialSource.IsPresent,
+                partialSource.LastScannedAtEpochMs, partialSource.LastError));
+            _runtimeByPath[NormalizeKey(filePath)] = runtime with
+            {
+                State = result.State,
+                SourceIdentity = snapshot.SourceIdentity,
+                ObservedModifiedAtEpochMs = snapshot.Stat.ModifiedAtEpochMs,
+            };
+            AddDiagnostic(filePath, "checkpoint-partial-tail",
+                $"Deferred {snapshot.Stat.Size - runtime.ByteOffset} trailing bytes until a complete JSONL record is available.",
+                DiagnosticSeverity.Info);
+            return false;
+        }
         var newOffset = runtime.ByteOffset + result.StableByteLength;
         var hash = snapshot.BoundaryHashAt(result.StableByteLength);
-        var source = SourceFrom(filePath, snapshot.Stat, newOffset, hash, CanonicalStatus.Canonical, PrefixStatus.Matches, null);
+        var safeOpaqueSkipped = checked(runtime.SafeOpaqueOversizedRecordsSkipped
+            + result.Diagnostics.SafeOpaqueOversizedRecordsSkipped);
+        var safeNullPaddingSkipped = checked(runtime.SafeNullPaddingRecordsSkipped
+            + result.Diagnostics.SafeNullPaddingRecordsSkipped);
+        var isPartial = safeOpaqueSkipped > 0 || safeNullPaddingSkipped > 0;
+        var source = SourceFrom(filePath, snapshot.Stat, newOffset, hash, CanonicalStatus.Canonical, PrefixStatus.Matches,
+            isPartial ? PartialSourceMessage(safeOpaqueSkipped, safeNullPaddingSkipped) : null);
+        var checkpoint = CreateCheckpoint(
+            filePath, snapshot.Stat, snapshot.SourceIdentity, newOffset, hash, result.State,
+            safeOpaqueSkipped, safeNullPaddingSkipped, snapshot.Stat.Size - newOffset);
         var appended = RequireStore().AppendRolloutSource(new AppendRolloutSourceInput(
-            result.Metadata, UsageInputs(result), source, NowEpochMs()));
+            result.Metadata, UsageInputs(result), source, NowEpochMs(), checkpoint));
         RememberSource(new SourceFileInput(
             source.FilePath, result.Metadata.RolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
             source.IsPresent, source.LastScannedAtEpochMs, source.LastError));
-        _runtimeByPath[NormalizeKey(filePath)] = new SourceRuntime(result.Metadata.RolloutId, newOffset, hash, result.State);
+        _runtimeByPath[NormalizeKey(filePath)] = new SourceRuntime(
+            result.Metadata.RolloutId, newOffset, hash, result.State, safeOpaqueSkipped,
+            safeNullPaddingSkipped,
+            snapshot.SourceIdentity, snapshot.Stat.ModifiedAtEpochMs);
         return appended.Inserted > 0;
     }
 
@@ -907,15 +1356,17 @@ public sealed class UsageCollector : IUsageCollector
         var bytes = new byte[checked((int)snapshotLength)];
         await using var stream = OpenReadOnlyShared(filePath);
         if (stream.Length != before.Size) throw new IOException("Source changed before reading appended bytes.");
+        var sourceIdentity = _sourceIdentityReader.Read(stream, filePath, before.Size, before.ModifiedAtEpochMs);
         stream.Position = start;
         await ReadStreamCooperativelyAsync(stream, bytes, null, cancellationToken).ConfigureAwait(false);
+        _appendBytesRead = checked(_appendBytesRead + bytes.Length);
         var after = GetFileStat(filePath);
         if (before != after || stream.Length != before.Size)
             throw new IOException("Source changed while reading appended bytes.");
         var prefixLength = checked((int)(byteOffset - start));
         var oldBoundaryHash = Convert.ToHexString(SHA256.HashData(bytes.AsSpan(0, prefixLength))).ToLowerInvariant();
         var appended = bytes.AsSpan(prefixLength).ToArray();
-        return new AppendSnapshot(before, bytes, prefixLength, appended, oldBoundaryHash);
+        return new AppendSnapshot(before, sourceIdentity, bytes, prefixLength, appended, oldBoundaryHash);
     }
 
     private async Task<bool> ProcessFullFileAsync(
@@ -936,60 +1387,114 @@ public sealed class UsageCollector : IUsageCollector
                 throw new IOException("Canonical source safety classification changed between recovery snapshots.");
             if (isKnownCanonical)
             {
+                _recoverySnapshotsByPath[NormalizeKey(filePath)] = new RecoverySnapshotCacheEntry(null);
                 RecordCanonicalConflict(filePath, known!, confirmedUnsafe, "canonical-source-malformed", confirmedUnsafe.Message);
-                return false;
+                var recovery = await TryRecoverConflictedCanonicalAsync(
+                    known!.RolloutId!, filePath, null, yields, cancellationToken).ConfigureAwait(false);
+                return recovery.UsageChanged;
             }
             throw new InvalidDataException(confirmedUnsafe.Message);
         }
 
         var parsed = (ParsedSnapshot)snapshot;
         var result = parsed.Result;
-        AddDiagnostics(result.Diagnostics);
+        var partialSourceMessage = result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
+                || result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
+            ? PartialSourceMessage(
+                result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+                result.Diagnostics.SafeNullPaddingRecordsSkipped)
+            : null;
+        AddDiagnostics(filePath, result.Diagnostics);
+        if (known?.RolloutId is { } legacyRolloutId
+            && legacyRolloutId != result.Metadata.RolloutId
+            && isKnownCanonical
+            && known.CanonicalStatus == CanonicalStatus.Canonical
+            && context.Reason == ParseReason.ParserRevision
+            && context.ExpectedRolloutId == legacyRolloutId
+            && IsStrictLegacyIdentityChange(filePath, legacyRolloutId, result.Metadata.RolloutId)
+            && TryRekeyLegacyCanonical(filePath, legacyRolloutId, parsed, partialSourceMessage))
+        {
+            return true;
+        }
         if (known?.RolloutId is { } previousRollout && previousRollout != result.Metadata.RolloutId && isKnownCanonical)
         {
             var confirmed = await ConfirmStableSnapshotAsync(filePath, parsed, yields, cancellationToken).ConfigureAwait(false);
             if (confirmed is not ParsedSnapshot confirmedParsed || confirmedParsed.Result.Metadata.RolloutId != result.Metadata.RolloutId)
                 throw new IOException("Canonical source identity changed between recovery snapshots.");
+            _recoverySnapshotsByPath[NormalizeKey(filePath)] = new RecoverySnapshotCacheEntry(confirmedParsed);
             var message = $"Canonical source rollout changed from {previousRollout} to {result.Metadata.RolloutId}.";
             RecordCanonicalConflict(filePath, known, confirmedParsed, "canonical-source-rollout-changed", message);
-            return false;
+            if (context.Reason == ParseReason.ParserRevision
+                && context.ExpectedRolloutId == previousRollout
+                && known.CanonicalStatus == CanonicalStatus.Conflict
+                && IsStrictLegacyIdentityChange(filePath, previousRollout, result.Metadata.RolloutId)
+                && TryRekeyLegacyCanonical(filePath, previousRollout, confirmedParsed, partialSourceMessage))
+                return true;
+            var recovery = await TryRecoverConflictedCanonicalAsync(
+                previousRollout, filePath, null, yields, cancellationToken).ConfigureAwait(false);
+            if (!recovery.Recovered) return false;
+            var changedIdentity = await ProcessFullFileAsync(
+                filePath, FullParseContext.Inventory, yields, cancellationToken).ConfigureAwait(false);
+            return recovery.UsageChanged || changedIdentity;
         }
 
         var observedAt = NowEpochMs();
         var candidateIdentities = result.Events.Select(EventIdentity).ToArray();
         var existingIdentities = store.GetRolloutEventIdentities(result.Metadata.RolloutId);
         var relation = SignatureRelation(existingIdentities, candidateIdentities);
+        var candidateSemanticSignatures = result.Events.Select(EventSemanticSignature).ToArray();
+        var existingSemanticSignatures = store.GetRolloutSemanticSignatures(result.Metadata.RolloutId);
+        var semanticRelation = SignatureRelation(existingSemanticSignatures, candidateSemanticSignatures);
+        var storedMetadata = store.GetRolloutMetadata(result.Metadata.RolloutId);
+        var usageChanged = semanticRelation != SignatureRelationship.Equal
+            || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Length > 0)
+            && !SameDashboardUsageMetadata(storedMetadata, result.Metadata);
         if (context.Reason == ParseReason.ParserRevision)
         {
             if (result.Metadata.RolloutId != context.ExpectedRolloutId)
                 throw new InvalidDataException($"Canonical source rollout changed from {context.ExpectedRolloutId} to {result.Metadata.RolloutId}.");
-            var source = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash, CanonicalStatus.Canonical, PrefixStatus.Matches, null);
+            var source = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
+                CanonicalStatus.Canonical, PrefixStatus.Matches, partialSourceMessage);
+            var parserRevisionCheckpoint = CreateCheckpoint(
+                filePath, parsed.Stat, parsed.SourceIdentity, result.StableByteLength, parsed.BoundaryHash,
+                result.State, result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+                result.Diagnostics.SafeNullPaddingRecordsSkipped,
+                parsed.Stat.Size - result.StableByteLength);
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
                 result.Metadata,
                 UsageInputs(result),
                 new CanonicalSourceInput(
                     source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
                     source.PrefixHash, source.PrefixStatus, source.LastScannedAtEpochMs, source.LastError),
-                observedAt));
+                observedAt,
+                null,
+                parserRevisionCheckpoint));
             RememberPromotion(result.Metadata.RolloutId, source);
-            RememberRuntime(filePath, result, parsed.BoundaryHash);
-            return true;
+            RememberRuntime(filePath, result, parsed.BoundaryHash, parsed.SourceIdentity, parsed.Stat.ModifiedAtEpochMs);
+            return usageChanged;
         }
 
         var canonicalPath = GetCanonical(result.Metadata.RolloutId);
         var isCurrentCanonical = canonicalPath is not null && PathsEqual(canonicalPath, filePath);
-        var semanticRelation = SignatureRelation(
-            store.GetRolloutSemanticSignatures(result.Metadata.RolloutId),
-            result.Events.Select(EventSemanticSignature).ToArray());
-        var metadataMatches = SameMetadata(store.GetRolloutMetadata(result.Metadata.RolloutId), result.Metadata);
+        var metadataMatches = SameMetadata(storedMetadata, result.Metadata);
+        var canonicalIsConflicted = canonicalPath is not null
+            && _sourcesByPath.TryGetValue(NormalizeKey(canonicalPath), out var conflictedCanonicalSource)
+            && conflictedCanonicalSource.CanonicalStatus == CanonicalStatus.Conflict;
+        if (!isCurrentCanonical && canonicalIsConflicted)
+        {
+            var recovery = await TryRecoverConflictedCanonicalAsync(
+                result.Metadata.RolloutId, canonicalPath!, new RecoverySeed(filePath, parsed), yields, cancellationToken)
+                .ConfigureAwait(false);
+            if (recovery.Recovered) return recovery.UsageChanged;
+        }
         var canonicalRewrite = isCurrentCanonical && (context.Reason == ParseReason.CanonicalPrefixRewrite
             || relation is SignatureRelationship.Shorter or SignatureRelationship.Diverged
             || !metadataMatches
             || semanticRelation is SignatureRelationship.Shorter or SignatureRelationship.Diverged);
         if (canonicalRewrite)
         {
-            await RecoverCanonicalRewriteAsync(filePath, result.Metadata.RolloutId, parsed, yields, cancellationToken).ConfigureAwait(false);
-            return true;
+            return await RecoverCanonicalRewriteAsync(
+                filePath, result.Metadata.RolloutId, parsed, yields, cancellationToken).ConfigureAwait(false);
         }
 
         if (relation == SignatureRelationship.Diverged)
@@ -1004,7 +1509,7 @@ public sealed class UsageCollector : IUsageCollector
         if (relation == SignatureRelationship.Shorter)
         {
             UpsertSource(SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
-                CanonicalStatus.Candidate, PrefixStatus.Matches, null), result.Metadata.RolloutId);
+                CanonicalStatus.Candidate, PrefixStatus.Matches, partialSourceMessage), result.Metadata.RolloutId);
             _runtimeByPath.Remove(NormalizeKey(filePath));
             return false;
         }
@@ -1024,13 +1529,19 @@ public sealed class UsageCollector : IUsageCollector
             && _sourcesByPath.TryGetValue(NormalizeKey(canonicalPath), out var canonicalSource) && canonicalSource.IsPresent;
         var shouldPromote = relation == SignatureRelationship.Extension || canonicalPath is null || !canonicalPresent || isCurrentCanonical;
         var candidateSource = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
-            shouldPromote ? CanonicalStatus.Canonical : CanonicalStatus.Candidate, PrefixStatus.Matches, null);
+            shouldPromote ? CanonicalStatus.Canonical : CanonicalStatus.Candidate, PrefixStatus.Matches,
+            partialSourceMessage);
         if (!shouldPromote)
         {
             UpsertSource(candidateSource, result.Metadata.RolloutId);
             _runtimeByPath.Remove(NormalizeKey(filePath));
             return false;
         }
+        var checkpoint = CreateCheckpoint(
+            filePath, parsed.Stat, parsed.SourceIdentity, result.StableByteLength, parsed.BoundaryHash,
+            result.State, result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+            result.Diagnostics.SafeNullPaddingRecordsSkipped,
+            parsed.Stat.Size - result.StableByteLength);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             result.Metadata,
             UsageInputs(result),
@@ -1038,13 +1549,60 @@ public sealed class UsageCollector : IUsageCollector
                 candidateSource.FilePath, candidateSource.SizeBytes, candidateSource.ModifiedAtEpochMs,
                 candidateSource.ByteOffset, candidateSource.PrefixHash, candidateSource.PrefixStatus,
                 candidateSource.LastScannedAtEpochMs, candidateSource.LastError),
-            observedAt));
+            observedAt,
+            null,
+            checkpoint));
         RememberPromotion(result.Metadata.RolloutId, candidateSource);
-        RememberRuntime(filePath, result, parsed.BoundaryHash);
-        return relation == SignatureRelationship.Extension || existingIdentities.Count == 0;
+        RememberRuntime(filePath, result, parsed.BoundaryHash, parsed.SourceIdentity, parsed.Stat.ModifiedAtEpochMs);
+        return usageChanged;
     }
 
-    private async Task RecoverCanonicalRewriteAsync(
+    private bool TryRekeyLegacyCanonical(
+        string filePath,
+        string legacyRolloutId,
+        ParsedSnapshot parsed,
+        string? partialSourceMessage)
+    {
+        var result = parsed.Result;
+        var source = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
+            CanonicalStatus.Canonical, PrefixStatus.Matches, partialSourceMessage);
+        var checkpoint = CreateCheckpoint(
+            filePath, parsed.Stat, parsed.SourceIdentity, result.StableByteLength, parsed.BoundaryHash,
+            result.State, result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+            result.Diagnostics.SafeNullPaddingRecordsSkipped,
+            parsed.Stat.Size - result.StableByteLength);
+        try
+        {
+            RequireStore().RekeyLegacyCanonicalRollout(new RekeyLegacyCanonicalRolloutInput(
+                legacyRolloutId,
+                result.Metadata,
+                UsageInputs(result),
+                new CanonicalSourceInput(
+                    source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
+                    source.PrefixHash, source.PrefixStatus, source.LastScannedAtEpochMs, source.LastError),
+                NowEpochMs(),
+                checkpoint));
+            _canonicalByRollout.Remove(legacyRolloutId);
+            RememberPromotion(result.Metadata.RolloutId, source);
+            RememberRuntime(filePath, result, parsed.BoundaryHash, parsed.SourceIdentity, parsed.Stat.ModifiedAtEpochMs);
+            return true;
+        }
+        catch (InvalidOperationException error)
+        {
+            AddDiagnostic(filePath, "legacy-rollout-rekey-rejected", error.Message, DiagnosticSeverity.Warning);
+            return false;
+        }
+    }
+
+    private static bool IsStrictLegacyIdentityChange(string filePath, string legacyRolloutId, string actualRolloutId) =>
+        string.Equals(
+            legacyRolloutId,
+            RolloutFileIdentity.LegacyFallbackRolloutId(filePath),
+            StringComparison.Ordinal)
+        && RolloutFileIdentity.TryGetTrailingUuidV7(filePath, out var filenameRolloutId)
+        && string.Equals(filenameRolloutId, actualRolloutId, StringComparison.Ordinal);
+
+    private async Task<bool> RecoverCanonicalRewriteAsync(
         string filePath,
         string rolloutId,
         ParsedSnapshot first,
@@ -1056,19 +1614,261 @@ public sealed class UsageCollector : IUsageCollector
         if (parsed.Result.Metadata.RolloutId != rolloutId)
             throw new InvalidDataException($"Canonical source rollout changed from {rolloutId} to {parsed.Result.Metadata.RolloutId}.");
         var observedAt = NowEpochMs();
-        RequireStore().RecoverDivergedCanonicalSource(new RecoverDivergedCanonicalSourceInput(
+        var store = RequireStore();
+        var existingSemanticSignatures = store.GetRolloutSemanticSignatures(rolloutId);
+        var candidateSemanticSignatures = parsed.Result.Events.Select(EventSemanticSignature).ToArray();
+        var usageChanged = SignatureRelation(existingSemanticSignatures, candidateSemanticSignatures)
+                != SignatureRelationship.Equal
+            || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Length > 0)
+            && !SameDashboardUsageMetadata(store.GetRolloutMetadata(rolloutId), parsed.Result.Metadata);
+        var checkpoint = CreateCheckpoint(
+            filePath, parsed.Stat, parsed.SourceIdentity, parsed.Result.StableByteLength, parsed.BoundaryHash,
+            parsed.Result.State, parsed.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+            parsed.Result.Diagnostics.SafeNullPaddingRecordsSkipped,
+            parsed.Stat.Size - parsed.Result.StableByteLength);
+        store.RecoverDivergedCanonicalSource(new RecoverDivergedCanonicalSourceInput(
             parsed.Result.Metadata,
             UsageInputs(parsed.Result),
             new RecoverableCanonicalSourceInput(filePath, parsed.Stat.Size, parsed.Stat.ModifiedAtEpochMs,
                 parsed.Result.StableByteLength, parsed.BoundaryHash, observedAt),
-            observedAt));
+            observedAt,
+            checkpoint));
         var source = SourceFrom(filePath, parsed.Stat, parsed.Result.StableByteLength, parsed.BoundaryHash,
-            CanonicalStatus.Canonical, PrefixStatus.Matches, null);
+            CanonicalStatus.Canonical, PrefixStatus.Matches,
+            parsed.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
+                    || parsed.Result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
+                ? PartialSourceMessage(
+                    parsed.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+                    parsed.Result.Diagnostics.SafeNullPaddingRecordsSkipped)
+                : null);
+        RequireStore().UpsertSourceFile(new SourceFileInput(
+            source.FilePath, rolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
+            source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
+            source.IsPresent, source.LastScannedAtEpochMs, source.LastError));
         RememberSource(new SourceFileInput(
             source.FilePath, rolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
             source.IsPresent, source.LastScannedAtEpochMs, source.LastError));
-        RememberRuntime(filePath, parsed.Result, parsed.BoundaryHash);
+        RememberRuntime(filePath, parsed.Result, parsed.BoundaryHash, parsed.SourceIdentity, parsed.Stat.ModifiedAtEpochMs);
+        return usageChanged;
+    }
+
+    private async Task<ConflictRecoveryResult> TryRecoverConflictedCanonicalAsync(
+        string rolloutId,
+        string conflictPath,
+        RecoverySeed? currentCandidate,
+        InventoryYieldTracker? yields,
+        CancellationToken cancellationToken)
+    {
+        var store = RequireStore();
+        var metadata = store.GetRolloutMetadata(rolloutId);
+        if (metadata is null) return new ConflictRecoveryResult(false, false);
+        var existingSignatures = store.GetRolloutSemanticSignatures(rolloutId);
+        var candidatePaths = new Dictionary<string, RecoverySeed?>(StringComparer.OrdinalIgnoreCase);
+        if (_sourceKeysByRollout.TryGetValue(rolloutId, out var sourceKeys))
+        {
+            foreach (var sourceKey in sourceKeys)
+            {
+                var storedSource = _sourcesByPath[sourceKey];
+                if (storedSource.IsPresent && !PathsEqual(storedSource.FilePath, conflictPath))
+                    candidatePaths[storedSource.FilePath] = null;
+            }
+        }
+        if (currentCandidate is not null && !PathsEqual(currentCandidate.FilePath, conflictPath))
+            candidatePaths[currentCandidate.FilePath] = currentCandidate;
+
+        var candidates = new List<RecoveryCandidate>();
+        foreach (var (candidatePath, seed) in candidatePaths)
+        {
+            var parsed = await GetConfirmedRecoverySnapshotAsync(
+                candidatePath, seed, yields, cancellationToken).ConfigureAwait(false);
+            AddRecoveryCandidate(candidates, candidatePath, parsed, metadata, existingSignatures);
+        }
+
+        if (_inventoryActive)
+        {
+            await EnsureFullRecoveryIndexAsync(yields, cancellationToken).ConfigureAwait(false);
+            if (_fullRecoveryIndexByRollout.TryGetValue(rolloutId, out var indexedCandidates))
+            {
+                foreach (var seed in indexedCandidates)
+                {
+                    if (!PathsEqual(seed.FilePath, conflictPath) && !candidatePaths.ContainsKey(seed.FilePath))
+                        AddRecoveryCandidate(candidates, seed.FilePath, seed.Snapshot, metadata, existingSignatures);
+                }
+            }
+        }
+
+        var freshCandidates = new List<RecoveryCandidate>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            var fresh = await RevalidateRecoveryCandidateAsync(
+                candidate.FilePath,
+                metadata,
+                existingSignatures,
+                yields,
+                cancellationToken).ConfigureAwait(false);
+            if (fresh is not null) freshCandidates.Add(fresh);
+        }
+        var selected = freshCandidates
+            .OrderByDescending(candidate => candidate.Relation == SignatureRelationship.Extension)
+            .ThenByDescending(candidate => candidate.Snapshot.Result.StableByteLength)
+            .ThenByDescending(candidate => candidate.Snapshot.Stat.ModifiedAtEpochMs)
+            .ThenBy(candidate => candidate.FilePath, PathComparer())
+            .FirstOrDefault();
+        if (selected is null) return new ConflictRecoveryResult(false, false);
+
+        var observedAt = NowEpochMs();
+        var source = SourceFrom(
+            selected.FilePath,
+            selected.Snapshot.Stat,
+            selected.Snapshot.Result.StableByteLength,
+            selected.Snapshot.BoundaryHash,
+            CanonicalStatus.Canonical,
+            PrefixStatus.Matches,
+            selected.Snapshot.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
+                    || selected.Snapshot.Result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
+                ? PartialSourceMessage(
+                    selected.Snapshot.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+                    selected.Snapshot.Result.Diagnostics.SafeNullPaddingRecordsSkipped)
+                : null);
+        var checkpoint = CreateCheckpoint(
+            selected.FilePath, selected.Snapshot.Stat, selected.Snapshot.SourceIdentity,
+            selected.Snapshot.Result.StableByteLength, selected.Snapshot.BoundaryHash,
+            selected.Snapshot.Result.State,
+            selected.Snapshot.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+            selected.Snapshot.Result.Diagnostics.SafeNullPaddingRecordsSkipped,
+            selected.Snapshot.Stat.Size - selected.Snapshot.Result.StableByteLength);
+        store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
+            selected.Snapshot.Result.Metadata,
+            UsageInputs(selected.Snapshot.Result),
+            new CanonicalSourceInput(
+                source.FilePath,
+                source.SizeBytes,
+                source.ModifiedAtEpochMs,
+                source.ByteOffset,
+                source.PrefixHash,
+                source.PrefixStatus,
+                source.LastScannedAtEpochMs,
+                source.LastError),
+            observedAt,
+            conflictPath,
+            checkpoint));
+        RememberPromotion(rolloutId, source);
+        var conflictKey = NormalizeKey(conflictPath);
+        if (_sourcesByPath.TryGetValue(conflictKey, out var conflictSource)
+            && string.Equals(conflictSource.RolloutId, rolloutId, StringComparison.Ordinal))
+        {
+            _sourcesByPath[conflictKey] = conflictSource with
+            {
+                CanonicalStatus = CanonicalStatus.Candidate,
+                LastError = null,
+            };
+            _partialSourceKeys.Remove(conflictKey);
+        }
+        RememberRuntime(selected.FilePath, selected.Snapshot.Result, selected.Snapshot.BoundaryHash,
+            selected.Snapshot.SourceIdentity, selected.Snapshot.Stat.ModifiedAtEpochMs);
+        ClearSourceFailure(conflictKey);
+        return new ConflictRecoveryResult(
+            true,
+            selected.Relation == SignatureRelationship.Extension);
+    }
+
+    private async Task EnsureFullRecoveryIndexAsync(
+        InventoryYieldTracker? yields,
+        CancellationToken cancellationToken)
+    {
+        if (_fullRecoveryIndexBuilt) return;
+        foreach (var filePath in _latestInventoryPaths)
+        {
+            var key = NormalizeKey(filePath);
+            if (_sourcesByPath.TryGetValue(key, out var knownSource) && knownSource.RolloutId is not null) continue;
+            var parsed = await GetConfirmedRecoverySnapshotAsync(
+                filePath, null, yields, cancellationToken).ConfigureAwait(false);
+            if (parsed is null) continue;
+            if (!_fullRecoveryIndexByRollout.TryGetValue(parsed.Result.Metadata.RolloutId, out var candidates))
+            {
+                candidates = [];
+                _fullRecoveryIndexByRollout.Add(parsed.Result.Metadata.RolloutId, candidates);
+            }
+            candidates.Add(new RecoverySeed(filePath, parsed));
+        }
+        _fullRecoveryIndexBuilt = true;
+        if (_testHooks?.AfterFullRecoveryIndexBuiltAsync is { } hook)
+            await hook(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<RecoveryCandidate?> RevalidateRecoveryCandidateAsync(
+        string filePath,
+        RolloutMetadata metadata,
+        IReadOnlyList<string> existingSignatures,
+        InventoryYieldTracker? yields,
+        CancellationToken cancellationToken)
+    {
+        _recoverySnapshotsByPath.Remove(NormalizeKey(filePath));
+        var parsed = await GetConfirmedRecoverySnapshotAsync(
+            filePath, null, yields, cancellationToken).ConfigureAwait(false);
+        if (parsed is null || !SameMetadata(metadata, parsed.Result.Metadata)) return null;
+        var relation = SignatureRelation(
+            existingSignatures,
+            parsed.Result.Events.Select(EventSemanticSignature).ToArray());
+        return relation is SignatureRelationship.Equal or SignatureRelationship.Extension
+            ? new RecoveryCandidate(filePath, parsed, relation)
+            : null;
+    }
+
+    private async Task<ParsedSnapshot?> GetConfirmedRecoverySnapshotAsync(
+        string filePath,
+        RecoverySeed? seed,
+        InventoryYieldTracker? yields,
+        CancellationToken cancellationToken)
+    {
+        var key = NormalizeKey(filePath);
+        if (_recoverySnapshotsByPath.TryGetValue(key, out var cached))
+        {
+            if (seed is null || (cached.Snapshot is not null
+                && string.Equals(cached.Snapshot.ContentHash, seed.Snapshot.ContentHash, StringComparison.Ordinal)))
+                return cached.Snapshot;
+            _recoverySnapshotsByPath.Remove(key);
+        }
+
+        try
+        {
+            var first = seed?.Snapshot
+                ?? await ReadStableFullSnapshotAsync(filePath, yields, cancellationToken).ConfigureAwait(false);
+            var confirmed = await ConfirmStableSnapshotAsync(filePath, first, yields, cancellationToken).ConfigureAwait(false);
+            var parsed = confirmed as ParsedSnapshot;
+            _recoverySnapshotsByPath[key] = new RecoverySnapshotCacheEntry(parsed);
+            _testHooks?.AfterConfirmedRecoverySnapshot?.Invoke(filePath);
+            return parsed;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _recoverySnapshotsByPath[key] = new RecoverySnapshotCacheEntry(null);
+            AddDiagnostic(filePath, "conflict-recovery-candidate-rejected", error.Message, DiagnosticSeverity.Warning);
+            return null;
+        }
+    }
+
+    private static void AddRecoveryCandidate(
+        ICollection<RecoveryCandidate> candidates,
+        string filePath,
+        ParsedSnapshot? parsed,
+        RolloutMetadata metadata,
+        IReadOnlyList<string> existingSignatures)
+    {
+        if (parsed is null || !SameMetadata(metadata, parsed.Result.Metadata)) return;
+        var relation = SignatureRelation(
+            existingSignatures,
+            parsed.Result.Events.Select(EventSemanticSignature).ToArray());
+        if (relation is SignatureRelationship.Equal or SignatureRelationship.Extension)
+            candidates.Add(new RecoveryCandidate(filePath, parsed, relation));
+    }
+
+    private void ClearRecoveryInventoryCache()
+    {
+        _recoverySnapshotsByPath.Clear();
+        _fullRecoveryIndexByRollout.Clear();
+        _fullRecoveryIndexBuilt = false;
     }
 
     private async Task<FullSnapshot> ReadStableFullSnapshotAsync(
@@ -1076,22 +1876,27 @@ public sealed class UsageCollector : IUsageCollector
         InventoryYieldTracker? yields,
         CancellationToken cancellationToken)
     {
+        _testHooks?.FullSnapshotRead?.Invoke(filePath);
         var before = GetFileStat(filePath);
         if (before.Size > int.MaxValue) throw new IOException("Rollout source is too large to parse in memory.");
         var buffer = new byte[checked((int)before.Size)];
-        await ReadRangeAsync(filePath, 0, buffer, yields, cancellationToken).ConfigureAwait(false);
+        await using var stream = OpenReadOnlyShared(filePath);
+        if (stream.Length != before.Size) throw new IOException("Source changed before reading a full snapshot.");
+        var sourceIdentity = _sourceIdentityReader.Read(stream, filePath, before.Size, before.ModifiedAtEpochMs);
+        await ReadStreamCooperativelyAsync(stream, buffer, yields, cancellationToken).ConfigureAwait(false);
+        _fullReconcileBytesRead = checked(_fullReconcileBytesRead + buffer.Length);
         var after = GetFileStat(filePath);
-        if (before != after) throw new IOException("Source changed while reading a full snapshot.");
+        if (before != after || stream.Length != before.Size) throw new IOException("Source changed while reading a full snapshot.");
         var result = await ParseAsync(buffer, FallbackRolloutId(filePath), null, yields, cancellationToken).ConfigureAwait(false);
         var contentHash = await CooperativeSha256Async(buffer, yields, cancellationToken).ConfigureAwait(false);
         var unsafeContent = result.Diagnostics.MalformedLines > 0 || result.Diagnostics.NonObjectLines > 0
-            || result.Diagnostics.OversizedRecordsSkipped > 0;
+            || result.Diagnostics.HasUnsafeOversizedRecords;
         var hashLength = unsafeContent
             ? buffer.Length : result.StableByteLength;
         var boundaryHash = ComputeBoundaryHash(buffer, hashLength);
         return unsafeContent
-            ? new UnsafeSnapshot(after, contentHash, boundaryHash, $"Stable JSONL content is malformed: {filePath}")
-            : new ParsedSnapshot(after, contentHash, boundaryHash, result);
+            ? new UnsafeSnapshot(after, sourceIdentity, contentHash, boundaryHash, $"Stable JSONL content is malformed: {filePath}")
+            : new ParsedSnapshot(after, sourceIdentity, contentHash, boundaryHash, result);
     }
 
     private async Task<FullSnapshot> ConfirmStableSnapshotAsync(
@@ -1100,6 +1905,8 @@ public sealed class UsageCollector : IUsageCollector
         InventoryYieldTracker? yields,
         CancellationToken cancellationToken)
     {
+        if (_testHooks?.BeforeConfirmationSnapshotAsync is { } hook)
+            await hook(filePath, cancellationToken).ConfigureAwait(false);
         await Task.Delay(_options.RecoverySnapshotDelay, cancellationToken).ConfigureAwait(false);
         var second = await ReadStableFullSnapshotAsync(filePath, yields, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(first.ContentHash, second.ContentHash, StringComparison.Ordinal))
@@ -1171,6 +1978,7 @@ public sealed class UsageCollector : IUsageCollector
         {
             var length = Math.Min(_options.ParserSliceBytes, buffer.Length - offset);
             await stream.ReadExactlyAsync(buffer.Slice(offset, length), cancellationToken).ConfigureAwait(false);
+            _testHooks?.SourceBytesRead?.Invoke(length);
             if (offset + length >= buffer.Length) continue;
             yields?.Increment();
             await YieldToMailboxAsync(cancellationToken).ConfigureAwait(false);
@@ -1196,11 +2004,22 @@ public sealed class UsageCollector : IUsageCollector
         if (snapshot is UnsafeSnapshot unsafeSnapshot) throw new InvalidDataException(unsafeSnapshot.Message);
         var parsed = (ParsedSnapshot)snapshot;
         _sourcesByPath.TryGetValue(NormalizeKey(filePath), out var known);
-        if (known?.RolloutId is { } rolloutId && rolloutId != parsed.Result.Metadata.RolloutId)
+        if (known?.RolloutId is { } rolloutId && rolloutId != parsed.Result.Metadata.RolloutId
+            && !(GetCanonical(rolloutId) is { } designatedCanonical
+                && PathsEqual(designatedCanonical, known.FilePath)
+                && string.Equals(
+                    rolloutId,
+                    RolloutFileIdentity.LegacyFallbackRolloutId(known.FilePath),
+                    StringComparison.Ordinal)
+                && RolloutFileIdentity.TryGetTrailingUuidV7(known.FilePath, out var filenameRolloutId)
+                && string.Equals(
+                    filenameRolloutId,
+                    parsed.Result.Metadata.RolloutId,
+                    StringComparison.Ordinal)))
             throw new InvalidDataException($"Known source rollout changed from {rolloutId} to {parsed.Result.Metadata.RolloutId}.");
         var viable = known?.CanonicalStatus != CanonicalStatus.Conflict
             || (known?.RolloutId is { } knownRollout && GetCanonical(knownRollout) is { } canonical && PathsEqual(canonical, known.FilePath));
-        return new RevisionCandidate(known?.FilePath ?? filePath, parsed.Result.Metadata.RolloutId,
+        return new RevisionCandidate(known?.FilePath ?? filePath, known?.RolloutId ?? parsed.Result.Metadata.RolloutId,
             parsed.Result.StableByteLength, parsed.Stat.Size, parsed.Stat.ModifiedAtEpochMs, viable);
     }
 
@@ -1232,9 +2051,21 @@ public sealed class UsageCollector : IUsageCollector
             source.IsPresent, source.LastScannedAtEpochMs, source.LastError));
     }
 
-    private void RememberRuntime(string filePath, RolloutChunkParseResult result, string boundaryHash) =>
+    private void RememberRuntime(
+        string filePath,
+        RolloutChunkParseResult result,
+        string boundaryHash,
+        SourceIdentity sourceIdentity,
+        long observedModifiedAtEpochMs) =>
         _runtimeByPath[NormalizeKey(filePath)] = new SourceRuntime(
-            result.Metadata.RolloutId, result.StableByteLength, boundaryHash, result.State);
+            result.Metadata.RolloutId,
+            result.StableByteLength,
+            boundaryHash,
+            result.State,
+            result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
+            result.Diagnostics.SafeNullPaddingRecordsSkipped,
+            sourceIdentity,
+            observedModifiedAtEpochMs);
 
     private void RememberSource(SourceFileInput source)
     {
@@ -1249,6 +2080,8 @@ public sealed class UsageCollector : IUsageCollector
             source.FilePath, source.RolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
             source.IsPresent, source.LastScannedAtEpochMs, source.LastError);
+        if (source.IsPresent && IsPartialSourceError(source.LastError)) _partialSourceKeys.Add(key);
+        else _partialSourceKeys.Remove(key);
         if (source.RolloutId is { } rolloutId)
         {
             if (!_sourceKeysByRollout.TryGetValue(rolloutId, out var keys))
@@ -1266,6 +2099,7 @@ public sealed class UsageCollector : IUsageCollector
         if (RequireStore().MarkSourceMissing(filePath, NowEpochMs()) && _sourcesByPath.TryGetValue(key, out var known))
             _sourcesByPath[key] = known with { IsPresent = false, LastScannedAtEpochMs = NowEpochMs() };
         _runtimeByPath.Remove(key);
+        _partialSourceKeys.Remove(key);
     }
 
     private void RecordCanonicalConflict(
@@ -1288,9 +2122,11 @@ public sealed class UsageCollector : IUsageCollector
             LastError = message,
         };
         RequireStore().UpsertSourceFile(ToInput(updated));
-        _sourcesByPath[NormalizeKey(filePath)] = updated;
+        var key = NormalizeKey(filePath);
+        _sourcesByPath[key] = updated;
+        _partialSourceKeys.Remove(key);
         RecordConflict(filePath, code, message, known.RolloutId);
-        _runtimeByPath.Remove(NormalizeKey(filePath));
+        _runtimeByPath.Remove(key);
     }
 
     private void RecordConflict(string filePath, string code, string message, string? rolloutId) =>
@@ -1303,11 +2139,24 @@ public sealed class UsageCollector : IUsageCollector
         var key = NormalizeKey(filePath);
         if (_sourcesByPath.TryGetValue(key, out var known))
         {
-            var updated = known with { IsPresent = true, LastScannedAtEpochMs = NowEpochMs(), LastError = error.Message };
+            var updated = known with
+            {
+                IsPresent = true,
+                LastScannedAtEpochMs = NowEpochMs(),
+                LastError = IsPartialSourceError(known.LastError) ? known.LastError : error.Message,
+            };
             RequireStore().UpsertSourceFile(ToInput(updated));
             _sourcesByPath[key] = updated;
         }
-        AddDiagnostic(filePath, "source-read-retry", error.Message, DiagnosticSeverity.Warning);
+        var now = NowEpochMs();
+        var signature = $"{error.GetType().FullName}:{error.Message}";
+        if (!_failureDiagnostics.TryGetValue(key, out var previous)
+            || !string.Equals(previous.Signature, signature, StringComparison.Ordinal)
+            || now - previous.LastRecordedEpochMs >= RepeatedFailureDiagnosticInterval.TotalMilliseconds)
+        {
+            AddDiagnostic(filePath, "source-read-retry", error.Message, DiagnosticSeverity.Warning);
+            _failureDiagnostics[key] = new FailureDiagnosticState(signature, now);
+        }
     }
 
     private void RecordEnumerationFailure(string directory, Exception error) =>
@@ -1317,9 +2166,20 @@ public sealed class UsageCollector : IUsageCollector
         RequireStore().AddDiagnostic(new CollectorDiagnosticInput(
             _runId, path, severity, code, message, null, NowEpochMs()));
 
-    private void AddDiagnostics(RolloutParseDiagnostics value)
+    private void AddDiagnostics(string filePath, RolloutParseDiagnostics value)
     {
-        _diagnostics.MalformedLines += value.MalformedLines + value.NonObjectLines + value.OversizedRecordsSkipped;
+        _diagnostics.MalformedLines += value.MalformedLines + value.NonObjectLines
+            + value.OversizedRecords.Count(item => item.Disposition != OversizedRecordDisposition.SafeOpaqueSkipped);
+        _diagnostics.SafeOpaqueOversizedRecordsSkipped += value.SafeOpaqueOversizedRecordsSkipped;
+        if (value.SafeOpaqueOversizedRecordsSkipped > 0)
+            AddDiagnostic(filePath, "safe-opaque-oversized-skipped",
+                $"Safely skipped {value.SafeOpaqueOversizedRecordsSkipped} oversized opaque JSONL records after full syntax validation.",
+                DiagnosticSeverity.Info);
+        _diagnostics.SafeNullPaddingRecordsSkipped += value.SafeNullPaddingRecordsSkipped;
+        if (value.SafeNullPaddingRecordsSkipped > 0)
+            AddDiagnostic(filePath, "safe-null-padding-skipped",
+                $"Safely skipped {value.SafeNullPaddingRecordsSkipped} complete all-NUL JSONL padding records.",
+                DiagnosticSeverity.Warning);
         _diagnostics.DuplicateSnapshotsSkipped += value.DuplicateSnapshotsSkipped;
         _diagnostics.ZeroBreakdownSnapshotsSkipped += value.ZeroBreakdownSnapshotsSkipped;
         _diagnostics.InvalidTokenRelationshipsSkipped += value.InvalidTokenRelationshipsSkipped;
@@ -1464,7 +2324,9 @@ public sealed class UsageCollector : IUsageCollector
     {
         var store = _store;
         var conflicts = store?.CountSourceConflicts() ?? 0;
-        var phase = conflicts > 0 && _phase == CollectorPhase.Watching ? CollectorPhase.Degraded : _phase;
+        var phase = conflicts > 0 && _phase is CollectorPhase.Watching or CollectorPhase.Partial
+            ? CollectorPhase.Degraded
+            : _phase;
         return new CollectorStatus(
             phase,
             _options.DatabasePath,
@@ -1472,7 +2334,8 @@ public sealed class UsageCollector : IUsageCollector
             _lastSuccessfulInventoryEpochMs is { } inventory ? FromEpoch(inventory) : null,
             _lastHeartbeatEpochMs is { } heartbeat ? FromEpoch(heartbeat) : null,
             store?.CountPresentSources() ?? 0,
-            _pendingPaths.Count + _watcherInbox.Count,
+            store?.CountPresentRealtimeVoiceSessions() ?? 0,
+            _pendingPaths.Count + _watcherInbox.Count + _retryStates.Count,
             _changedFilesLastSync,
             conflicts,
             _coverage,
@@ -1484,7 +2347,16 @@ public sealed class UsageCollector : IUsageCollector
                 _diagnostics.DuplicateSnapshotsSkipped,
                 _diagnostics.ZeroBreakdownSnapshotsSkipped,
                 _diagnostics.InvalidTokenRelationshipsSkipped,
-                _diagnostics.CooperativeYieldCount));
+                _diagnostics.CooperativeYieldCount,
+                _partialSourceKeys.Count,
+                _diagnostics.SafeOpaqueOversizedRecordsSkipped,
+                _diagnostics.SafeNullPaddingRecordsSkipped),
+            _usageRevision);
+    }
+
+    private void AdvanceUsageRevision(bool usageChanged)
+    {
+        if (usageChanged) _usageRevision = checked(_usageRevision + 1);
     }
 
     private void PublishStatus() => PublishStatus(CreateStatus());
@@ -1587,6 +2459,38 @@ public sealed class UsageCollector : IUsageCollector
             value.ReasoningOutputTokens,
             value.DeterministicSignature)).ToArray();
 
+    private static RolloutCheckpointInput CreateCheckpoint(
+        string filePath,
+        SourceStat stat,
+        SourceIdentity sourceIdentity,
+        long stableCompleteOffset,
+        string boundaryHash,
+        RolloutParserState state,
+        int safeOpaqueOversizedRecords,
+        int safeNullPaddingRecords,
+        long trailingPartialBytes)
+    {
+        var parserStateJson = RolloutParserStateCodec.Serialize(state);
+        var parserStateHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(parserStateJson)))
+            .ToLowerInvariant();
+        return new RolloutCheckpointInput(
+            filePath,
+            state.Metadata.RolloutId,
+            RolloutParserStateCodec.FormatRevision,
+            ParserRevision,
+            sourceIdentity,
+            stat.Size,
+            stat.ModifiedAtEpochMs,
+            stableCompleteOffset,
+            boundaryHash,
+            parserStateJson,
+            parserStateHash,
+            trailingPartialBytes,
+            safeOpaqueOversizedRecords,
+            safeNullPaddingRecords,
+            NowEpochMs());
+    }
+
     private static string EventIdentity(ParsedRolloutUsageEvent value) => JsonSerializer.Serialize(new object[]
     {
         DateTimeOffset.Parse(value.TimestampUtc).ToUnixTimeMilliseconds(),
@@ -1621,14 +2525,41 @@ public sealed class UsageCollector : IUsageCollector
         left is not null && left.RolloutId == right.RolloutId && left.ConversationId == right.ConversationId
         && left.ParentThreadId == right.ParentThreadId && left.ThreadType == right.ThreadType
         && left.AgentRole == right.AgentRole && left.AgentPath == right.AgentPath
+        && left.AgentNickname == right.AgentNickname && left.IsRealtimeVoice == right.IsRealtimeVoice;
+
+    private static bool SameDashboardUsageMetadata(RolloutMetadata? left, RolloutMetadata right) =>
+        left is not null && left.RolloutId == right.RolloutId && left.ConversationId == right.ConversationId
+        && left.ParentThreadId == right.ParentThreadId && left.ThreadType == right.ThreadType
+        && left.AgentRole == right.AgentRole && left.AgentPath == right.AgentPath
         && left.AgentNickname == right.AgentNickname;
 
     private static void RejectInternalDamage(string filePath, RolloutChunkParseResult result)
     {
         if (result.Diagnostics.MalformedLines > 0 || result.Diagnostics.NonObjectLines > 0
-            || result.Diagnostics.OversizedRecordsSkipped > 0)
+            || result.Diagnostics.HasUnsafeOversizedRecords)
             throw new InvalidDataException($"Stable JSONL content is malformed: {filePath}");
     }
+
+    private void ClearSourceFailure(string key)
+    {
+        if (_failureDiagnostics.ContainsKey(key)
+            && _sourcesByPath.TryGetValue(key, out var known)
+            && known.LastError is not null
+            && !IsPartialSourceError(known.LastError))
+        {
+            var updated = known with { LastError = null, LastScannedAtEpochMs = NowEpochMs() };
+            RequireStore().UpsertSourceFile(ToInput(updated));
+            _sourcesByPath[key] = updated;
+        }
+        _retryStates.Remove(key);
+        _failureDiagnostics.Remove(key);
+    }
+
+    private static bool IsPartialSourceError(string? value) =>
+        value?.StartsWith(PartialSourceErrorPrefix, StringComparison.Ordinal) == true;
+
+    private static string PartialSourceMessage(int oversizedRecords, int nullPaddingRecords) =>
+        $"{PartialSourceErrorPrefix} safely skipped {oversizedRecords} opaque oversized records and {nullPaddingRecords} all-NUL padding records";
 
     private static string ComputeBoundaryHash(byte[] buffer, int stableByteLength)
     {
@@ -1636,19 +2567,7 @@ public sealed class UsageCollector : IUsageCollector
         return Convert.ToHexString(SHA256.HashData(buffer.AsSpan(start, stableByteLength - start))).ToLowerInvariant();
     }
 
-    private static string FallbackRolloutId(string filePath)
-    {
-        var name = Path.GetFileNameWithoutExtension(filePath);
-        if (!name.StartsWith("rollout-", StringComparison.Ordinal)) return name;
-        var separators = 0;
-        for (var index = 0; index < name.Length; index++)
-        {
-            if (name[index] != '-') continue;
-            separators++;
-            if (separators == 2) return name[(index + 1)..];
-        }
-        return name;
-    }
+    private static string FallbackRolloutId(string filePath) => RolloutFileIdentity.FallbackRolloutId(filePath);
 
     private static SourceStat GetFileStat(string filePath)
     {
@@ -1758,7 +2677,7 @@ public sealed class UsageCollector : IUsageCollector
 
     private sealed record DrainWatcherCommand(long Generation) : CollectorCommand;
 
-    private sealed record RetryPathCommand(string FilePath, int Attempt) : CollectorCommand;
+    private sealed record RetryPathCommand(string FilePath, int Generation) : CollectorCommand;
 
     private sealed record HeartbeatCommand : CollectorCommand;
 
@@ -1781,12 +2700,60 @@ public sealed class UsageCollector : IUsageCollector
         string RolloutId,
         long ByteOffset,
         string BoundaryHash,
-        RolloutParserState State);
+        RolloutParserState State,
+        int SafeOpaqueOversizedRecordsSkipped,
+        int SafeNullPaddingRecordsSkipped,
+        SourceIdentity SourceIdentity,
+        long ObservedModifiedAtEpochMs);
+
+    private sealed record CheckpointRehydrateResult(SourceRuntime? Runtime, string? Reason, long BytesRead)
+    {
+        public static CheckpointRehydrateResult Miss(string reason) => new(null, reason, 0);
+    }
+
+    private sealed record ReverseTokenReconciliationResult(bool Succeeded, string? Reason, long BytesRead)
+    {
+        public static ReverseTokenReconciliationResult Failure(string reason) => new(false, reason, 0);
+    }
+
+    private readonly record struct ReverseLineBoundaryResult(
+        long LineStart,
+        long PreviousLineEnd,
+        long BytesRead,
+        bool BudgetExceeded);
+
+    private enum ReverseLineDisposition
+    {
+        NonToken,
+        Token,
+        Malformed,
+    }
+
+    private sealed record ReverseLineParseResult(ReverseLineDisposition Disposition, ReverseTokenRecord? Token);
+
+    private sealed record ReverseTokenRecord(
+        string CumulativeSnapshot,
+        long TimestampEpochMs,
+        long InputTokens,
+        long CachedInputTokens,
+        long OutputTokens,
+        long ReasoningOutputTokens);
+
+    private sealed class RetryState
+    {
+        public int ConsecutiveFailures { get; set; }
+        public int Generation { get; set; }
+        public long NextAllowedRetryTimestamp { get; set; }
+        public bool Scheduled { get; set; }
+    }
+
+    private sealed record FailureDiagnosticState(string Signature, long LastRecordedEpochMs);
 
     private readonly record struct SourceStat(long Size, long ModifiedAtEpochMs);
 
     private sealed record AppendSnapshot(
         SourceStat Stat,
+        SourceIdentity SourceIdentity,
         byte[] SnapshotBytes,
         int PrefixLength,
         byte[] AppendedBytes,
@@ -1800,19 +2767,25 @@ public sealed class UsageCollector : IUsageCollector
         }
     }
 
-    private abstract record FullSnapshot(SourceStat Stat, string ContentHash, string BoundaryHash);
+    private abstract record FullSnapshot(
+        SourceStat Stat,
+        SourceIdentity SourceIdentity,
+        string ContentHash,
+        string BoundaryHash);
 
     private sealed record ParsedSnapshot(
         SourceStat Stat,
+        SourceIdentity SourceIdentity,
         string ContentHash,
         string BoundaryHash,
-        RolloutChunkParseResult Result) : FullSnapshot(Stat, ContentHash, BoundaryHash);
+        RolloutChunkParseResult Result) : FullSnapshot(Stat, SourceIdentity, ContentHash, BoundaryHash);
 
     private sealed record UnsafeSnapshot(
         SourceStat Stat,
+        SourceIdentity SourceIdentity,
         string ContentHash,
         string BoundaryHash,
-        string Message) : FullSnapshot(Stat, ContentHash, BoundaryHash);
+        string Message) : FullSnapshot(Stat, SourceIdentity, ContentHash, BoundaryHash);
 
     private sealed record FullParseContext(ParseReason Reason, string? ExpectedRolloutId)
     {
@@ -1836,6 +2809,17 @@ public sealed class UsageCollector : IUsageCollector
     }
 
     private sealed record ProcessResult(bool Changed, bool Succeeded);
+
+    private sealed record ConflictRecoveryResult(bool Recovered, bool UsageChanged);
+
+    private sealed record RecoverySeed(string FilePath, ParsedSnapshot Snapshot);
+
+    private sealed record RecoveryCandidate(
+        string FilePath,
+        ParsedSnapshot Snapshot,
+        SignatureRelationship Relation);
+
+    private sealed record RecoverySnapshotCacheEntry(ParsedSnapshot? Snapshot);
 
     private sealed record RevisionCandidate(
         string FilePath,
@@ -1884,6 +2868,8 @@ public sealed class UsageCollector : IUsageCollector
         public long ZeroBreakdownSnapshotsSkipped { get; set; }
         public long InvalidTokenRelationshipsSkipped { get; set; }
         public long CooperativeYieldCount { get; set; }
+        public long SafeOpaqueOversizedRecordsSkipped { get; set; }
+        public long SafeNullPaddingRecordsSkipped { get; set; }
     }
 
 }
@@ -1893,4 +2879,12 @@ internal sealed record CollectorTestHooks(
     Func<CancellationToken, ValueTask>? BeforeInventoryEnumerationAsync = null,
     Action? BeforeQuery = null,
     Action? BeforeInteractiveDispatch = null,
-    Action? AfterInventoryCompleted = null);
+    Action? AfterInventoryCompleted = null,
+    Action<string>? AfterConfirmedRecoverySnapshot = null,
+    Func<CancellationToken, ValueTask>? AfterFullRecoveryIndexBuiltAsync = null,
+    Func<long>? GetMonotonicTimestamp = null,
+    long MonotonicTimestampFrequency = 0,
+    ISourceIdentityReader? SourceIdentityReader = null,
+    Action<long>? SourceBytesRead = null,
+    Action<string>? FullSnapshotRead = null,
+    Func<string, CancellationToken, ValueTask>? BeforeConfirmationSnapshotAsync = null);

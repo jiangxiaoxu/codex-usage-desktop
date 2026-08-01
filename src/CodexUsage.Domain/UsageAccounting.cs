@@ -7,6 +7,7 @@ namespace CodexUsage.Domain;
 public static class UsageAccounting
 {
     public const string OtherModelCategory = "Others";
+    public const string AutoReviewModelCategory = "codex-auto-review";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
     private static readonly string[] SupportedFamilies = ["gpt-5.6", "gpt-5.5", "gpt-5.4"];
@@ -14,8 +15,8 @@ public static class UsageAccounting
     {
         ["gpt-5.6"] = new(5m, 0.5m, 30m),
         ["gpt-5.6-sol"] = new(5m, 0.5m, 30m),
-        ["gpt-5.6-terra"] = new(2.5m, 0.25m, 15m),
-        ["gpt-5.6-luna"] = new(1m, 0.1m, 6m),
+        ["gpt-5.6-terra"] = new(2m, 0.2m, 12m),
+        ["gpt-5.6-luna"] = new(0.2m, 0.02m, 1.2m),
         ["gpt-5.5"] = new(5m, 0.5m, 30m),
         ["gpt-5.4"] = new(2.5m, 0.25m, 15m),
         ["gpt-5.4-mini"] = new(0.75m, 0.075m, 4.5m),
@@ -26,6 +27,7 @@ public static class UsageAccounting
     {
         ArgumentNullException.ThrowIfNull(sourceModel);
         if (sourceModel == "unknown") return UnknownAttributionCategory;
+        if (sourceModel == AutoReviewModelCategory) return AutoReviewModelCategory;
         return SupportedFamilies.Any(family => sourceModel == family || sourceModel.StartsWith(family + "-", StringComparison.Ordinal))
             ? sourceModel
             : OtherModelCategory;
@@ -38,7 +40,7 @@ public static class UsageAccounting
     {
         var category = ModelCategory(usageEvent.Model);
         if (category == OtherModelCategory) return CostBreakdown.PricedZero;
-        if (category == UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
+        if (category is AutoReviewModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
             return CostBreakdown.UnpricedZero;
 
         var uncached = (usageEvent.InputTokens - usageEvent.CachedInputTokens) * rate.Input / Million;

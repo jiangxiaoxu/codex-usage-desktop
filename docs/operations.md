@@ -16,15 +16,15 @@ startup sequence 先打开应用 ledger,注册 source watcher,确认 watcher rea
 
 - FileSystemWatcher callback 只规范化 source path 并写入 channel.
 - event 使用 2 second debounce、path deduplication 和最多 16 path 的 bounded batch.
-- failed path 最多进行五次 backoff retry;retry 或 conflict 未清空时状态保持 `degraded`.
+- failed path 自动进行最多五级指数 backoff;后续 watch event 复用既有失败状态并在允许时间重试,不会把 backoff 清零.相同 source/error diagnostic 被节流,成功后才清除 retry state.
 - full inventory 每 5 分钟兜底运行.
 - directory enumeration、source processing、JSONL parsing 和 hashing 被切成小片,在片之间 cooperative yield.
 - startup 和 `Sync now` 使用相同 inventory path;已有 inventory 时,手动同步最多追加一次 trailing run.
 - actor 串行化 collector state mutation,query 使用一致 ledger snapshot.
 
-slice 是降低 CPU 峰值的 duty-cycle 策略,不是严格 latency 或 memory guarantee.极大的单条 JSON record 仍可能产生不可抢占的短暂 parse work.
+slice 是降低 CPU 峰值的 duty-cycle 策略,不是严格 latency 或 memory guarantee.普通 DOM record 有 1 MiB 上限;超限完整 record 使用低分配 streaming reader 完整验证语法和安全分类.存在已安全跳过的 opaque record 时 phase 为 `partial`,而不是宣称 inventory 完全成功.
 
-进程 startup 以 best effort 开启 Windows Efficiency Mode,包括 EcoQoS 和 below-normal priority.启用结果显示在 collector health.失败不会停止采集,也不会改变数据正确性.
+窗口失焦后的 Efficiency Mode / process priority 调整仍 deferred,当前运行与验收不得将其描述为已完成.
 
 ## Observation coverage
 
@@ -52,12 +52,13 @@ override path 如果 resolve 到 protected Codex source tree 会被拒绝.复制
 
 ## Recovery and diagnosis
 
-1. 查看 collector phase、conflict、retry、observation gap、Efficiency Mode 和 last reconciliation.
+1. 查看 collector phase、retry、observation gap 和 last reconciliation.GUI 不展示 source conflict;详细信息保留在内部 diagnostic.
 2. 使用 `Sync now` 请求一次 full inventory.
 3. 仍为 `degraded` 时重启 watcher,并用 SQLite-compatible read-only tool 检查 `collector_diagnostics` 和 `collector_runs`.
-4. 同路径 rewrite 只有在 `rolloutId` 不变、完整 parse 和两次 stable snapshot 一致时自动恢复.
-5. Cross-path divergence、ID change、malformed input 和 unstable snapshot 保持 conflict.保留 source 与 ledger 供诊断,不要编辑 Codex JSONL.
+4. 自动恢复仅接受双重稳定、metadata exact 且 semantic relation 为 `Equal` 或 `Extension` 的候选,并按 `Extension`、稳定 byte length、mtime、path 确定性选择.
+5. unsafe、`Shorter`、`Diverged`、attribution 不一致、malformed 或 unstable input 保留最后有效 ledger,记录 degraded/diagnostic 并后台重试.不要编辑 Codex JSONL.
 6. parser revision rebuild 逐 rollout transaction 执行;所有 required candidate 成功后才推进 revision marker.
+7. `collector_diagnostics` 中的 `checkpoint-rehydrate-summary` 和 `checkpoint-inventory-io` 记录本地 checkpoint hit/miss、boundary bytes、full reconciliation bytes 与 append bytes.大量 invalidation 应先检查 source identity、mtime、boundary 和 parser revision,不要修改 JSONL.
 
 CSV export 是明确 user action.选定 snapshot 只会写入通过 protected-path check 的目标,formula-leading text 会被 neutralize.
 
@@ -66,13 +67,13 @@ CSV export 是明确 user action.选定 snapshot 只会写入通过 protected-pa
 生成 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.0
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
 ```
 
-脚本生成 self-contained x64 publish,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.0-x64.exe`.安装或升级前必须通过 tray `Exit` 正常退出旧版或新版;安装器不会强制结束应用.
+脚本生成 self-contained x64 publish,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.1-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /T /F` 终止 process tree,确认退出后才替换程序文件;无法确认退出时安装失败.
 
 setup 支持从旧 Electron 0.2.6 原位升级.覆盖前会把 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 及存在的 WAL/SHM 备份到 `ledger-backups\preinstall-*`,然后移除旧 Electron payload.旧 Startup shortcut 会迁移为 HKCU Run entry,安装页允许保留或改变该选择.检测到更高版本时拒绝降级,相同版本可执行 repair install.
 
 卸载器删除 Program Files payload、快捷方式、HKCU Run entry 和 uninstall registration,默认不删除 `%LOCALAPPDATA%\Codex Usage Desktop` 或 ledger.需要清理数据时,应在确认不再需要审计历史且应用已退出后单独处理.
 
-当前 setup EXE 尚未 Authenticode 签名,Windows 可能显示 `Unknown Publisher` 或 SmartScreen.正式发布前需要可信 code-signing certificate.应用内 release feed 尚未配置,不会联网检查或自动下载更新;当前升级方式是运行版本号更高的 setup EXE.
+应用在启动后立即请求一次固定 GitHub Releases metadata,随后每 6 小时检查一次;用户也可点击“检查更新（未签名实验）”立即重试.自动检查只读取 metadata,不会下载、安装或上传数据.检查严格校验 owner/repository、SemVer tag、唯一 x64 asset、下载 URL、asset size 和 GitHub SHA-256 digest.下载完成后,用户须点击“运行安装器”并在警示 dialog 中确认.NSIS 安装器会结束当前应用和 collector process;应用在 Process.Start 前重新校验 LocalAppData installer SHA-256 和 metadata generation.验证或启动失败时应用保持运行.当前 setup EXE 尚未 Authenticode 签名,Windows 可能显示 `Unknown Publisher` 或 SmartScreen.SHA-256 仅能检测内容是否匹配 GitHub feed,不能建立发行者身份信任.正式发布前必须改为 Authenticode signing、时间戳和 publisher allowlist.

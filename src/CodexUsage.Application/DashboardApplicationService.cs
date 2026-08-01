@@ -9,6 +9,7 @@ namespace CodexUsage.Application;
 public sealed class DashboardApplicationService : IUsageDashboardService
 {
     private static readonly ProcessEfficiencyModeResult EfficiencyNotAttempted = new(
+        ProcessExecutionMode.Efficiency,
         false,
         false,
         "Efficiency Mode has not been attempted");
@@ -17,14 +18,19 @@ public sealed class DashboardApplicationService : IUsageDashboardService
     private readonly IProcessEfficiencyMode _efficiencyMode;
     private readonly ProtectedPathPolicy _protectedPathPolicy;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly SemaphoreSlim _efficiencyGate = new(1, 1);
+    private readonly object _efficiencyStateLock = new();
     private readonly object _refreshLock = new();
     private CollectorStatus? _collectorStatus;
     private ProcessEfficiencyModeResult _efficiencyResult = EfficiencyNotAttempted;
+    private ProcessExecutionMode _requestedExecutionMode = ProcessExecutionMode.Efficiency;
+    private long _efficiencyRevision;
     private Task<DashboardSnapshot>? _refreshInFlight;
     private DashboardQueryRequest? _refreshRequest;
     private CancellationTokenSource? _refreshCancellation;
-    private UsageRevision? _lastUsageRevision;
+    private long? _lastUsageRevision;
     private bool _started;
+    private bool _efficiencyAttempted;
     private int _disposed;
 
     public DashboardApplicationService(
@@ -54,9 +60,10 @@ public sealed class DashboardApplicationService : IUsageDashboardService
             ThrowIfDisposed();
             if (!_started)
             {
-                _efficiencyResult = await Task.Run(TryEnableEfficiencyMode, cancellationToken).ConfigureAwait(false);
+                await ApplyRequestedExecutionModeAsync().ConfigureAwait(false);
                 PublishStatus("Starting collector");
                 _collectorStatus = await _collector.StartAsync(cancellationToken).ConfigureAwait(false);
+                _lastUsageRevision = _collectorStatus.UsageRevision;
                 _started = true;
             }
 
@@ -177,6 +184,22 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         }
     }
 
+    public Task<ProcessEfficiencyModeResult> SetProcessExecutionModeAsync(ProcessExecutionMode mode)
+    {
+        ThrowIfDisposed();
+        if (mode is not ProcessExecutionMode.Interactive and not ProcessExecutionMode.Efficiency)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
+        }
+
+        lock (_efficiencyStateLock)
+        {
+            _requestedExecutionMode = mode;
+        }
+
+        return ApplyRequestedExecutionModeAsync();
+    }
+
     private async Task<CsvExportResult> ExportCsvCoreAsync(
         DashboardQueryRequest request,
         string outputPath,
@@ -233,6 +256,8 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         await _operationGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            await _efficiencyGate.WaitAsync().ConfigureAwait(false);
+            _efficiencyGate.Release();
             _collector.StatusChanged -= OnCollectorStatusChanged;
             await _collector.DisposeAsync().ConfigureAwait(false);
         }
@@ -257,7 +282,7 @@ public sealed class DashboardApplicationService : IUsageDashboardService
                 ToScanDiagnostics(status.Diagnostics),
                 ToFilterSpec(request)),
             cancellationToken).ConfigureAwait(false);
-        return new DashboardSnapshot(status, result, _efficiencyResult);
+        return new DashboardSnapshot(status, result, GetEfficiencyResult());
     }
 
     private ValueTask<IReadOnlyList<StoredUsageEvent>> QueryStoredEventsAsync(
@@ -276,15 +301,64 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         request.Subjects,
         request.PathQuery);
 
-    private ProcessEfficiencyModeResult TryEnableEfficiencyMode()
+    private async Task<ProcessEfficiencyModeResult> ApplyRequestedExecutionModeAsync()
+    {
+        await _efficiencyGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            while (true)
+            {
+                ProcessExecutionMode requestedMode;
+                lock (_efficiencyStateLock)
+                {
+                    requestedMode = _requestedExecutionMode;
+                    if (_efficiencyAttempted && _efficiencyResult.Mode == requestedMode)
+                    {
+                        return _efficiencyResult;
+                    }
+                }
+
+                var applied = await Task.Run(() => TryApplyEfficiencyMode(requestedMode)).ConfigureAwait(false);
+                ProcessEfficiencyModeResult result;
+                bool converged;
+                lock (_efficiencyStateLock)
+                {
+                    result = applied with { Revision = checked(++_efficiencyRevision) };
+                    _efficiencyResult = result;
+                    _efficiencyAttempted = true;
+                    converged = _requestedExecutionMode == requestedMode;
+                }
+                PublishStatus(result.Message);
+                if (converged)
+                {
+                    return result;
+                }
+            }
+        }
+        finally
+        {
+            _efficiencyGate.Release();
+        }
+    }
+
+    private ProcessEfficiencyModeResult TryApplyEfficiencyMode(ProcessExecutionMode mode)
     {
         try
         {
-            return _efficiencyMode.TryEnable();
+            return _efficiencyMode.TryApply(mode);
         }
         catch (Exception error)
         {
-            return new(false, false, $"Efficiency Mode failed: {error.Message}");
+            return new(mode, false, false, $"{mode} transition failed: {error.Message}");
+        }
+    }
+
+    private ProcessEfficiencyModeResult GetEfficiencyResult()
+    {
+        lock (_efficiencyStateLock)
+        {
+            return _efficiencyResult;
         }
     }
 
@@ -292,12 +366,11 @@ public sealed class DashboardApplicationService : IUsageDashboardService
     {
         _collectorStatus = status;
         PublishStatus(status.Message);
-        var revision = UsageRevision.FromStatus(status);
         var usageChanged = _started
-            && status.Phase is CollectorPhase.Watching or CollectorPhase.Degraded
+            && status.Phase is CollectorPhase.Watching or CollectorPhase.Partial or CollectorPhase.Degraded
             && _lastUsageRevision is { } previous
-            && previous != revision;
-        _lastUsageRevision = revision;
+            && previous != status.UsageRevision;
+        _lastUsageRevision = status.UsageRevision;
         if (usageChanged) PublishUsageChanged();
     }
 
@@ -320,7 +393,7 @@ public sealed class DashboardApplicationService : IUsageDashboardService
 
     private void PublishStatus(string message)
     {
-        var status = new DashboardApplicationStatus(_collectorStatus, _efficiencyResult, message);
+        var status = new DashboardApplicationStatus(_collectorStatus, GetEfficiencyResult(), message);
         var handlers = StatusChanged;
         if (handlers is null)
         {
@@ -396,16 +469,4 @@ public sealed class DashboardApplicationService : IUsageDashboardService
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
-    private sealed record UsageRevision(
-        DateTimeOffset? LastSuccessfulInventoryUtc,
-        long FilesScanned,
-        long ChangedFilesLastSync,
-        long Conflicts)
-    {
-        public static UsageRevision FromStatus(CollectorStatus status) => new(
-            status.LastSuccessfulInventoryUtc,
-            status.Diagnostics.FilesScanned,
-            status.ChangedFilesLastSync,
-            status.Conflicts);
-    }
 }

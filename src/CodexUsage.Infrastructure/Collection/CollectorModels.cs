@@ -36,6 +36,7 @@ public enum CollectorPhase
     Initializing,
     Syncing,
     Watching,
+    Partial,
     Degraded,
     Stopped,
 }
@@ -55,7 +56,10 @@ public sealed record CollectorDiagnostics(
     long DuplicateSnapshotsSkipped,
     long ZeroBreakdownSnapshotsSkipped,
     long InvalidTokenRelationshipsSkipped,
-    long CooperativeYieldCount);
+    long CooperativeYieldCount,
+    long PartialSources,
+    long SafeOpaqueOversizedRecordsSkipped,
+    long SafeNullPaddingRecordsSkipped);
 
 public sealed record CollectorStatus(
     CollectorPhase Phase,
@@ -64,13 +68,15 @@ public sealed record CollectorStatus(
     DateTimeOffset? LastSuccessfulInventoryUtc,
     DateTimeOffset? LastHeartbeatUtc,
     long FilesKnown,
+    long RealtimeVoiceSessions,
     int PendingFiles,
     long ChangedFilesLastSync,
     long Conflicts,
     ObservationCoverage ObservationCoverage,
     ObservationGap? ObservationGap,
     string Message,
-    CollectorDiagnostics Diagnostics);
+    CollectorDiagnostics Diagnostics,
+    long UsageRevision);
 
 public sealed record CollectorSyncResult(CollectorStatus Status, bool UsageChanged);
 

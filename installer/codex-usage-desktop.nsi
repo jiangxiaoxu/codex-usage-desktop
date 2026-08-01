@@ -12,11 +12,14 @@ Unicode true
 !ifndef LICENSE_FILE
   !error "LICENSE_FILE is required"
 !endif
+!ifndef APP_ICON_FILE
+  !error "APP_ICON_FILE is required"
+!endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.0"
+  !define PRODUCT_VERSION "0.3.1"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.0.0"
+  !define PRODUCT_FILE_VERSION "0.3.1.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
@@ -26,6 +29,8 @@ Unicode true
 !define UNINSTALL_EXE "Uninstall Codex Usage Desktop.exe"
 !define UNINSTALL_ID "84c6521f-e257-5d83-93e2-0f5e984c4280"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_ID}"
+!define MUI_ICON "${APP_ICON_FILE}"
+!define MUI_UNICON "${APP_ICON_FILE}"
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -496,8 +501,13 @@ Function UninstallLegacyElectron
     Return
   ${EndIf}
   IfFileExists "$INSTDIR\${UNINSTALL_EXE}" 0 legacy_uninstall_failed
+  InitPluginsDir
+  ClearErrors
+  CopyFiles /SILENT "$INSTDIR\${UNINSTALL_EXE}" "$PLUGINSDIR\${UNINSTALL_EXE}"
+  IfErrors legacy_uninstall_failed
+  IfFileExists "$PLUGINSDIR\${UNINSTALL_EXE}" 0 legacy_uninstall_failed
   DetailPrint "Removing the legacy Electron installation."
-  nsExec::ExecToStack '"$INSTDIR\${UNINSTALL_EXE}" /S /allusers'
+  nsExec::ExecToStack '"$PLUGINSDIR\${UNINSTALL_EXE}" /S /allusers _?=$INSTDIR'
   Pop $0
   Pop $1
   ${If} $0 != "0"
@@ -605,8 +615,10 @@ Section "$(SectionProgram)" SEC_PROGRAM
   SetShellVarContext all
   Call ValidateInstallDirectory
   Call EnsureAppClosed
+  SetShellVarContext current
   Call BackupLedger
   Call UninstallLegacyElectron
+  SetShellVarContext all
   Call RemoveInstalledPayload
   Call DeployPayload
   Call RegisterActivatedPayload

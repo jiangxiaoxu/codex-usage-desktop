@@ -10,7 +10,7 @@ namespace CodexUsage.Application.Tests;
 public sealed class DashboardApplicationServiceTests
 {
     [Fact]
-    public async Task StartEnablesEfficiencyBeforeCollectorAndBuildsSummary()
+    public async Task StartAppliesInactiveEfficiencyModeBeforeCollectorAndBuildsSummary()
     {
         var order = new List<string>();
         var collector = new FakeCollector(order);
@@ -20,8 +20,9 @@ public sealed class DashboardApplicationServiceTests
 
         var snapshot = await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
 
-        Assert.Equal(["efficiency", "start"], order);
-        Assert.True(snapshot.EfficiencyMode.IsFullyEnabled);
+        Assert.Equal(["efficiency:Efficiency", "start"], order);
+        Assert.Equal(ProcessExecutionMode.Efficiency, snapshot.EfficiencyMode.Mode);
+        Assert.True(snapshot.EfficiencyMode.IsFullyApplied);
         Assert.Equal(110, snapshot.Result.Summary.CanonicalTotalTokens);
         Assert.Equal(100, snapshot.Result.Summary.InputTokens);
         Assert.Equal(40, snapshot.Result.Summary.CachedInputTokens);
@@ -53,9 +54,85 @@ public sealed class DashboardApplicationServiceTests
 
         var snapshot = await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
 
-        Assert.False(snapshot.EfficiencyMode.IsFullyEnabled);
+        Assert.False(snapshot.EfficiencyMode.IsFullyApplied);
         Assert.Contains("access denied", snapshot.EfficiencyMode.Message, StringComparison.Ordinal);
         Assert.Equal(CollectorPhase.Watching, snapshot.Collector.Phase);
+    }
+
+    [Fact]
+    public async Task InteractiveRequestBeforeStartupIsRetainedWhenCollectorStarts()
+    {
+        var order = new List<string>();
+        var collector = new FakeCollector(order);
+        await using var service = new DashboardApplicationService(
+            collector,
+            new FakeEfficiencyMode(order),
+            CreatePolicy());
+        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
+
+        await service.SetProcessExecutionModeAsync(ProcessExecutionMode.Interactive);
+        var snapshot = await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
+
+        Assert.Equal(["efficiency:Interactive", "start"], order);
+        Assert.Equal(ProcessExecutionMode.Interactive, snapshot.EfficiencyMode.Mode);
+    }
+
+    [Fact]
+    public void WindowActivityReducerOnlyUsesInteractiveSchedulingForVisibleActivatedRestoredWindow()
+    {
+        var state = DashboardWindowActivity.Hidden;
+
+        state = state.Reduce(DashboardWindowActivitySignal.Shown);
+        Assert.Equal(ProcessExecutionMode.Efficiency, state.ExecutionMode);
+        state = state.Reduce(DashboardWindowActivitySignal.Activated);
+        Assert.Equal(ProcessExecutionMode.Interactive, state.ExecutionMode);
+        state = state.Reduce(DashboardWindowActivitySignal.Minimized);
+        Assert.Equal(ProcessExecutionMode.Efficiency, state.ExecutionMode);
+        state = state.Reduce(DashboardWindowActivitySignal.Activated);
+        Assert.Equal(ProcessExecutionMode.Efficiency, state.ExecutionMode);
+        state = state.Reduce(DashboardWindowActivitySignal.Restored);
+        Assert.Equal(ProcessExecutionMode.Interactive, state.ExecutionMode);
+        state = state.Reduce(DashboardWindowActivitySignal.Deactivated);
+        Assert.Equal(ProcessExecutionMode.Efficiency, state.ExecutionMode);
+        state = state.Reduce(DashboardWindowActivitySignal.ShutdownStarted);
+
+        var afterLateEvents = state
+            .Reduce(DashboardWindowActivitySignal.Shown)
+            .Reduce(DashboardWindowActivitySignal.Restored)
+            .Reduce(DashboardWindowActivitySignal.Activated);
+        Assert.Equal(state, afterLateEvents);
+        Assert.True(afterLateEvents.IsShuttingDown);
+        Assert.Equal(ProcessExecutionMode.Efficiency, afterLateEvents.ExecutionMode);
+    }
+
+    [Fact]
+    public async Task ExecutionModeTransitionsAreSerializedCoalescedAndPublishLatestDiagnostics()
+    {
+        var collector = new FakeCollector([]);
+        var efficiency = new ControlledEfficiencyMode();
+        await using var service = new DashboardApplicationService(collector, efficiency, CreatePolicy());
+        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
+        await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
+        var statuses = new List<DashboardApplicationStatus>();
+        service.StatusChanged += (_, status) => statuses.Add(status);
+
+        var interactive = service.SetProcessExecutionModeAsync(ProcessExecutionMode.Interactive);
+        await efficiency.InteractiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var duplicate = service.SetProcessExecutionModeAsync(ProcessExecutionMode.Interactive);
+        var inactive = service.SetProcessExecutionModeAsync(ProcessExecutionMode.Efficiency);
+        efficiency.ReleaseInteractive.SetResult(true);
+
+        await Task.WhenAll(interactive, duplicate, inactive);
+        await service.SetProcessExecutionModeAsync(ProcessExecutionMode.Efficiency);
+
+        Assert.Equal(
+            [ProcessExecutionMode.Efficiency, ProcessExecutionMode.Interactive, ProcessExecutionMode.Efficiency],
+            efficiency.AppliedModes);
+        Assert.Equal(1, efficiency.MaximumConcurrency);
+        Assert.True(statuses.Select(value => value.EfficiencyMode.Revision).SequenceEqual(
+            statuses.Select(value => value.EfficiencyMode.Revision).Order()));
+        Assert.Equal(ProcessExecutionMode.Efficiency, statuses[^1].EfficiencyMode.Mode);
+        Assert.Contains("Efficiency", statuses[^1].EfficiencyMode.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -230,7 +307,7 @@ public sealed class DashboardApplicationServiceTests
     }
 
     [Fact]
-    public async Task StableCollectorRevisionRaisesUsageChanged()
+    public async Task ChangedCollectorUsageRevisionRaisesUsageChanged()
     {
         var collector = new FakeCollector([]);
         await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
@@ -242,6 +319,24 @@ public sealed class DashboardApplicationServiceTests
         collector.EmitUsageChange();
 
         Assert.Equal(1, changes);
+    }
+
+    [Fact]
+    public async Task StatusOnlyCollectorChangesDoNotRaiseUsageChanged()
+    {
+        var collector = new FakeCollector([]);
+        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
+        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
+        await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
+        var statuses = 0;
+        var changes = 0;
+        service.StatusChanged += (_, _) => statuses++;
+        service.UsageChanged += (_, _) => changes++;
+
+        collector.EmitStatusOnlyChange();
+
+        Assert.Equal(1, statuses);
+        Assert.Equal(0, changes);
     }
 
     [Fact]
@@ -302,16 +397,51 @@ public sealed class DashboardApplicationServiceTests
 
     private sealed class FakeEfficiencyMode(List<string> order) : IProcessEfficiencyMode
     {
-        public ProcessEfficiencyModeResult TryEnable()
+        public ProcessEfficiencyModeResult TryApply(ProcessExecutionMode mode)
         {
-            order.Add("efficiency");
-            return new(true, true, "enabled");
+            order.Add($"efficiency:{mode}");
+            return new(mode, true, true, $"{mode} enabled");
         }
     }
 
     private sealed class ThrowingEfficiencyMode : IProcessEfficiencyMode
     {
-        public ProcessEfficiencyModeResult TryEnable() => throw new InvalidOperationException("access denied");
+        public ProcessEfficiencyModeResult TryApply(ProcessExecutionMode mode) =>
+            throw new InvalidOperationException("access denied");
+    }
+
+    private sealed class ControlledEfficiencyMode : IProcessEfficiencyMode
+    {
+        private int _concurrency;
+
+        public TaskCompletionSource<bool> InteractiveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<bool> ReleaseInteractive { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public List<ProcessExecutionMode> AppliedModes { get; } = [];
+
+        public int MaximumConcurrency { get; private set; }
+
+        public ProcessEfficiencyModeResult TryApply(ProcessExecutionMode mode)
+        {
+            var concurrency = Interlocked.Increment(ref _concurrency);
+            MaximumConcurrency = Math.Max(MaximumConcurrency, concurrency);
+            try
+            {
+                AppliedModes.Add(mode);
+                if (mode == ProcessExecutionMode.Interactive)
+                {
+                    InteractiveStarted.TrySetResult(true);
+                    ReleaseInteractive.Task.GetAwaiter().GetResult();
+                }
+
+                return new(mode, true, true, $"{mode} applied");
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _concurrency);
+            }
+        }
     }
 
     private sealed class ControlledStartupRegistrationService : IStartupRegistrationService
@@ -425,6 +555,12 @@ public sealed class DashboardApplicationServiceTests
 
         public void EmitUsageChange() => StatusChanged?.Invoke(this, _status with
         {
+            UsageRevision = _status.UsageRevision + 1,
+        });
+
+        public void EmitStatusOnlyChange() => StatusChanged?.Invoke(this, _status with
+        {
+            LastSuccessfulInventoryUtc = _status.LastSuccessfulInventoryUtc?.AddMinutes(5),
             ChangedFilesLastSync = 2,
             Diagnostics = _status.Diagnostics with { FilesScanned = 2 },
         });
@@ -437,11 +573,13 @@ public sealed class DashboardApplicationServiceTests
             DateTimeOffset.Parse("2026-07-30T03:59:30Z"),
             1,
             0,
+            0,
             1,
             0,
             ObservationCoverage.Continuous,
             null,
             "watching",
-            new CollectorDiagnostics(1, 0, 0, 0, 0, 1));
+            new CollectorDiagnostics(1, 0, 0, 0, 0, 1, 0, 0, 0),
+            0);
     }
 }

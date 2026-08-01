@@ -18,7 +18,7 @@ collector 只读观察 `sessions` 和 `archived_sessions`.`agents` 不被读取�
 - CSV save path 在打开 output stream 前验证.
 - 测试中的 source mutation 仅作用于 disposable fixture directory,绝不指向用户真实 `.codex`.
 
-source 在 stat/read/stat window 中变化时,当前 snapshot 不会被接受.collector 记录 retry diagnostic 并等待后续 event 或 reconciliation,不会修复 source.
+source 在 stat/read/stat window 中变化时,当前 snapshot 不会被接受.collector 记录节流后的 retry diagnostic 并等待后续 event 或 reconciliation,不会修复 source.watch event 不重置该 path 的 backoff;成功处理后才清除失败状态.
 
 ## Consistency and recovery
 
@@ -26,7 +26,11 @@ watch event 经过 debounce、deduplication 和有界 batch.不可重入 full in
 
 append-only source 可以从 verified byte offset 继续读取.如果 source 变短、prefix boundary 改变或 canonicalization 需要,collector 重新解析当前 stable snapshot.
 
-同路径 canonical rewrite 只有在 `rolloutId` 不变、完整 parse 成功且两次 stable snapshot 一致时才原子替换 ledger.任何失败都保留旧 ledger.Cross-path divergence、ID 变化、malformed input 和 unstable snapshot 保持 conflict.恢复过程不修改 Codex source.
+restart checkpoint 位于应用 ledger,不写回 source.Windows file identity 通过已打开的只读 shared handle 查询,handle 使用 `FileShare.ReadWrite | FileShare.Delete`,不建立 advisory/exclusive lock.不支持稳定 file ID 的 filesystem 使用 conservative identity 并在 restart 时执行 full reconciliation,不会仅凭 size/mtime 信任 checkpoint.
+
+自动恢复只写应用 ledger.候选必须通过双重稳定快照,metadata exact match,且 semantic relation 为 `Equal` 或 `Extension`.多个安全候选按 `Extension` 优先于 `Equal`,再按稳定 byte length、mtime 和 path 确定性选择.选定候选在单一 SQLite transaction 中替换 canonical event 与 source metadata,并只 demote 精确匹配的 conflict source.
+
+`Shorter`、`Diverged`、attribution 不一致、malformed、unstable 或其他无法建立信任的候选不会覆盖 ledger.超过 1 MiB 的完整 JSONL record 仍需由 streaming reader 验证整行语法和外层类型;只有明确的 opaque 非计费类型可安全跳过,关键、未知或损坏类型仍拒绝整个 source.应用保留最后有效 ledger,记录内部 degraded/diagnostic 并后台重试.GUI 不显示 source conflict.无论结果如何,恢复过程都不写入、修复、移动或锁定 Codex source.
 
 ## Local data
 
@@ -44,6 +48,6 @@ source 被 archive 或删除不会删除已采集 event.ledger 保留历史以�
 - data directory 必须位于三个 protected directory 以外.
 - 复制或恢复 `usage.sqlite` 前退出应用,并一起处理可能存在的 `-wal` 与 `-shm` companion.
 - 不要在不明确支持 SQLite WAL 的 network-synced location 中运行 live ledger.
-- conflict 或 degraded 状态出现时先保留 ledger 和 source,再使用 `Sync now` 或重启重试.不要编辑 rollout JSONL 以强制 parse.
+- degraded 状态出现时先保留 ledger 和 source,再使用 `Sync now` 或重启重试.内部 source diagnostic 不在 GUI 展示.不要编辑 rollout JSONL 以强制 parse.
 - 旧 ledger 迁移脚本只复制、校验和备份,不会删除 source.
 - 应用默认 offline,没有 remote audit API.

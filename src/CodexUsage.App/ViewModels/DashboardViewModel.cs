@@ -3,11 +3,12 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using CodexUsage.App.Models;
 using CodexUsage.App.Services;
 using CodexUsage.Application;
 using CodexUsage.Domain;
 using CodexUsage.Infrastructure.Collection;
+using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace CodexUsage.App.ViewModels;
 
@@ -19,23 +20,44 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private readonly StartupRegistrationCoordinator _startupTask;
     private readonly IReleaseUpdateService _packageUpdate;
     private readonly IExportDestinationPicker _exportPicker;
+    private readonly TimeProvider _timeProvider;
+    private readonly ReleaseUpdateCheckCoordinator _updateCheckCoordinator = new();
+    private readonly ReleaseUpdateCheckSchedule _automaticUpdateSchedule = new(TimeSpan.FromHours(6));
+    private readonly ReleaseUpdateDownloadCoordinator _updateDownloadCoordinator = new();
+    private readonly ReleaseUpdateInstallerLaunchCoordinator _installerLaunchCoordinator = new();
+    private readonly DashboardPresentationCollections _presentation = new();
+    private readonly DashboardSnapshotApplicationLifecycle _snapshotApplicationLifecycle = new();
     private CancellationTokenSource? _filterDebounce;
+    private CancellationTokenSource? _automaticUpdateCancellation;
+    private Task? _automaticUpdateLoop;
     private bool _isStartupEnabled;
     private bool _isStartupAvailable;
     private bool _suppressStartupUpdate;
     private bool _initialized;
     private double _rangeHours = 12;
+    private double _rangeScalePosition = DashboardTimeRangeScale.HoursToPosition(12);
+    private DashboardCustomRange? _customRange;
     private string _searchText = string.Empty;
-    private string _lastReconciliationText = "正在建立账目...";
+    private string _healthStatusText = "正在启动";
+    private string _lastReconciliationText = "—";
+    private string _sourceFilesText = "0";
+    private string _realtimeVoiceSessionsText = "0";
+    private string _retryQueueText = "0";
+    private string _watcherStatusText = "启动中";
+    private string _headerStatusText = "启动中 · 上次对账 —";
+    private string _headerStatusGlyph = "\uE895";
+    private Brush _headerStatusBrush = new SolidColorBrush(Color.FromArgb(0xFF, 0x82, 0x90, 0xA3));
     private string _coverageText = "等待首次对账";
     private string _collectorStatusText = "正在启动采集器";
     private string _platformStatusText;
-    private string _conflictTitle = string.Empty;
-    private string _conflictMessage = string.Empty;
-    private bool _hasConflicts;
+    private ReleaseUpdatePackage? _availableUpdate;
+    private string? _downloadedUpdateInstallerPath;
+    private ReleaseUpdateDownloadTicket? _downloadedUpdateTicket;
+    private long _updateStateGeneration;
     private int _busyCount;
     private int _queryInFlight;
     private int _queryPending;
+    private int _pendingQueryPurpose = (int)DashboardSnapshotApplyPurpose.UserFilter;
     private int _syncing;
     private int _disposed;
 
@@ -44,45 +66,34 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         IUiDispatcher dispatcher,
         IStartupRegistrationService startupTask,
         IReleaseUpdateService packageUpdate,
-        IExportDestinationPicker exportPicker)
+        IExportDestinationPicker exportPicker,
+        TimeProvider? timeProvider = null)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _startupTask = new StartupRegistrationCoordinator(startupTask ?? throw new ArgumentNullException(nameof(startupTask)));
         _packageUpdate = packageUpdate ?? throw new ArgumentNullException(nameof(packageUpdate));
         _exportPicker = exportPicker ?? throw new ArgumentNullException(nameof(exportPicker));
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _platformStatusText = packageUpdate.IsAvailable
             ? "Release feed 可用"
             : UnconfiguredReleaseUpdateService.DiagnosticMessage;
         _service.StatusChanged += OnStatusChanged;
         _service.UsageChanged += OnUsageChanged;
 
-        Metrics = [new("总 tokens", "0"), new("输入", "0"), new("输出", "0"), new("未定价", "0"), new("费用", "$0.0")];
-        CostSlices =
-        [
-            new("无缓存输入", 0, "$0.0 · 0.0%", "PrimaryBrush"),
-            new("缓存输入", 0, "$0.0 · 0.0%", "SuccessBrush"),
-            new("思考输出", 0, "$0.0 · 0.0%", "WarningBrush"),
-            new("其他输出", 0, "$0.0 · 0.0%", "PurpleBrush"),
-        ];
-        Models = [];
-        Subjects = [];
-        Diagnostics = [];
-        RunStatistics = [new("扫描文件", "0"), new("重复累计快照", "0"), new("无拆分快照", "0"), new("关系无效", "0")];
-        ModelOptions = [];
-        AgentOptions = [];
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    public event EventHandler<DashboardSnapshotApplicationEventArgs>? SnapshotApplying;
+    public event EventHandler<DashboardSnapshotApplicationEventArgs>? SnapshotApplied;
 
-    public ObservableCollection<MetricCard> Metrics { get; }
-    public ObservableCollection<CostSlice> CostSlices { get; }
-    public ObservableCollection<ModelUsageRow> Models { get; }
-    public ObservableCollection<SubjectUsageRow> Subjects { get; }
-    public ObservableCollection<DiagnosticRow> Diagnostics { get; }
-    public ObservableCollection<RunStatistic> RunStatistics { get; }
-    public ObservableCollection<ModelFilterOption> ModelOptions { get; }
-    public ObservableCollection<SubjectFilterOption> AgentOptions { get; }
+    public ObservableCollection<MetricCard> Metrics => _presentation.Metrics;
+    public ObservableCollection<CostSlice> CostSlices => _presentation.CostSlices;
+    public ObservableCollection<ModelUsageRow> Models => _presentation.Models;
+    public ObservableCollection<SubjectUsageRow> Subjects => _presentation.Subjects;
+    public ObservableCollection<DiagnosticRow> Diagnostics => _presentation.Diagnostics;
+    public ObservableCollection<ModelFilterOption> ModelOptions => _presentation.ModelOptions;
+    public ObservableCollection<SubjectFilterOption> AgentOptions => _presentation.AgentOptions;
 
     public bool IsStartupEnabled
     {
@@ -101,34 +112,80 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public bool CanCheckUpdates => _packageUpdate.IsAvailable;
+    public bool CanDownloadUpdate => _availableUpdate is not null
+        && _downloadedUpdateInstallerPath is null
+        && !_updateDownloadCoordinator.IsInFlight;
+    public bool CanRunDownloadedUpdate => _downloadedUpdateInstallerPath is not null
+        && _downloadedUpdateTicket is { } ticket
+        && _updateDownloadCoordinator.IsCurrent(ticket);
+    public string DownloadUpdateLabel => _availableUpdate is { } update
+        ? $"下载并校验 {update.Version}"
+        : "下载更新";
+    public string RunUpdateLabel => _availableUpdate is { } update
+        ? $"运行安装器 {update.Version}"
+        : "运行安装器";
 
-    public double RangeHours
+    public double RangeHours => _rangeHours;
+
+    public double RangeScalePosition
     {
-        get => _rangeHours;
+        get => _rangeScalePosition;
         set
         {
-            if (SetProperty(ref _rangeHours, value)) ScheduleQuery();
+            var transition = DashboardTimeRangeTransition.FromUserPosition(
+                _rangeHours,
+                value,
+                _customRange is not null);
+            var rangeChanged = transition.HoursChanged;
+            var positionChanged = !NearlyEquals(_rangeScalePosition, transition.Selection.Position);
+            var requiresCanonicalPosition = !NearlyEquals(value, transition.Selection.Position);
+
+            _rangeHours = transition.Selection.Hours;
+            _rangeScalePosition = transition.Selection.Position;
+
+            if (rangeChanged)
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeHours)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeLabel)));
+            }
+
+            if (positionChanged || requiresCanonicalPosition)
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeScalePosition)));
+            }
+
+            if (transition.ClearCustomRange) ClearCustomRange();
+            if (transition.QueryRequired) ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
         }
     }
 
-    public string RangeLabel => $"{RangeHours:F1}小时";
+    public string RangeLabel => _customRange?.Label ?? DashboardTimeRangeScale.FormatHours(RangeHours);
+
+    public DateTimeOffset? CustomStartDateSgt => _customRange?.StartDateSgt;
+
+    public DateTimeOffset? CustomEndDateSgt => _customRange?.EndDateSgt;
 
     public string SearchText
     {
         get => _searchText;
         set
         {
-            if (SetProperty(ref _searchText, value)) ScheduleQuery();
+            if (SetProperty(ref _searchText, value)) ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
         }
     }
 
+    public string HealthStatusText { get => _healthStatusText; private set => SetProperty(ref _healthStatusText, value); }
     public string LastReconciliationText { get => _lastReconciliationText; private set => SetProperty(ref _lastReconciliationText, value); }
+    public string SourceFilesText { get => _sourceFilesText; private set => SetProperty(ref _sourceFilesText, value); }
+    public string RealtimeVoiceSessionsText { get => _realtimeVoiceSessionsText; private set => SetProperty(ref _realtimeVoiceSessionsText, value); }
+    public string RetryQueueText { get => _retryQueueText; private set => SetProperty(ref _retryQueueText, value); }
+    public string WatcherStatusText { get => _watcherStatusText; private set => SetProperty(ref _watcherStatusText, value); }
+    public string HeaderStatusText { get => _headerStatusText; private set => SetProperty(ref _headerStatusText, value); }
+    public string HeaderStatusGlyph { get => _headerStatusGlyph; private set => SetProperty(ref _headerStatusGlyph, value); }
+    public Brush HeaderStatusBrush { get => _headerStatusBrush; private set => SetProperty(ref _headerStatusBrush, value); }
     public string CoverageText { get => _coverageText; private set => SetProperty(ref _coverageText, value); }
     public string CollectorStatusText { get => _collectorStatusText; private set => SetProperty(ref _collectorStatusText, value); }
     public string PlatformStatusText { get => _platformStatusText; private set => SetProperty(ref _platformStatusText, value); }
-    public string ConflictTitle { get => _conflictTitle; private set => SetProperty(ref _conflictTitle, value); }
-    public string ConflictMessage { get => _conflictMessage; private set => SetProperty(ref _conflictMessage, value); }
-    public bool HasConflicts { get => _hasConflicts; private set => SetProperty(ref _hasConflicts, value); }
     public bool IsBusy => Volatile.Read(ref _busyCount) > 0;
     public bool IsSyncing => Volatile.Read(ref _syncing) != 0;
     public bool CanSync => !IsSyncing;
@@ -137,7 +194,10 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     {
         var request = CreateRequest();
         var startup = LoadStartupStateAsync(cancellationToken);
-        await ExecuteSnapshotAsync(token => _service.StartAsync(request, token), cancellationToken).ConfigureAwait(false);
+        await ExecuteSnapshotAsync(
+            token => _service.StartAsync(request, token),
+            DashboardSnapshotApplyPurpose.InitialLoad,
+            cancellationToken).ConfigureAwait(false);
         await startup.ConfigureAwait(false);
         _initialized = true;
     }
@@ -150,7 +210,10 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var request = CreateRequest();
         try
         {
-            await ExecuteSnapshotAsync(token => _service.RefreshAsync(request, token), cancellationToken).ConfigureAwait(false);
+            await ExecuteSnapshotAsync(
+                token => _service.RefreshAsync(request, token),
+                DashboardSnapshotApplyPurpose.DataRefresh,
+                cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -170,17 +233,17 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             BeginBusy();
             busyStarted = true;
             var result = await _service.ExportCsvAsync(CreateRequest(), outputPath, cancellationToken).ConfigureAwait(false);
-            QueueUi(() => PlatformStatusText = result.Status == CsvExportStatus.Cancelled
+            QueueUi(() => SetPlatformStatus(result.Status == CsvExportStatus.Cancelled
                 ? "CSV 导出已取消"
-                : $"已导出 {result.EventCount:N0} 条记录: {result.OutputPath}");
+                : $"已导出 {result.EventCount:N0} 条记录: {result.OutputPath}"));
         }
         catch (OperationCanceledException)
         {
-            QueueUi(() => PlatformStatusText = "CSV 导出已取消");
+            QueueUi(() => SetPlatformStatus("CSV 导出已取消"));
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            QueueUi(() => PlatformStatusText = $"导出失败: {error.Message}");
+            QueueUi(() => SetPlatformStatus($"导出失败: {error.Message}"));
         }
         finally
         {
@@ -190,30 +253,208 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task CheckForUpdatesAsync(CancellationToken cancellationToken = default)
     {
+        _ = await CheckForUpdatesCoreAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public void StartAutomaticUpdateChecks(CancellationToken applicationLifetime)
+    {
+        if (!_packageUpdate.IsAvailable || Volatile.Read(ref _disposed) != 0) return;
+        if (_automaticUpdateLoop is not null) return;
+
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(applicationLifetime);
+        _automaticUpdateCancellation = cancellation;
+        _automaticUpdateLoop = RunAutomaticUpdateChecksAsync(cancellation.Token);
+    }
+
+    private async Task<bool> CheckForUpdatesCoreAsync(CancellationToken cancellationToken)
+    {
+        if (!_updateCheckCoordinator.TryBegin()) return false;
         BeginBusy();
         try
         {
             var result = await _packageUpdate.CheckAsync(cancellationToken).ConfigureAwait(false);
-            QueueUi(() => PlatformStatusText = result.Message);
+            if (_installerLaunchCoordinator.IsInFlight)
+            {
+                return true;
+            }
+
+            var generation = Interlocked.Increment(ref _updateStateGeneration);
+            _updateDownloadCoordinator.Invalidate();
+            QueuePropertyChanged(nameof(CanDownloadUpdate));
+            QueuePropertyChanged(nameof(CanRunDownloadedUpdate));
+            QueueUi(() => ApplyUpdateCheck(result, generation));
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            QueueUi(() => SetPlatformStatus("检查更新已取消"));
+            return true;
+        }
+        catch (Exception error)
+        {
+            QueueUi(() => SetPlatformStatus($"检查更新失败: {error.Message}"));
+            return true;
         }
         finally
         {
             EndBusy();
+            _updateCheckCoordinator.Complete();
         }
+    }
+
+    public async Task DownloadUpdateAsync(CancellationToken cancellationToken = default)
+    {
+        var update = _availableUpdate;
+        if (update is null
+            || _downloadedUpdateInstallerPath is not null
+            || !_updateDownloadCoordinator.TryBegin(out var ticket))
+        {
+            return;
+        }
+
+        BeginBusy();
+        QueuePropertyChanged(nameof(CanDownloadUpdate));
+        try
+        {
+            var result = await _packageUpdate.DownloadAsync(update, cancellationToken).ConfigureAwait(false);
+            var isCurrent = _updateDownloadCoordinator.IsCurrent(ticket);
+            QueueUi(() => ApplyUpdateDownload(result, ticket, isCurrent));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            var isCurrent = _updateDownloadCoordinator.IsCurrent(ticket);
+            QueueUi(() => ApplyUpdateDownload(
+                new ReleaseUpdateDownloadResult(
+                    ReleaseUpdateDownloadStatus.Cancelled,
+                    "更新下载已取消; 未启动安装器"),
+                ticket,
+                isCurrent));
+        }
+        catch (Exception error)
+        {
+            var isCurrent = _updateDownloadCoordinator.IsCurrent(ticket);
+            QueueUi(() => ApplyUpdateDownload(
+                new ReleaseUpdateDownloadResult(
+                    ReleaseUpdateDownloadStatus.Failed,
+                    $"更新下载失败: {error.Message}"),
+                ticket,
+                isCurrent));
+        }
+        finally
+        {
+            _updateDownloadCoordinator.Complete(ticket);
+            QueuePropertyChanged(nameof(CanDownloadUpdate));
+            EndBusy();
+        }
+    }
+
+    public bool TryGetDownloadedUpdateInstaller(
+        out string installerPath,
+        out ReleaseUpdatePackage package,
+        out long updateStateGeneration)
+    {
+        if (_downloadedUpdateInstallerPath is { } path
+            && _downloadedUpdateTicket is { } ticket
+            && _availableUpdate is { } availableUpdate
+            && _updateDownloadCoordinator.IsCurrent(ticket)
+            && File.Exists(path))
+        {
+            installerPath = path;
+            package = availableUpdate;
+            updateStateGeneration = Volatile.Read(ref _updateStateGeneration);
+            return true;
+        }
+
+        installerPath = string.Empty;
+        package = null!;
+        updateStateGeneration = 0;
+        return false;
+    }
+
+    public bool TryBeginInstallerLaunch(
+        out string installerPath,
+        out ReleaseUpdatePackage package,
+        out long updateStateGeneration)
+    {
+        installerPath = string.Empty;
+        package = null!;
+        updateStateGeneration = 0;
+        if (!_installerLaunchCoordinator.TryBegin()) return false;
+        if (TryGetDownloadedUpdateInstaller(out installerPath, out package, out updateStateGeneration)) return true;
+
+        _installerLaunchCoordinator.Complete();
+        return false;
+    }
+
+    public void CompleteInstallerLaunch() => _installerLaunchCoordinator.Complete();
+
+    public bool IsDownloadedUpdateCurrent(
+        string installerPath,
+        ReleaseUpdatePackage package,
+        long updateStateGeneration) =>
+        updateStateGeneration == Volatile.Read(ref _updateStateGeneration)
+        && ReferenceEquals(_availableUpdate, package)
+        && string.Equals(_downloadedUpdateInstallerPath, installerPath, StringComparison.Ordinal);
+
+    public void ReportUpdateInstallerLaunchFailure(Exception error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        SetPlatformStatus($"无法启动更新安装器: {error.Message}");
+    }
+
+    public void ReportUpdateInstallerLaunchBlocked(string message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        SetPlatformStatus(message);
     }
 
     public void ResetFilters()
     {
-        RangeHours = 12;
+        ClearCustomRange();
+        ApplyProgrammaticRangeHours(12);
         SearchText = string.Empty;
+        SelectAllModels();
+        SelectAllAgents();
+        ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+    }
+
+    public void SelectAllModels()
+    {
         foreach (var option in ModelOptions) option.IsSelected = true;
+    }
+
+    public void SelectAllAgents()
+    {
         foreach (var option in AgentOptions) option.IsSelected = true;
-        ScheduleQuery();
+    }
+
+    public bool TryApplyCustomDateRange(
+        DateTimeOffset? startDate,
+        DateTimeOffset? endDate,
+        out string validationMessage)
+    {
+        if (!DashboardCustomRange.TryCreateFromSgtDates(
+                startDate,
+                endDate,
+                out var range,
+                out validationMessage))
+        {
+            return false;
+        }
+
+        _customRange = range;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeLabel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomStartDateSgt)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomEndDateSgt)));
+        ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+        return true;
     }
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        CancelAutomaticUpdateChecks();
+        _updateDownloadCoordinator.Cancel();
         _filterDebounce?.Cancel();
         _filterDebounce?.Dispose();
         _service.StatusChanged -= OnStatusChanged;
@@ -221,15 +462,65 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         UnsubscribeOptions();
     }
 
+    public async Task StopAutomaticUpdateChecksAsync()
+    {
+        CancelAutomaticUpdateChecks();
+        var loop = _automaticUpdateLoop;
+        if (loop is not null)
+        {
+            try
+            {
+                await loop.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        _automaticUpdateCancellation?.Dispose();
+        _automaticUpdateCancellation = null;
+    }
+
+    private async Task RunAutomaticUpdateChecksAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (_automaticUpdateSchedule.Start(_timeProvider.GetUtcNow()))
+            {
+                _ = await CheckForUpdatesCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            using var timer = new PeriodicTimer(TimeSpan.FromHours(6), _timeProvider);
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (_automaticUpdateSchedule.IsDue(_timeProvider.GetUtcNow()))
+                {
+                    _ = await CheckForUpdatesCoreAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void CancelAutomaticUpdateChecks()
+    {
+        _automaticUpdateSchedule.Cancel();
+        _updateCheckCoordinator.Cancel();
+        _automaticUpdateCancellation?.Cancel();
+    }
+
     private async Task ExecuteSnapshotAsync(
         Func<CancellationToken, Task<DashboardSnapshot>> operation,
+        DashboardSnapshotApplyPurpose purpose,
         CancellationToken cancellationToken)
     {
         BeginBusy();
         try
         {
             var snapshot = await operation(cancellationToken).ConfigureAwait(false);
-            QueueUi(() => ApplySnapshot(snapshot));
+            QueueUi(() => ApplySnapshot(snapshot, purpose));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -244,7 +535,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void ScheduleQuery()
+    private void ScheduleQuery(DashboardSnapshotApplyPurpose purpose)
     {
         if (!_initialized || Volatile.Read(ref _disposed) != 0) return;
         _filterDebounce?.Cancel();
@@ -252,10 +543,13 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var debounce = new CancellationTokenSource();
         _filterDebounce = debounce;
         var request = CreateRequest();
-        _ = QueryAfterDelayAsync(request, debounce.Token);
+        _ = QueryAfterDelayAsync(request, purpose, debounce.Token);
     }
 
-    private async Task QueryAfterDelayAsync(DashboardQueryRequest request, CancellationToken cancellationToken)
+    private async Task QueryAfterDelayAsync(
+        DashboardQueryRequest request,
+        DashboardSnapshotApplyPurpose purpose,
+        CancellationToken cancellationToken)
     {
         var ownsQuery = false;
         try
@@ -263,11 +557,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             await Task.Delay(FilterDebounce, cancellationToken).ConfigureAwait(false);
             if (Interlocked.CompareExchange(ref _queryInFlight, 1, 0) != 0)
             {
+                Volatile.Write(ref _pendingQueryPurpose, (int)purpose);
                 Interlocked.Exchange(ref _queryPending, 1);
                 return;
             }
             ownsQuery = true;
-            await ExecuteSnapshotAsync(token => _service.QueryAsync(request, token), cancellationToken).ConfigureAwait(false);
+            await ExecuteSnapshotAsync(
+                token => _service.QueryAsync(request, token),
+                purpose,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -278,77 +576,97 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 && Interlocked.Exchange(ref _queryInFlight, 0) != 0
                 && Interlocked.Exchange(ref _queryPending, 0) != 0)
             {
-                QueueUi(ScheduleQuery);
+                var pendingPurpose = (DashboardSnapshotApplyPurpose)Volatile.Read(ref _pendingQueryPurpose);
+                QueueUi(() => ScheduleQuery(pendingPurpose));
             }
         }
     }
 
     private DashboardQueryRequest CreateRequest()
     {
-        var end = DateTimeOffset.UtcNow;
+        var customRange = _customRange;
+        var end = customRange?.EndUtc ?? _timeProvider.GetUtcNow();
+        var start = customRange?.StartUtc ?? end.AddHours(-RangeHours);
         ImmutableArray<string>? models = ModelOptions.Count == 0 || ModelOptions.All(value => value.IsSelected)
             ? null
             : ModelOptions.Where(value => value.IsSelected).Select(value => value.Model).ToImmutableArray();
         ImmutableArray<SubjectFilter>? subjects = AgentOptions.Count == 0 || AgentOptions.All(value => value.IsSelected)
             ? null
             : AgentOptions.Where(value => value.IsSelected).Select(value => value.Subject).ToImmutableArray();
-        return new(end.AddHours(-RangeHours), end, models, subjects, SearchText);
+        return new(start, end, models, subjects, SearchText);
     }
 
-    private void ApplySnapshot(DashboardSnapshot snapshot)
+    private void ApplySnapshot(
+        DashboardSnapshot snapshot,
+        DashboardSnapshotApplyPurpose purpose)
     {
+        ApplyStatus(snapshot.Collector, synchronizeDiagnostics: false);
         var summary = snapshot.Result.Summary;
-        Replace(Metrics,
-        [
-            new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
-            new("输出", FormatTokens(summary.OutputTokens)), new("未定价", FormatTokens(summary.UnpricedTokens)),
-            new("费用", FormatCost(summary.Cost.Total)),
-        ]);
         var totalCost = summary.Cost.Total;
-        Replace(CostSlices,
-        [
-            CostSliceFor("无缓存输入", summary.Cost.UncachedInput, totalCost, "PrimaryBrush"),
-            CostSliceFor("缓存输入", summary.Cost.CachedInput, totalCost, "SuccessBrush"),
-            CostSliceFor("思考输出", summary.Cost.ReasoningOutput, totalCost, "WarningBrush"),
-            CostSliceFor("其他输出", summary.Cost.OtherOutput, totalCost, "PurpleBrush"),
-        ]);
-        Replace(Models, snapshot.Result.ByModel.Select(row => new ModelUsageRow(
-            row.Key[0], FormatTokens(row.Summary.CanonicalTotalTokens), FormatTokens(row.Summary.CachedInputTokens),
-            FormatTokens(row.Summary.OutputTokens), FormatCost(row.Summary.Cost.Total),
-            FormatPercentage(row.Summary.Cost.Total, totalCost))));
-        Replace(Subjects, snapshot.Result.ByRole.Select(row => new SubjectUsageRow(
-            row.Key[0], row.Key[1], FormatTokens(row.Summary.CanonicalTotalTokens), FormatTokens(row.Summary.OutputTokens),
-            FormatCost(row.Summary.Cost.Total), FormatPercentage(row.Summary.Cost.Total, totalCost))));
-        Replace(RunStatistics,
-        [
-            new("扫描文件", snapshot.Collector.Diagnostics.FilesScanned.ToString("N0", CultureInfo.CurrentCulture)),
-            new("重复累计快照", snapshot.Collector.Diagnostics.DuplicateSnapshotsSkipped.ToString("N0", CultureInfo.CurrentCulture)),
-            new("无拆分快照", snapshot.Collector.Diagnostics.ZeroBreakdownSnapshotsSkipped.ToString("N0", CultureInfo.CurrentCulture)),
-            new("关系无效", snapshot.Collector.Diagnostics.InvalidTokenRelationshipsSkipped.ToString("N0", CultureInfo.CurrentCulture)),
-        ]);
-        Replace(Diagnostics,
-        [
-            new("Collector phase", snapshot.Collector.Phase.ToString(), snapshot.Collector.Message),
-            new("Pending files", snapshot.Collector.PendingFiles.ToString("N0", CultureInfo.CurrentCulture), $"已知 {snapshot.Collector.FilesKnown:N0} 个源文件"),
-            new("Conflicts", snapshot.Collector.Conflicts.ToString("N0", CultureInfo.CurrentCulture), "canonical 冲突保持旧账"),
-            new("Cooperative yields", snapshot.Collector.Diagnostics.CooperativeYieldCount.ToString("N0", CultureInfo.CurrentCulture), "分片主动让出执行权"),
-            new("Malformed lines", snapshot.Result.Diagnostics.MalformedLines.ToString("N0", CultureInfo.CurrentCulture), "不可信 JSONL 已跳过"),
-            new("Efficiency Mode", snapshot.EfficiencyMode.IsFullyEnabled ? "Enabled" : "Partial/unavailable", snapshot.EfficiencyMode.Message),
-        ]);
-        UpdateFacetOptions(snapshot.Result.Facets);
-        ApplyStatus(snapshot.Collector, snapshot.EfficiencyMode);
-    }
-
-    private void UpdateFacetOptions(QueryFacets facets)
-    {
-        var previousModels = ModelOptions.ToDictionary(value => value.Model, value => value.IsSelected, StringComparer.Ordinal);
-        var previousSubjects = AgentOptions.ToDictionary(value => value.Subject, value => value.IsSelected);
+        var input = new DashboardPresentationInput(
+            [
+                new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
+                new("输出", FormatTokens(summary.OutputTokens)), new("未定价", FormatTokens(summary.UnpricedTokens)),
+                new("费用", FormatCost(summary.Cost.Total)),
+            ],
+            DashboardCostComposition.From(summary.Cost),
+            snapshot.Result.ByModel
+                .OrderBy(row => ModelDisplayOrder(row.Key[0]))
+                .ThenBy(row => row.Key[0], StringComparer.Ordinal)
+                .Select(row =>
+                {
+                    var cost = DashboardModelCostPresentation.From(
+                        row.Summary.Cost.Total,
+                        totalCost,
+                        row.Summary.UnpricedTokens == 0);
+                    return new ModelUsageRow(
+                        row.Key[0], FormatTokens(row.Summary.CanonicalTotalTokens), FormatTokens(row.Summary.UncachedInputTokens),
+                        FormatTokens(row.Summary.CachedInputTokens), FormatTokens(row.Summary.OutputTokens),
+                        FormatTokens(row.Summary.ReasoningOutputTokens), cost.Cost, cost.Share);
+                })
+                .ToArray(),
+            DashboardSubjectOrdering.SortByDescendingCost(snapshot.Result.ByRole)
+                .Select(row => new SubjectUsageRow(
+                    SubjectTypeLabel(row.Key[0]), row.Key[1], FormatTokens(row.Summary.CanonicalTotalTokens),
+                    FormatTokens(row.Summary.UncachedInputTokens), FormatTokens(row.Summary.CachedInputTokens),
+                    FormatTokens(row.Summary.OutputTokens), FormatTokens(row.Summary.ReasoningOutputTokens),
+                    FormatCost(row.Summary.Cost.Total), FormatPercentage(row.Summary.Cost.Total, totalCost)))
+                .ToArray(),
+            [
+                .. CreateStatusDiagnostics(),
+                CreatePlatformStatusDiagnostic(),
+                new("Collector phase", snapshot.Collector.Phase.ToString(), snapshot.Collector.Message),
+                new("Pending files", snapshot.Collector.PendingFiles.ToString("N0", CultureInfo.CurrentCulture), $"已知 {snapshot.Collector.FilesKnown:N0} 个源文件"),
+                new("Cooperative yields", snapshot.Collector.Diagnostics.CooperativeYieldCount.ToString("N0", CultureInfo.CurrentCulture), "分片主动让出执行权"),
+                new("Malformed lines", snapshot.Result.Diagnostics.MalformedLines.ToString("N0", CultureInfo.CurrentCulture), "不可信 JSONL 已跳过"),
+                new("扫描文件", snapshot.Collector.Diagnostics.FilesScanned.ToString("N0", CultureInfo.CurrentCulture), "扫描阶段累计处理的源文件"),
+                new("重复累计快照", snapshot.Collector.Diagnostics.DuplicateSnapshotsSkipped.ToString("N0", CultureInfo.CurrentCulture), "已跳过的相邻累计快照"),
+                new("无拆分快照", snapshot.Collector.Diagnostics.ZeroBreakdownSnapshotsSkipped.ToString("N0", CultureInfo.CurrentCulture), "已跳过的无拆分累计快照"),
+                new("关系无效", snapshot.Collector.Diagnostics.InvalidTokenRelationshipsSkipped.ToString("N0", CultureInfo.CurrentCulture), "已跳过的无效 token 关系"),
+                new("部分解析源 / 安全跳过",
+                    $"{snapshot.Collector.Diagnostics.PartialSources:N0} / {snapshot.Collector.Diagnostics.SafeOpaqueOversizedRecordsSkipped:N0}",
+                    "部分解析源 / 超大安全 opaque record"),
+            ],
+            snapshot.Result.Facets.Models
+                .OrderBy(value => ModelDisplayOrder(value.Model))
+                .ThenBy(value => value.Model, StringComparer.Ordinal)
+                .Select(value => new ModelFilterOption(value.Model))
+                .ToArray(),
+            snapshot.Result.Facets.Subjects
+                .OrderBy(value => DashboardSubjectOrdering.SemanticOrder(
+                    UsageAccounting.ThreadTypeText(value.Subject.ThreadType),
+                    value.Subject.AgentRole))
+                .ThenBy(value => value.Subject.AgentRole, StringComparer.Ordinal)
+                .Select(value => new SubjectFilterOption(value.Subject))
+                .ToArray());
+        var application = _snapshotApplicationLifecycle.Begin(
+            purpose,
+            _presentation.WouldApplyHaveStructuralChanges(input));
+        SnapshotApplying?.Invoke(this, application);
         UnsubscribeOptions();
-        Replace(ModelOptions, facets.Models.Select(value => new ModelFilterOption(
-            value.Model, previousModels.GetValueOrDefault(value.Model, true))));
-        Replace(AgentOptions, facets.Subjects.Select(value => new SubjectFilterOption(
-            value.Subject, previousSubjects.GetValueOrDefault(value.Subject, true))));
+        var result = _presentation.Apply(input);
         SubscribeOptions();
+        SnapshotApplied?.Invoke(this, DashboardSnapshotApplicationLifecycle.Complete(application, result));
     }
 
     private void SubscribeOptions()
@@ -365,7 +683,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnFilterOptionChanged(object? sender, PropertyChangedEventArgs args)
     {
-        if (args.PropertyName == nameof(ModelFilterOption.IsSelected)) ScheduleQuery();
+        if (args.PropertyName == nameof(ModelFilterOption.IsSelected))
+            ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
     }
 
     private async Task LoadStartupStateAsync(CancellationToken cancellationToken)
@@ -391,43 +710,167 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _suppressStartupUpdate = true;
         IsStartupAvailable = state.IsAvailable;
         IsStartupEnabled = state.IsEnabled;
-        PlatformStatusText = CanCheckUpdates
+        SetPlatformStatus(CanCheckUpdates
             ? state.Message
-            : $"{state.Message} · {UnconfiguredReleaseUpdateService.DiagnosticMessage}";
+            : $"{state.Message} · {UnconfiguredReleaseUpdateService.DiagnosticMessage}");
         _suppressStartupUpdate = false;
     }
 
     private void OnStatusChanged(object? sender, DashboardApplicationStatus status) => QueueUi(() =>
     {
-        if (status.Collector is not null) ApplyStatus(status.Collector, status.EfficiencyMode);
-        else CollectorStatusText = $"{status.Message} · {status.EfficiencyMode.Message}";
+        if (status.Collector is not null) ApplyStatus(status.Collector);
+        else CollectorStatusText = "正在启动采集器";
     });
 
     private void OnUsageChanged(object? sender, EventArgs args)
     {
-        if (Volatile.Read(ref _syncing) == 0) QueueUi(ScheduleQuery);
+        if (Volatile.Read(ref _syncing) == 0)
+            QueueUi(() => ScheduleQuery(DashboardSnapshotApplyPurpose.DataRefresh));
     }
 
-    private void ApplyStatus(CollectorStatus status, ProcessEfficiencyModeResult efficiency)
+    private void ApplyStatus(CollectorStatus status, bool synchronizeDiagnostics = true)
     {
-        LastReconciliationText = status.LastSuccessfulInventoryUtc is { } reconciled ? $"最近对账 {reconciled.ToLocalTime():HH:mm:ss}" : "尚未完成首次对账";
-        CoverageText = status.ObservationCoverage switch
+        HealthStatusText = status.Phase switch
         {
-            ObservationCoverage.Gap when status.ObservationGap is { } gap => $"{gap.StartUtc.ToLocalTime():HH:mm:ss} - {gap.EndUtc.ToLocalTime():HH:mm:ss} 未观测",
-            ObservationCoverage.Continuous => "持续观测中",
-            _ => "已建立本次运行基线",
+            CollectorPhase.Watching => "正常",
+            CollectorPhase.Partial => "部分解析",
+            CollectorPhase.Syncing => "同步中",
+            CollectorPhase.Degraded => "重试中",
+            CollectorPhase.Stopped => "已停止",
+            _ => "初始化",
         };
-        CollectorStatusText = $"{status.Message} · {efficiency.Message}";
-        HasConflicts = status.Conflicts > 0;
-        ConflictTitle = $"{status.Conflicts:N0} 个源文件冲突";
-        ConflictMessage = "现有账目已保护；自动恢复仅接受稳定的 canonical 同路径改写";
+        LastReconciliationText = status.LastSuccessfulInventoryUtc is { } reconciled
+            ? reconciled.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture)
+            : "—";
+        SourceFilesText = status.FilesKnown.ToString("N0", CultureInfo.CurrentCulture);
+        RealtimeVoiceSessionsText = status.RealtimeVoiceSessions.ToString("N0", CultureInfo.CurrentCulture);
+        RetryQueueText = status.PendingFiles.ToString("N0", CultureInfo.CurrentCulture);
+        WatcherStatusText = status.Phase switch
+        {
+            CollectorPhase.Watching => "运行中",
+            CollectorPhase.Partial => "运行中 · 部分解析",
+            CollectorPhase.Syncing => "同步中",
+            CollectorPhase.Degraded => "重试中",
+            CollectorPhase.Stopped => "已停止",
+            _ => "启动中",
+        };
+        var coverage = CoveragePresentation.From(status.ObservationCoverage, status.ObservationGap);
+        CoverageText = coverage.Text;
+        CollectorStatusText = status.Message;
+        HeaderStatusText = $"{WatcherStatusText} · 上次对账 {LastReconciliationText}";
+        var headerPresentation = DashboardHeaderStatusPresentation.From(status.Phase);
+        HeaderStatusGlyph = headerPresentation.Glyph;
+        HeaderStatusBrush = HeaderStatusBrushFor(headerPresentation.Tone);
+        if (synchronizeDiagnostics) SynchronizeStatusDiagnostics();
     }
+
+    private DiagnosticRow[] CreateStatusDiagnostics() =>
+    [
+        new("健康状态", HealthStatusText, $"Watcher: {WatcherStatusText}"),
+        new("Watcher", WatcherStatusText, CollectorStatusText),
+        new("上次对账", LastReconciliationText, "最近完成的全量对账"),
+        new("源文件", SourceFilesText, "已发现的 rollout JSONL"),
+        new("重试队列", RetryQueueText, "等待处理的源文件"),
+        new("观察覆盖", CoverageText, "本次运行的数据观察范围"),
+    ];
+
+    private void SynchronizeStatusDiagnostics()
+    {
+        _presentation.UpdateDiagnosticsSubset(CreateStatusDiagnostics());
+    }
+
+    private DiagnosticRow CreatePlatformStatusDiagnostic() => new(
+        "操作状态",
+        PlatformStatusText,
+        "检查更新和 CSV 导出结果");
+
+    private void SetPlatformStatus(string value)
+    {
+        PlatformStatusText = value;
+        _presentation.UpdateDiagnosticsSubset([CreatePlatformStatusDiagnostic()]);
+    }
+
+    private void ApplyUpdateCheck(ReleaseUpdateCheckResult result, long generation)
+    {
+        if (generation != Volatile.Read(ref _updateStateGeneration)) return;
+        _availableUpdate = result.IsUpdateAvailable ? result.Package : null;
+        _downloadedUpdateInstallerPath = null;
+        _downloadedUpdateTicket = null;
+
+        QueuePropertyChanged(nameof(CanDownloadUpdate));
+        QueuePropertyChanged(nameof(CanRunDownloadedUpdate));
+        QueuePropertyChanged(nameof(DownloadUpdateLabel));
+        QueuePropertyChanged(nameof(RunUpdateLabel));
+        SetPlatformStatus(result.Message);
+    }
+
+    private void ApplyUpdateDownload(
+        ReleaseUpdateDownloadResult result,
+        ReleaseUpdateDownloadTicket ticket,
+        bool isCurrent)
+    {
+        if (!isCurrent) return;
+
+        if (result.Status == ReleaseUpdateDownloadStatus.Completed
+            && !string.IsNullOrWhiteSpace(result.InstallerPath))
+        {
+            _downloadedUpdateInstallerPath = result.InstallerPath;
+            _downloadedUpdateTicket = ticket;
+            QueuePropertyChanged(nameof(CanDownloadUpdate));
+            QueuePropertyChanged(nameof(CanRunDownloadedUpdate));
+        }
+
+        SetPlatformStatus(result.Message);
+    }
+
+
+    private static Brush HeaderStatusBrushFor(DashboardHeaderStatusTone tone) => new SolidColorBrush(tone switch
+    {
+        DashboardHeaderStatusTone.Accent => Color.FromArgb(0xFF, 0x5B, 0x91, 0xE8),
+        DashboardHeaderStatusTone.Success => Color.FromArgb(0xFF, 0x63, 0xC5, 0xA6),
+        DashboardHeaderStatusTone.Warning => Color.FromArgb(0xFF, 0xE2, 0xA4, 0x4F),
+        DashboardHeaderStatusTone.Danger => Color.FromArgb(0xFF, 0xCF, 0x69, 0x7C),
+        _ => Color.FromArgb(0xFF, 0x82, 0x90, 0xA3),
+    });
 
     private void BeginBusy()
     {
         Interlocked.Increment(ref _busyCount);
         QueuePropertyChanged(nameof(IsBusy));
     }
+
+    private bool ClearCustomRange()
+    {
+        if (_customRange is null) return false;
+        _customRange = null;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeLabel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomStartDateSgt)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomEndDateSgt)));
+        return true;
+    }
+
+    private void ApplyProgrammaticRangeHours(double value)
+    {
+        var transition = DashboardTimeRangeTransition.FromProgrammaticHours(_rangeHours, value);
+        var positionChanged = !NearlyEquals(_rangeScalePosition, transition.Selection.Position);
+
+        _rangeHours = transition.Selection.Hours;
+        _rangeScalePosition = transition.Selection.Position;
+
+        if (transition.HoursChanged)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeHours)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeLabel)));
+        }
+
+        if (positionChanged)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeScalePosition)));
+        }
+
+    }
+
+    private static bool NearlyEquals(double left, double right) => Math.Abs(left - right) < 0.0000001;
 
     private void EndBusy()
     {
@@ -451,14 +894,25 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    private static CostSlice CostSliceFor(string label, decimal value, decimal total, string brushKey)
-    {
-        var percentage = total > 0 ? decimal.ToDouble(value / total * 100) : 0;
-        return new(label, percentage, $"{FormatCost(value)} · {percentage:F1}%", brushKey);
-    }
-
     private static string FormatPercentage(decimal value, decimal total) => total > 0 ? $"{value / total:P1}" : "0.0%";
     private static string FormatCost(decimal value) => $"${value:N1}";
+    private static int ModelDisplayOrder(string model) => model switch
+    {
+        "gpt-5.6-sol" => 0,
+        "gpt-5.6-terra" => 1,
+        "gpt-5.6-luna" => 2,
+        "codex-auto-review" => 3,
+        "Others" => 4,
+        _ => 5,
+    };
+
+    private static string SubjectTypeLabel(string threadType) => threadType switch
+    {
+        "main" => "主线程",
+        "subagent" => "子代理",
+        _ => threadType,
+    };
+
     private static string FormatTokens(long value) => value switch
     {
         >= 1_000_000_000 => $"{value / 1_000_000_000d:F1}B",
@@ -467,9 +921,4 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _ => value.ToString("N0", CultureInfo.CurrentCulture),
     };
 
-    private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> values)
-    {
-        target.Clear();
-        foreach (var value in values) target.Add(value);
-    }
 }

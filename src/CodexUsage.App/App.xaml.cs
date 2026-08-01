@@ -39,7 +39,7 @@ public partial class App : Microsoft.UI.Xaml.Application, IAsyncDisposable
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
         StartupDiagnostics.Write("App.OnLaunched entered");
-        _window = new MainWindow(_paths, BeginExit);
+        _window = new MainWindow(_paths, BeginExit, enableAutomaticUpdateChecks: !_isSmokeTest);
         StartupDiagnostics.Write("MainWindow constructed");
         _window.BeginInitialize();
         StartupDiagnostics.Write("MainWindow initialization started");

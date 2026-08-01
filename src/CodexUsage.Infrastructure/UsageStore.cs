@@ -6,7 +6,7 @@ namespace CodexUsage.Infrastructure;
 
 public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 4;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -82,10 +82,12 @@ public sealed class UsageStore : IDisposable
         RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
         var source = ToSource(input.Source, input.Metadata.RolloutId);
         ValidateSource(source);
+        if (input.Checkpoint is not null) ValidateCheckpoint(input.Checkpoint, source);
         return WriteTransaction(transaction =>
         {
             var result = AppendWithinTransaction(transaction, input.Metadata, input.Events, input.ObservedAtEpochMs);
             UpsertSourceWithinTransaction(transaction, source);
+            if (input.Checkpoint is not null) UpsertCheckpointWithinTransaction(transaction, input.Checkpoint);
             return result;
         });
     }
@@ -96,8 +98,10 @@ public sealed class UsageStore : IDisposable
         ValidateMetadata(input.Metadata);
         ValidateEvents(input.Events);
         RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
+        RequireOptionalText(input.ResolvedConflictSourcePath, nameof(input.ResolvedConflictSourcePath));
         var source = ToCanonicalSource(input.Source, input.Metadata.RolloutId);
         ValidateSource(source);
+        if (input.Checkpoint is not null) ValidateCheckpoint(input.Checkpoint, source);
         WriteTransaction(transaction =>
         {
             UpsertRollout(transaction, input.Metadata, input.ObservedAtEpochMs);
@@ -107,7 +111,98 @@ public sealed class UsageStore : IDisposable
                 transaction,
                 input.Metadata.RolloutId,
                 input.Source.FilePath,
-                input.ObservedAtEpochMs);
+                input.ObservedAtEpochMs,
+                input.ResolvedConflictSourcePath);
+            if (input.Checkpoint is not null) UpsertCheckpointWithinTransaction(transaction, input.Checkpoint);
+            return 0;
+        });
+    }
+
+    public void RekeyLegacyCanonicalRollout(RekeyLegacyCanonicalRolloutInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        RequireText(input.LegacyRolloutId, nameof(input.LegacyRolloutId));
+        ValidateMetadata(input.Metadata);
+        ValidateEvents(input.Events);
+        RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
+        if (!string.Equals(
+                input.LegacyRolloutId,
+                RolloutFileIdentity.LegacyFallbackRolloutId(input.Source.FilePath),
+                StringComparison.Ordinal))
+            throw new InvalidOperationException("Legacy rollout id is not the exact historical filename fallback");
+        if (!RolloutFileIdentity.TryGetTrailingUuidV7(input.Source.FilePath, out var filenameRolloutId)
+            || !string.Equals(filenameRolloutId, input.Metadata.RolloutId, StringComparison.Ordinal)
+            || !RolloutFileIdentity.IsUuidV7(input.Metadata.RolloutId)
+            || string.Equals(input.LegacyRolloutId, input.Metadata.RolloutId, StringComparison.Ordinal))
+            throw new InvalidOperationException("Replacement rollout id must equal the filename's strict trailing UUIDv7");
+
+        var source = ToCanonicalSource(input.Source, input.Metadata.RolloutId);
+        ValidateSource(source);
+        ValidateCheckpoint(input.Checkpoint, source);
+        WriteTransaction(transaction =>
+        {
+            var canonicalPath = ExecuteNullableScalarString(
+                transaction,
+                "SELECT canonical_source_path FROM rollouts WHERE rollout_id = $rolloutId",
+                ("$rolloutId", input.LegacyRolloutId));
+            var legacySourceCount = ExecuteScalarLong(
+                transaction,
+                "SELECT COUNT(*) FROM source_files WHERE rollout_id = $rolloutId",
+                ("$rolloutId", input.LegacyRolloutId));
+            var exactCanonicalCount = ExecuteScalarLong(
+                transaction,
+                """
+                SELECT COUNT(*) FROM source_files
+                WHERE rollout_id = $rolloutId AND file_path = $filePath
+                  AND is_present = 1
+                  AND (
+                      canonical_status = 'canonical'
+                      OR (canonical_status = 'conflict' AND last_error = $identityConflict)
+                  )
+                """,
+                ("$rolloutId", input.LegacyRolloutId),
+                ("$filePath", input.Source.FilePath),
+                ("$identityConflict",
+                    $"Canonical source rollout changed from {input.LegacyRolloutId} to {input.Metadata.RolloutId}."));
+            if (!string.Equals(canonicalPath, input.Source.FilePath, StringComparison.Ordinal)
+                || legacySourceCount != 1
+                || exactCanonicalCount != 1)
+                throw new InvalidOperationException("Legacy rollout is not backed by one unique present designated canonical source");
+
+            var targetReferences = ExecuteScalarLong(
+                transaction,
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM rollouts WHERE rollout_id = $rolloutId)
+                  + (SELECT COUNT(*) FROM source_files WHERE rollout_id = $rolloutId)
+                  + (SELECT COUNT(*) FROM usage_events WHERE rollout_id = $rolloutId)
+                  + (SELECT COUNT(*) FROM rollout_checkpoints WHERE rollout_id = $rolloutId)
+                """,
+                ("$rolloutId", input.Metadata.RolloutId));
+            if (targetReferences != 0)
+                throw new InvalidOperationException("Replacement rollout id already has ledger state");
+
+            ExecuteNonQuery(transaction,
+                "DELETE FROM rollout_checkpoints WHERE file_path = $filePath",
+                ("$filePath", input.Source.FilePath));
+            ExecuteNonQuery(transaction,
+                "DELETE FROM source_files WHERE file_path = $filePath",
+                ("$filePath", input.Source.FilePath));
+            var deleted = ExecuteNonQuery(transaction,
+                "DELETE FROM rollouts WHERE rollout_id = $rolloutId",
+                ("$rolloutId", input.LegacyRolloutId));
+            if (deleted != 1) throw new InvalidOperationException("Legacy rollout disappeared during re-key");
+
+            UpsertRollout(transaction, input.Metadata, input.ObservedAtEpochMs);
+            ReplaceEventsWithinTransaction(transaction, input.Metadata.RolloutId, input.Events);
+            UpsertSourceWithinTransaction(transaction, source);
+            PromoteRolloutWithinTransaction(
+                transaction,
+                input.Metadata.RolloutId,
+                input.Source.FilePath,
+                input.ObservedAtEpochMs,
+                null);
+            UpsertCheckpointWithinTransaction(transaction, input.Checkpoint);
             return 0;
         });
     }
@@ -131,6 +226,7 @@ public sealed class UsageStore : IDisposable
             input.Source.LastScannedAtEpochMs,
             null);
         ValidateSource(source);
+        if (input.Checkpoint is not null) ValidateCheckpoint(input.Checkpoint, source);
 
         WriteTransaction(transaction =>
         {
@@ -165,6 +261,7 @@ public sealed class UsageStore : IDisposable
             UpsertRollout(transaction, input.Metadata, input.ObservedAtEpochMs);
             ReplaceEventsWithinTransaction(transaction, input.Metadata.RolloutId, input.Events);
             UpsertSourceWithinTransaction(transaction, source);
+            if (input.Checkpoint is not null) UpsertCheckpointWithinTransaction(transaction, input.Checkpoint);
             return 0;
         });
     }
@@ -183,11 +280,16 @@ public sealed class UsageStore : IDisposable
     {
         RequireText(filePath, nameof(filePath));
         RequireNonNegative(lastScannedAtEpochMs, nameof(lastScannedAtEpochMs));
-        return WriteTransaction(transaction => ExecuteNonQuery(
-            transaction,
-            "UPDATE source_files SET is_present = 0, last_scanned_at_epoch_ms = $at WHERE file_path = $path",
-            ("$at", lastScannedAtEpochMs),
-            ("$path", filePath)) == 1);
+        return WriteTransaction(transaction =>
+        {
+            var changed = ExecuteNonQuery(
+                transaction,
+                "UPDATE source_files SET is_present = 0, last_scanned_at_epoch_ms = $at WHERE file_path = $path",
+                ("$at", lastScannedAtEpochMs),
+                ("$path", filePath));
+            ExecuteNonQuery(transaction, "DELETE FROM rollout_checkpoints WHERE file_path = $path", ("$path", filePath));
+            return changed == 1;
+        });
     }
 
     public IReadOnlyList<SourceFileRecord> ListSourceFiles()
@@ -221,6 +323,85 @@ public sealed class UsageStore : IDisposable
         return result;
     }
 
+    public IReadOnlyList<RolloutCheckpointRecord> ListRolloutCheckpoints()
+    {
+        AssertOpen();
+        using var command = CreateCommand(null, """
+            SELECT file_path, rollout_id, checkpoint_format_revision, parser_revision,
+                   source_identity_kind, source_identity, observed_size_bytes,
+                   observed_modified_at_epoch_ms, stable_complete_offset, boundary_hash,
+                   parser_state_json, parser_state_hash, trailing_partial_bytes,
+                   safe_opaque_oversized_records, safe_null_padding_records, last_verified_at_epoch_ms
+            FROM rollout_checkpoints
+            ORDER BY file_path
+            """);
+        using var reader = command.ExecuteReader();
+        var result = new List<RolloutCheckpointRecord>();
+        while (reader.Read())
+        {
+            result.Add(new RolloutCheckpointRecord(
+                reader.GetString(0),
+                reader.GetString(1),
+                checked((int)reader.GetInt64(2)),
+                checked((int)reader.GetInt64(3)),
+                new SourceIdentity(ParseSourceIdentityKind(reader.GetString(4)), reader.GetString(5)),
+                reader.GetInt64(6),
+                reader.GetInt64(7),
+                reader.GetInt64(8),
+                reader.GetString(9),
+                reader.GetString(10),
+                reader.GetString(11),
+                reader.GetInt64(12),
+                checked((int)reader.GetInt64(13)),
+                checked((int)reader.GetInt64(14)),
+                reader.GetInt64(15)));
+        }
+        return result;
+    }
+
+    public bool DeleteRolloutCheckpoint(string filePath)
+    {
+        RequireText(filePath, nameof(filePath));
+        return WriteTransaction(transaction => ExecuteNonQuery(
+            transaction,
+            "DELETE FROM rollout_checkpoints WHERE file_path = $filePath",
+            ("$filePath", filePath)) == 1);
+    }
+
+    public RolloutEventCursor GetRolloutEventCursor(string rolloutId)
+    {
+        RequireText(rolloutId, nameof(rolloutId));
+        AssertOpen();
+        using var command = CreateCommand(null, """
+            SELECT count(*), COALESCE(max(token_event_ordinal) + 1, 0)
+            FROM usage_events
+            WHERE rollout_id = $rolloutId
+            """, ("$rolloutId", rolloutId));
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) throw new InvalidDataException("Rollout event cursor query returned no row.");
+        return new RolloutEventCursor(reader.GetInt64(0), reader.GetInt64(1));
+    }
+
+    public RolloutLedgerTail? GetRolloutLedgerTail(string rolloutId)
+    {
+        RequireText(rolloutId, nameof(rolloutId));
+        AssertOpen();
+        using var command = CreateCommand(null, """
+            SELECT token_event_ordinal, timestamp_epoch_ms, input_tokens, cached_input_tokens,
+                   output_tokens, reasoning_output_tokens
+            FROM usage_events
+            WHERE rollout_id = $rolloutId
+            ORDER BY token_event_ordinal DESC
+            LIMIT 1
+            """, ("$rolloutId", rolloutId));
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? new RolloutLedgerTail(
+                reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2),
+                reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5))
+            : null;
+    }
+
     public IReadOnlyList<string> GetRolloutEventSignatures(string rolloutId) =>
         ReadStringList(
             rolloutId,
@@ -238,7 +419,7 @@ public sealed class UsageStore : IDisposable
         AssertOpen();
         using var command = CreateCommand(null, """
             SELECT rollout_id, conversation_id, parent_thread_id, thread_type,
-                   agent_role, agent_path, agent_nickname
+                   agent_role, agent_path, agent_nickname, is_realtime_voice
             FROM rollouts WHERE rollout_id = $rolloutId
             """, ("$rolloutId", rolloutId));
         using var reader = command.ExecuteReader();
@@ -246,7 +427,7 @@ public sealed class UsageStore : IDisposable
             ? new RolloutMetadata(
                 reader.GetString(1), reader.GetString(0), reader.GetString(2),
                 ParseThreadType(reader.GetString(3)), reader.GetString(4),
-                reader.GetString(5), reader.GetString(6))
+                reader.GetString(5), reader.GetString(6), ReadBoolean(reader, 7))
             : null;
     }
 
@@ -294,6 +475,21 @@ public sealed class UsageStore : IDisposable
         return ExecuteScalarLong(null, "SELECT count(*) FROM source_files WHERE is_present = 1");
     }
 
+    public long CountPresentRealtimeVoiceSessions()
+    {
+        AssertOpen();
+        return ExecuteScalarLong(null, """
+            SELECT count(*)
+            FROM rollouts AS r
+            WHERE r.is_realtime_voice = 1
+              AND EXISTS (
+                  SELECT 1
+                  FROM source_files AS s
+                  WHERE s.rollout_id = r.rollout_id AND s.is_present = 1
+              )
+            """);
+    }
+
     public long RecordSourceConflict(SourceConflictInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -312,6 +508,9 @@ public sealed class UsageStore : IDisposable
                 WHERE file_path = $path
                 """,
                 ("$message", input.Message), ("$at", input.ObservedAtEpochMs), ("$path", input.SourceFilePath));
+            ExecuteNonQuery(transaction,
+                "DELETE FROM rollout_checkpoints WHERE file_path = $path",
+                ("$path", input.SourceFilePath));
             return InsertDiagnostic(transaction, new CollectorDiagnosticInput(
                 input.RunId,
                 input.SourceFilePath,
@@ -327,6 +526,27 @@ public sealed class UsageStore : IDisposable
     {
         ValidateDiagnostic(input);
         return WriteTransaction(transaction => InsertDiagnostic(transaction, input));
+    }
+
+    internal long CountDiagnosticsForTest(string code)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        AssertOpen();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM collector_diagnostics WHERE code = $code";
+        command.Parameters.AddWithValue("$code", code);
+        return Convert.ToInt64(command.ExecuteScalar());
+    }
+
+    internal long MaximumRepeatedDiagnosticForTest(string code)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        AssertOpen();
+        using var command = _connection.CreateCommand();
+        command.CommandText =
+            "SELECT COALESCE(MAX(repeated), 0) FROM (SELECT count(*) repeated FROM collector_diagnostics WHERE code = $code GROUP BY source_file_path, message)";
+        command.Parameters.AddWithValue("$code", code);
+        return Convert.ToInt64(command.ExecuteScalar());
     }
 
     public IReadOnlyList<StoredUsageEvent> QueryEvents(UsageEventQuery filter)
@@ -579,6 +799,7 @@ public sealed class UsageStore : IDisposable
                         agent_role TEXT NOT NULL,
                         agent_path TEXT NOT NULL,
                         agent_nickname TEXT NOT NULL,
+                        is_realtime_voice INTEGER NOT NULL CHECK (is_realtime_voice IN (0, 1)),
                         canonical_source_path TEXT,
                         created_at_epoch_ms INTEGER NOT NULL CHECK (created_at_epoch_ms >= 0),
                         updated_at_epoch_ms INTEGER NOT NULL CHECK (updated_at_epoch_ms >= 0)
@@ -649,6 +870,55 @@ public sealed class UsageStore : IDisposable
                         value TEXT NOT NULL,
                         updated_at_epoch_ms INTEGER NOT NULL CHECK (updated_at_epoch_ms >= 0)
                     ) STRICT;
+                    """);
+            }
+
+            if (currentVersion == 1)
+            {
+                ExecuteNonQuery(transaction, """
+                    ALTER TABLE rollouts
+                    ADD COLUMN is_realtime_voice INTEGER NOT NULL DEFAULT 0
+                    CHECK (is_realtime_voice IN (0, 1));
+                    """);
+            }
+
+            if (currentVersion < 3)
+            {
+                ExecuteNonQuery(transaction, """
+                    CREATE TABLE rollout_checkpoints (
+                        file_path TEXT PRIMARY KEY REFERENCES source_files(file_path) ON DELETE CASCADE,
+                        rollout_id TEXT NOT NULL REFERENCES rollouts(rollout_id) ON DELETE CASCADE,
+                        checkpoint_format_revision INTEGER NOT NULL CHECK (checkpoint_format_revision > 0),
+                        parser_revision INTEGER NOT NULL CHECK (parser_revision > 0),
+                        source_identity_kind TEXT NOT NULL
+                            CHECK (source_identity_kind IN ('windows-file-id', 'conservative-stat')),
+                        source_identity TEXT NOT NULL,
+                        observed_size_bytes INTEGER NOT NULL CHECK (observed_size_bytes >= 0),
+                        observed_modified_at_epoch_ms INTEGER NOT NULL CHECK (observed_modified_at_epoch_ms >= 0),
+                        stable_complete_offset INTEGER NOT NULL
+                            CHECK (stable_complete_offset >= 0 AND stable_complete_offset <= observed_size_bytes),
+                        boundary_hash TEXT NOT NULL,
+                        parser_state_json TEXT NOT NULL,
+                        parser_state_hash TEXT NOT NULL,
+                        trailing_partial_bytes INTEGER NOT NULL CHECK (trailing_partial_bytes >= 0),
+                        safe_opaque_oversized_records INTEGER NOT NULL CHECK (safe_opaque_oversized_records >= 0),
+                        safe_null_padding_records INTEGER NOT NULL DEFAULT 0 CHECK (safe_null_padding_records >= 0),
+                        reconciliation_status TEXT NOT NULL DEFAULT 'verified'
+                            CHECK (reconciliation_status IN ('verified')),
+                        invalidation_reason TEXT,
+                        last_verified_at_epoch_ms INTEGER NOT NULL CHECK (last_verified_at_epoch_ms >= 0)
+                    ) STRICT;
+
+                    CREATE INDEX rollout_checkpoints_rollout_idx ON rollout_checkpoints(rollout_id);
+                    """);
+            }
+
+            if (currentVersion == 3)
+            {
+                ExecuteNonQuery(transaction, """
+                    ALTER TABLE rollout_checkpoints
+                    ADD COLUMN safe_null_padding_records INTEGER NOT NULL DEFAULT 0
+                    CHECK (safe_null_padding_records >= 0);
                     """);
             }
 
@@ -731,10 +1001,10 @@ public sealed class UsageStore : IDisposable
         ExecuteNonQuery(transaction, """
             INSERT INTO rollouts (
                 rollout_id, conversation_id, parent_thread_id, thread_type,
-                agent_role, agent_path, agent_nickname, canonical_source_path,
+                agent_role, agent_path, agent_nickname, is_realtime_voice, canonical_source_path,
                 created_at_epoch_ms, updated_at_epoch_ms
             ) VALUES ($rolloutId, $conversationId, $parentThreadId, $threadType,
-                      $agentRole, $agentPath, $agentNickname, NULL, $observedAt, $observedAt)
+                      $agentRole, $agentPath, $agentNickname, $isRealtimeVoice, NULL, $observedAt, $observedAt)
             ON CONFLICT(rollout_id) DO UPDATE SET
                 conversation_id = excluded.conversation_id,
                 parent_thread_id = excluded.parent_thread_id,
@@ -742,12 +1012,14 @@ public sealed class UsageStore : IDisposable
                 agent_role = excluded.agent_role,
                 agent_path = excluded.agent_path,
                 agent_nickname = excluded.agent_nickname,
+                is_realtime_voice = excluded.is_realtime_voice,
                 updated_at_epoch_ms = excluded.updated_at_epoch_ms
             """,
             ("$rolloutId", metadata.RolloutId), ("$conversationId", metadata.ConversationId),
             ("$parentThreadId", metadata.ParentThreadId), ("$threadType", ThreadTypeToDb(metadata.ThreadType)),
             ("$agentRole", metadata.AgentRole), ("$agentPath", metadata.AgentPath),
-            ("$agentNickname", metadata.AgentNickname), ("$observedAt", observedAtEpochMs));
+            ("$agentNickname", metadata.AgentNickname), ("$isRealtimeVoice", metadata.IsRealtimeVoice ? 1 : 0),
+            ("$observedAt", observedAtEpochMs));
     }
 
     private void UpsertSourceWithinTransaction(SqliteTransaction transaction, SourceFileInput source)
@@ -778,14 +1050,89 @@ public sealed class UsageStore : IDisposable
             ("$canonicalStatus", CanonicalStatusToDb(source.CanonicalStatus)),
             ("$present", source.IsPresent ? 1 : 0), ("$scanned", source.LastScannedAtEpochMs),
             ("$error", source.LastError));
+        if (!source.IsPresent || source.CanonicalStatus != CanonicalStatus.Canonical)
+        {
+            ExecuteNonQuery(transaction,
+                "DELETE FROM rollout_checkpoints WHERE file_path = $filePath",
+                ("$filePath", source.FilePath));
+        }
+    }
+
+    private void UpsertCheckpointWithinTransaction(SqliteTransaction transaction, RolloutCheckpointInput checkpoint)
+    {
+        ExecuteNonQuery(transaction, """
+            INSERT INTO rollout_checkpoints (
+                file_path, rollout_id, checkpoint_format_revision, parser_revision,
+                source_identity_kind, source_identity, observed_size_bytes,
+                observed_modified_at_epoch_ms, stable_complete_offset, boundary_hash,
+                parser_state_json, parser_state_hash, trailing_partial_bytes,
+                safe_opaque_oversized_records, safe_null_padding_records,
+                reconciliation_status, invalidation_reason,
+                last_verified_at_epoch_ms
+            ) VALUES (
+                $filePath, $rolloutId, $checkpointFormatRevision, $parserRevision,
+                $sourceIdentityKind, $sourceIdentity, $observedSizeBytes,
+                $observedModifiedAtEpochMs, $stableCompleteOffset, $boundaryHash,
+                $parserStateJson, $parserStateHash, $trailingPartialBytes,
+                $safeOpaqueOversizedRecords, $safeNullPaddingRecords,
+                'verified', NULL, $lastVerifiedAtEpochMs
+            )
+            ON CONFLICT(file_path) DO UPDATE SET
+                rollout_id = excluded.rollout_id,
+                checkpoint_format_revision = excluded.checkpoint_format_revision,
+                parser_revision = excluded.parser_revision,
+                source_identity_kind = excluded.source_identity_kind,
+                source_identity = excluded.source_identity,
+                observed_size_bytes = excluded.observed_size_bytes,
+                observed_modified_at_epoch_ms = excluded.observed_modified_at_epoch_ms,
+                stable_complete_offset = excluded.stable_complete_offset,
+                boundary_hash = excluded.boundary_hash,
+                parser_state_json = excluded.parser_state_json,
+                parser_state_hash = excluded.parser_state_hash,
+                trailing_partial_bytes = excluded.trailing_partial_bytes,
+                safe_opaque_oversized_records = excluded.safe_opaque_oversized_records,
+                safe_null_padding_records = excluded.safe_null_padding_records,
+                reconciliation_status = 'verified',
+                invalidation_reason = NULL,
+                last_verified_at_epoch_ms = excluded.last_verified_at_epoch_ms
+            """,
+            ("$filePath", checkpoint.FilePath),
+            ("$rolloutId", checkpoint.RolloutId),
+            ("$checkpointFormatRevision", checkpoint.CheckpointFormatRevision),
+            ("$parserRevision", checkpoint.ParserRevision),
+            ("$sourceIdentityKind", SourceIdentityKindToDb(checkpoint.SourceIdentity.Kind)),
+            ("$sourceIdentity", checkpoint.SourceIdentity.Value),
+            ("$observedSizeBytes", checkpoint.ObservedSizeBytes),
+            ("$observedModifiedAtEpochMs", checkpoint.ObservedModifiedAtEpochMs),
+            ("$stableCompleteOffset", checkpoint.StableCompleteOffset),
+            ("$boundaryHash", checkpoint.BoundaryHash),
+            ("$parserStateJson", checkpoint.ParserStateJson),
+            ("$parserStateHash", checkpoint.ParserStateHash),
+            ("$trailingPartialBytes", checkpoint.TrailingPartialBytes),
+            ("$safeOpaqueOversizedRecords", checkpoint.SafeOpaqueOversizedRecords),
+            ("$safeNullPaddingRecords", checkpoint.SafeNullPaddingRecords),
+            ("$lastVerifiedAtEpochMs", checkpoint.LastVerifiedAtEpochMs));
     }
 
     private void PromoteRolloutWithinTransaction(
         SqliteTransaction transaction,
         string rolloutId,
         string canonicalFilePath,
-        long promotedAtEpochMs)
+        long promotedAtEpochMs,
+        string? resolvedConflictSourcePath)
     {
+        if (resolvedConflictSourcePath is not null)
+        {
+            if (string.Equals(canonicalFilePath, resolvedConflictSourcePath, StringComparison.Ordinal))
+                throw new InvalidOperationException("Recovery candidate cannot be the conflicted source");
+            var resolvedConflictRollout = ExecuteNullableScalarString(
+                transaction,
+                "SELECT rollout_id FROM source_files WHERE file_path = $filePath AND canonical_status = 'conflict'",
+                ("$filePath", resolvedConflictSourcePath));
+            if (!string.Equals(resolvedConflictRollout, rolloutId, StringComparison.Ordinal))
+                throw new InvalidOperationException("Resolved conflict source is not an exact conflict for the rollout");
+        }
+
         var sourceRollout = ExecuteNullableScalarString(
             transaction,
             "SELECT rollout_id FROM source_files WHERE file_path = $filePath AND is_present = 1",
@@ -812,8 +1159,13 @@ public sealed class UsageStore : IDisposable
             UPDATE source_files
             SET canonical_status = CASE
                 WHEN file_path = $path THEN 'canonical'
+                WHEN file_path = $resolvedConflictPath AND canonical_status = 'conflict' THEN 'candidate'
                 WHEN canonical_status = 'canonical' THEN 'candidate'
                 ELSE canonical_status
+            END,
+            last_error = CASE
+                WHEN file_path = $resolvedConflictPath AND canonical_status = 'conflict' THEN NULL
+                ELSE last_error
             END,
             last_scanned_at_epoch_ms = CASE
                 WHEN file_path = $path THEN $at
@@ -822,8 +1174,14 @@ public sealed class UsageStore : IDisposable
             WHERE rollout_id = $rolloutId
             """,
             ("$path", canonicalFilePath),
+            ("$resolvedConflictPath", resolvedConflictSourcePath),
             ("$at", promotedAtEpochMs),
             ("$rolloutId", rolloutId));
+        ExecuteNonQuery(
+            transaction,
+            "DELETE FROM rollout_checkpoints WHERE rollout_id = $rolloutId AND file_path <> $path",
+            ("$rolloutId", rolloutId),
+            ("$path", canonicalFilePath));
     }
 
     private long InsertDiagnostic(SqliteTransaction transaction, CollectorDiagnosticInput input)
@@ -1105,6 +1463,39 @@ public sealed class UsageStore : IDisposable
         RequireNonNegative(source.LastScannedAtEpochMs, nameof(source.LastScannedAtEpochMs));
     }
 
+    private static void ValidateCheckpoint(RolloutCheckpointInput checkpoint, SourceFileInput source)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        ArgumentNullException.ThrowIfNull(checkpoint.SourceIdentity);
+        RequireText(checkpoint.FilePath, nameof(checkpoint.FilePath));
+        RequireText(checkpoint.RolloutId, nameof(checkpoint.RolloutId));
+        RequireText(checkpoint.SourceIdentity.Value, nameof(checkpoint.SourceIdentity.Value));
+        RequireText(checkpoint.BoundaryHash, nameof(checkpoint.BoundaryHash));
+        RequireText(checkpoint.ParserStateJson, nameof(checkpoint.ParserStateJson));
+        RequireText(checkpoint.ParserStateHash, nameof(checkpoint.ParserStateHash));
+        if (checkpoint.CheckpointFormatRevision <= 0 || checkpoint.ParserRevision <= 0)
+            throw new ArgumentOutOfRangeException(nameof(checkpoint), "Checkpoint revisions must be positive.");
+        RequireNonNegative(checkpoint.ObservedSizeBytes, nameof(checkpoint.ObservedSizeBytes));
+        RequireNonNegative(checkpoint.ObservedModifiedAtEpochMs, nameof(checkpoint.ObservedModifiedAtEpochMs));
+        RequireNonNegative(checkpoint.StableCompleteOffset, nameof(checkpoint.StableCompleteOffset));
+        RequireNonNegative(checkpoint.TrailingPartialBytes, nameof(checkpoint.TrailingPartialBytes));
+        RequireNonNegative(checkpoint.SafeOpaqueOversizedRecords, nameof(checkpoint.SafeOpaqueOversizedRecords));
+        RequireNonNegative(checkpoint.SafeNullPaddingRecords, nameof(checkpoint.SafeNullPaddingRecords));
+        RequireNonNegative(checkpoint.LastVerifiedAtEpochMs, nameof(checkpoint.LastVerifiedAtEpochMs));
+        if (checkpoint.StableCompleteOffset > checkpoint.ObservedSizeBytes)
+            throw new ArgumentOutOfRangeException(nameof(checkpoint.StableCompleteOffset));
+        if (!string.Equals(checkpoint.FilePath, source.FilePath, StringComparison.Ordinal)
+            || !string.Equals(checkpoint.RolloutId, source.RolloutId, StringComparison.Ordinal)
+            || checkpoint.ObservedSizeBytes != source.SizeBytes
+            || checkpoint.ObservedModifiedAtEpochMs != source.ModifiedAtEpochMs
+            || checkpoint.StableCompleteOffset != source.ByteOffset
+            || !string.Equals(checkpoint.BoundaryHash, source.PrefixHash, StringComparison.Ordinal)
+            || !source.IsPresent || source.CanonicalStatus != CanonicalStatus.Canonical)
+        {
+            throw new ArgumentException("Checkpoint does not match its canonical source snapshot.", nameof(checkpoint));
+        }
+    }
+
     private static void ValidateDiagnostic(CollectorDiagnosticInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -1192,6 +1583,20 @@ public sealed class UsageStore : IDisposable
         "canonical" => CanonicalStatus.Canonical,
         "conflict" => CanonicalStatus.Conflict,
         _ => throw new InvalidDataException($"Unknown canonical status: {value}"),
+    };
+
+    private static string SourceIdentityKindToDb(SourceIdentityKind value) => value switch
+    {
+        SourceIdentityKind.WindowsFileId => "windows-file-id",
+        SourceIdentityKind.ConservativeStat => "conservative-stat",
+        _ => throw new ArgumentOutOfRangeException(nameof(value)),
+    };
+
+    private static SourceIdentityKind ParseSourceIdentityKind(string value) => value switch
+    {
+        "windows-file-id" => SourceIdentityKind.WindowsFileId,
+        "conservative-stat" => SourceIdentityKind.ConservativeStat,
+        _ => throw new InvalidDataException($"Unknown source identity kind: {value}"),
     };
 
     private static string DiagnosticSeverityToDb(DiagnosticSeverity value) => value switch

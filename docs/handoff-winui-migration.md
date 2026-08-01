@@ -14,11 +14,15 @@ Repository state at handoff:
 
 ## Implemented behavior
 
-- Native WinUI 3 dashboard based on the Figma Page 2 design. Page 1 is unrelated and was not modified.
-- Figma final layout node: `38:2`; design notes: `38:253`.
+- Native WinUI 3 dashboard target is the confirmed Figma Page 2 product candidate. Page 1 is unrelated and was not modified.
+- Final layout node: `90:2`. Responsive contract node: `90:329`.
+- Minimum window is `720 x 640 DIP`. Wide is `>=1200`,Medium is `800-1199`,and Compact is `<800`.
+- The four top-level filters each occupy one row. Compact splits the time control into two rows. The page owns the only vertical scroll; each table owns horizontal scrolling only. Model order is Sol,Terra,Luna,Others.
 - AppInstance single instance, tray residency, hidden `--startup`, HKCU Run startup, ledger mutex, bounded shutdown, DPI handling, and CSV export.
-- Windows Efficiency Mode is applied through EcoQoS and below-normal process priority.
+- Focus-aware Efficiency Mode and process-priority work is deferred and must not be treated as implemented acceptance scope.
+- The legacy multi-size product icon is embedded in the EXE and reused by AppWindow/taskbar, tray, setup, uninstaller, shortcuts, and Apps & features.
 - Collector retains strict read-only access to `%USERPROFILE%\.codex\sessions`, `archived_sessions`, and `agents`.
+- Safe source-conflict recovery writes only the application ledger. It accepts only stable metadata-exact candidates with `Equal` or `Extension` semantics,selects deterministically,and retains the last valid ledger with internal degraded diagnostics and background retry for unsafe candidates. Source conflict is not displayed in the GUI.
 - Ledger remains under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
 - Installer performs direct break-replace migration, terminates old processes without prompting, invokes the legacy Electron uninstaller when detected, preserves the ledger, and installs into Program Files.
 - Installer builds require PowerShell Core 7.4 or later through `pwsh`.
@@ -34,7 +38,7 @@ The current collector changes:
 - Run initial inventory in the background while allowing existing ledger queries immediately.
 - Preserve a single actor and single SQLite owner.
 - Slice enumeration, parsing, reads, and hashing by time, bytes, and records so Query, Status, and Heartbeat commands can run between slices.
-- Remove all artificial `Task.Delay`, `CooperativeDelay`, and 1/2/4/8 ms backoff throttling. `Task.Yield` and mailbox dispatch preserve responsiveness; Windows Efficiency Mode controls OS scheduling priority.
+- Remove all artificial `Task.Delay`, `CooperativeDelay`, and 1/2/4/8 ms backoff throttling. `Task.Yield` and mailbox dispatch preserve responsiveness without relying on the deferred Efficiency Mode work.
 - Publish progress every 250 ms and persist heartbeat every second during inventory.
 - Do not reread unchanged conflict sources on every startup.
 - Drop/coalesce timer ticks while inventory is active and require a full five-minute interval after inventory completion before another timer inventory.
@@ -59,27 +63,29 @@ Run from the repository root:
 dotnet restore CodexUsageDesktop.sln
 dotnet test CodexUsageDesktop.sln -c Release
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.0
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
 git diff --check
 ```
 
 Then perform installed validation:
 
-1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.0-x64.exe` with elevation. The normal automated flow previously used `/S /CURRENTADMIN=1`.
+1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.1-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
 2. Confirm all required resources exist beside the installed executable: application `.pri`, `App.xbf`, `MainWindow.xbf`, `Controls\AuditFilterContent.xbf`, and `Controls\CostRow.xbf`.
 3. Run installed `Codex Usage Desktop.exe --smoke-test` and require exit code 0.
 4. Launch normally with the existing real ledger. Existing totals must appear promptly while status may still show background reconciliation.
 5. Confirm Query, Status, and Heartbeat continue updating during reconciliation and that totals are nonzero.
-6. Confirm CPU scheduling shows Windows Efficiency Mode and that there is no application-level sleep/backoff throttle.
-7. Confirm no new Application Error, Windows Error Reporting, or .NET Runtime crash event is recorded.
+6. Confirm no new Application Error, Windows Error Reporting, or .NET Runtime crash event is recorded.
 
 ## Known remaining risks
 
-- Final independent review of the no-throttle revision was interrupted and should be rerun.
-- Final installer build and installed real-ledger validation were interrupted and remain required.
+- Independent review of the no-throttle revision completed without an actionable finding.
+- The final installer build, installed smoke test, and real-ledger validation completed. Existing totals appeared at inventory `0/3327`, remained queryable during reconciliation, and updated when background processing completed.
+- The first real Electron replacement exposed an NSIS uninstaller child-process race. The installer now copies the legacy uninstaller to `$PLUGINSDIR` and invokes it with final `_?=$INSTDIR`; an independent review and a repeated real upgrade confirmed the fix.
+- The installed payload matched all 520 published files, the ledger was preserved, and no new matching Application Error, Windows Error Reporting, or .NET Runtime crash event was recorded.
+- Focus-aware Efficiency Mode and process-priority behavior remains deferred.
 - A single synchronous SQLite query or write is not internally preemptible, although full inventory no longer blocks the actor for hours.
 - The setup and binaries are unsigned. Authenticode signing and a stable release identity remain required before public distribution.
-- The release feed is intentionally unconfigured; the application remains offline by default.
+- The SHA-256-only release check fetches fixed GitHub Release metadata at startup and every 6 hours. It never downloads or starts setup without separate user actions. Authenticode signing remains required before public distribution.
 
 ## Safety boundaries
 

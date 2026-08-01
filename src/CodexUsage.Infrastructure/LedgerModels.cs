@@ -77,7 +77,8 @@ public sealed record AppendRolloutSourceInput(
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
     CandidateSourceInput Source,
-    long ObservedAtEpochMs);
+    long ObservedAtEpochMs,
+    RolloutCheckpointInput? Checkpoint = null);
 
 public sealed record CanonicalSourceInput(
     string FilePath,
@@ -93,13 +94,76 @@ public sealed record ReplaceCanonicalRolloutInput(
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
     CanonicalSourceInput Source,
-    long ObservedAtEpochMs);
+    long ObservedAtEpochMs,
+    string? ResolvedConflictSourcePath,
+    RolloutCheckpointInput? Checkpoint = null);
+
+public sealed record RekeyLegacyCanonicalRolloutInput(
+    string LegacyRolloutId,
+    RolloutMetadata Metadata,
+    IReadOnlyList<UsageEventInput> Events,
+    CanonicalSourceInput Source,
+    long ObservedAtEpochMs,
+    RolloutCheckpointInput Checkpoint);
 
 public sealed record RecoverDivergedCanonicalSourceInput(
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
     RecoverableCanonicalSourceInput Source,
-    long ObservedAtEpochMs);
+    long ObservedAtEpochMs,
+    RolloutCheckpointInput? Checkpoint = null);
+
+public enum SourceIdentityKind
+{
+    WindowsFileId,
+    ConservativeStat,
+}
+
+public sealed record SourceIdentity(SourceIdentityKind Kind, string Value);
+
+public sealed record RolloutCheckpointInput(
+    string FilePath,
+    string RolloutId,
+    int CheckpointFormatRevision,
+    int ParserRevision,
+    SourceIdentity SourceIdentity,
+    long ObservedSizeBytes,
+    long ObservedModifiedAtEpochMs,
+    long StableCompleteOffset,
+    string BoundaryHash,
+    string ParserStateJson,
+    string ParserStateHash,
+    long TrailingPartialBytes,
+    int SafeOpaqueOversizedRecords,
+    int SafeNullPaddingRecords,
+    long LastVerifiedAtEpochMs);
+
+public sealed record RolloutCheckpointRecord(
+    string FilePath,
+    string RolloutId,
+    int CheckpointFormatRevision,
+    int ParserRevision,
+    SourceIdentity SourceIdentity,
+    long ObservedSizeBytes,
+    long ObservedModifiedAtEpochMs,
+    long StableCompleteOffset,
+    string BoundaryHash,
+    string ParserStateJson,
+    string ParserStateHash,
+    long TrailingPartialBytes,
+    int SafeOpaqueOversizedRecords,
+    int SafeNullPaddingRecords,
+    long LastVerifiedAtEpochMs);
+
+public sealed record RolloutEventCursor(long EventCount, long NextTokenEventOrdinal);
+
+public sealed record RolloutLedgerTail(
+    long TokenEventOrdinal,
+    long TimestampEpochMs,
+    long InputTokens,
+    long CachedInputTokens,
+    long OutputTokens,
+    long ReasoningOutputTokens);
 
 public sealed record AppendEventsResult(long Inserted, long IgnoredAsDuplicate);
 

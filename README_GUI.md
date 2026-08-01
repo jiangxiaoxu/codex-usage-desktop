@@ -17,6 +17,7 @@ GUI 是纯 WinUI 3 desktop application.XAML、WinUI controls 和类型化 C# vie
 dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Debug --no-restore
 dotnet test CodexUsageDesktop.sln -c Debug --no-build
+dotnet format CodexUsageDesktop.sln --verify-no-changes
 ```
 
 ## Native installer
@@ -24,12 +25,12 @@ dotnet test CodexUsageDesktop.sln -c Debug --no-build
 需要 NSIS 3.x,并确保 `makensis.exe` 位于 PATH、标准安装目录或现有 electron-builder cache.生成 unpackaged、self-contained 的 x64 WinUI 3 应用和全用户 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.0
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
 ```
 
-setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.0-x64.exe`.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
+setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.1-x64.exe`.构建会先生成唯一 pending EXE,仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
 
-setup 可识别旧 Electron 0.2.6 安装并原位替换为 WinUI 3.覆盖前会备份 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 及其 WAL/SHM,保留 ledger 和自启动选择,并清理旧 Electron payload.卸载 WinUI 3 默认不删除 LocalAppData ledger.当前 EXE 未签名,仍可能触发 `Unknown Publisher` 或 SmartScreen;release feed 尚未配置,更新按钮保持不可用,升级通过运行更高版本的 setup EXE 完成.
+setup 可识别旧 Electron 0.2.6 安装并原位替换为 WinUI 3.它会检测并强制终止仍在运行的 Codex Usage Desktop process,再备份 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 及其 WAL/SHM,保留 ledger 和自启动选择,并清理旧 Electron payload.卸载 WinUI 3 默认不删除 LocalAppData ledger.当前 EXE 未签名,仍可能触发 `Unknown Publisher` 或 SmartScreen.用户可显式检查 GitHub Release,实验通道在下载时校验 SHA-256;运行前需要在警示 dialog 中确认并再次校验文件,随后 NSIS 结束当前应用和 collector process.
 
 ## 数据边界
 
@@ -48,21 +49,26 @@ override 必须是受保护 Codex tree 以外的绝对可写目录.CSV export �
 - 重复事件经过 debounce 和路径去重,每轮只处理有界 batch.
 - 兜底 inventory reconciliation 每 5 分钟运行一次,采用分片 enumeration、分片 parsing、cooperative cancellation 和主动 yield.
 - 手动同步不会启动并行 inventory;活动 inventory 结束后最多追加一个 trailing run.
-- 启动后以 best effort 启用 Windows Efficiency Mode,使用 EcoQoS 与 below-normal process priority.
-- canonical rewrite 只有在同路径、同 `rolloutId`、完整解析和双重稳定快照一致时才原子替换 ledger;否则显示 conflict.
+- source conflict 恢复只写应用 ledger.稳定候选必须 metadata exact,且 semantic relation 为 `Equal` 或 `Extension`;多个安全候选按确定性规则选择.
+- unsafe、`Shorter`、`Diverged`、attribution 不一致或不稳定候选保留最后有效 ledger,记录内部 degraded/diagnostic 并后台重试.GUI 不显示 source conflict.
 
 这些策略降低峰值和长期后台消耗,但不承诺固定 CPU 百分比.首次建库、文件数量、单条 JSON 大小、磁盘 cache 和手动同步仍会影响瞬时负载.
+
+窗口失焦后的 Efficiency Mode / process priority 调整仍 deferred,不属于当前交付能力.
 
 ## 原生界面与 lifecycle
 
 - Native title bar 和 CommandBar 提供同步、导出、更新和 startup control.
-- Collector health 展示 watcher、offline gap、conflict、retry、reconciliation、Efficiency Mode 和 ledger 状态.
-- 宽窗口使用持久 filter pane;紧凑窗口折叠筛选并将次要 command 放入 overflow.
+- Collector health 展示 watcher、offline gap、retry、reconciliation 和 ledger 状态,不展示 source conflict.
+- 已确认的 Figma Page 2 节点为 `90:2`,responsive contract 为 `90:329`.
+- 最小窗口为 `720 x 640 DIP`.Wide 为 `>=1200`,Medium 为 `800-1199`,Compact 为 `<800`.
+- 时间、model、执行主体和路径搜索四个顶层筛选各占一行;Compact 的时间控件拆为两行.model 顺序固定为 Sol、Terra、Luna、codex-auto-review、Others.
+- 页面只允许一个纵向滚动容器;每个 table 在宽度不足时拥有独立横向滚动,不得引入嵌套纵向滚动.
 - 查询由 Application layer 执行,结果通过 UI dispatcher 更新.
-- 大型明细使用 WinUI virtualizing controls.
+- 模型与执行主体 table 是有界聚合结果,使用无内部纵向滚动的 `ItemsControl`;页面根容器负责唯一纵向滚动.
 - unpackaged 应用通过 HKCU Run entry 管理开机自启动;启动后可直接驻留 tray.
 - 关闭 dashboard 可保持后台采集,通过 tray `Exit` 执行 clean shutdown.
-- 当前 release feed 尚未配置;版本升级通过更高版本的 NSIS setup EXE 完成.
+- 更新在启动后立即检查一次固定 GitHub Release metadata,随后每 6 小时检查一次;手动检查仍可用.自动检查不会下载或安装;下载后用户必须在警示 dialog 中确认,应用再复验 SHA-256 后启动未签名 setup.NSIS 会结束当前应用和 collector process.当前 SHA-256 实验通道不能替代 Authenticode signing.
 
 ## 交付验证
 
@@ -70,8 +76,9 @@ override 必须是受保护 Codex tree 以外的绝对可写目录.CSV export �
 dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.0
+dotnet format CodexUsageDesktop.sln --verify-no-changes
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.1
 git diff --check
 ```
 
-release 还应验证 UAC install、旧 Electron 0.2.6 原位升级、HKCU Run startup、Efficiency Mode、tray lifecycle、collector shutdown、uninstall 和 ledger continuity.正式分发前还需要对 setup EXE 进行 Authenticode 签名.
+release 还应验证 UAC install、旧 Electron 0.2.6 原位升级、HKCU Run startup、tray lifecycle、collector shutdown、uninstall 和 ledger continuity.正式分发前还需要对 setup EXE 进行 Authenticode 签名.Efficiency Mode / process priority 验收 deferred.

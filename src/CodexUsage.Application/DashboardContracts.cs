@@ -19,6 +19,31 @@ public sealed record PlatformFeatureResult(
 public sealed record ReleaseUpdateCheckResult(
     bool IsAvailable,
     bool IsUpdateAvailable,
+    string Message,
+    ReleaseUpdatePackage? Package = null);
+
+public sealed record ReleaseUpdatePackage(
+    string Version,
+    string ReleaseTag,
+    Uri DownloadUri,
+    string Sha256,
+    long SizeBytes,
+    DateTimeOffset PublishedUtc);
+
+public enum ReleaseUpdateDownloadStatus
+{
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+public sealed record ReleaseUpdateDownloadResult(
+    ReleaseUpdateDownloadStatus Status,
+    string Message,
+    string? InstallerPath = null);
+
+public sealed record ReleaseUpdateInstallerVerificationResult(
+    bool IsValid,
     string Message);
 
 public enum CsvExportStatus
@@ -32,12 +57,65 @@ public sealed record CsvExportResult(
     string? OutputPath,
     long EventCount);
 
-public sealed record ProcessEfficiencyModeResult(
-    bool EcoQosEnabled,
-    bool BelowNormalPriorityEnabled,
-    string Message)
+public enum ProcessExecutionMode
 {
-    public bool IsFullyEnabled => EcoQosEnabled && BelowNormalPriorityEnabled;
+    Interactive,
+    Efficiency,
+}
+
+public enum DashboardWindowActivitySignal
+{
+    Shown,
+    Hidden,
+    Activated,
+    Deactivated,
+    Minimized,
+    Restored,
+    ShutdownStarted,
+}
+
+public readonly record struct DashboardWindowActivity(
+    bool IsVisible,
+    bool IsActivated,
+    bool IsMinimized,
+    bool IsShuttingDown)
+{
+    public static DashboardWindowActivity Hidden { get; } = new(false, false, false, false);
+
+    public ProcessExecutionMode ExecutionMode =>
+        IsVisible && IsActivated && !IsMinimized && !IsShuttingDown
+            ? ProcessExecutionMode.Interactive
+            : ProcessExecutionMode.Efficiency;
+
+    public DashboardWindowActivity Reduce(DashboardWindowActivitySignal signal)
+    {
+        if (IsShuttingDown)
+        {
+            return this;
+        }
+
+        return signal switch
+        {
+            DashboardWindowActivitySignal.Shown => this with { IsVisible = true },
+            DashboardWindowActivitySignal.Hidden => this with { IsVisible = false, IsActivated = false },
+            DashboardWindowActivitySignal.Activated => this with { IsActivated = true },
+            DashboardWindowActivitySignal.Deactivated => this with { IsActivated = false },
+            DashboardWindowActivitySignal.Minimized => this with { IsMinimized = true },
+            DashboardWindowActivitySignal.Restored => this with { IsMinimized = false },
+            DashboardWindowActivitySignal.ShutdownStarted => new(false, false, IsMinimized, true),
+            _ => throw new ArgumentOutOfRangeException(nameof(signal), signal, null),
+        };
+    }
+}
+
+public sealed record ProcessEfficiencyModeResult(
+    ProcessExecutionMode Mode,
+    bool PowerThrottlingApplied,
+    bool PriorityClassApplied,
+    string Message,
+    long Revision = 0)
+{
+    public bool IsFullyApplied => PowerThrottlingApplied && PriorityClassApplied;
 }
 
 public sealed record DashboardApplicationStatus(
@@ -52,7 +130,7 @@ public sealed record DashboardSnapshot(
 
 public interface IProcessEfficiencyMode
 {
-    ProcessEfficiencyModeResult TryEnable();
+    ProcessEfficiencyModeResult TryApply(ProcessExecutionMode mode);
 }
 
 public interface IStartupRegistrationService
@@ -69,6 +147,16 @@ public interface IReleaseUpdateService
     bool IsAvailable { get; }
 
     Task<ReleaseUpdateCheckResult> CheckAsync(CancellationToken cancellationToken = default);
+
+    Task<ReleaseUpdateDownloadResult> DownloadAsync(
+        ReleaseUpdatePackage package,
+        CancellationToken cancellationToken = default);
+
+    Task<ReleaseUpdateInstallerVerificationResult> VerifyDownloadedInstallerAsync(
+        ReleaseUpdatePackage package,
+        string installerPath,
+        CancellationToken cancellationToken = default);
+
 }
 
 public interface IExportDestinationPicker
@@ -93,6 +181,8 @@ public interface IUsageDashboardService : IAsyncDisposable
     Task<DashboardSnapshot> QueryAsync(
         DashboardQueryRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<ProcessEfficiencyModeResult> SetProcessExecutionModeAsync(ProcessExecutionMode mode);
 
     Task<CsvExportResult> ExportCsvAsync(
         DashboardQueryRequest request,

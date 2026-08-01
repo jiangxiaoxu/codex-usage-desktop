@@ -26,14 +26,14 @@ The supported priced families are `gpt-5.6`, `gpt-5.5` and `gpt-5.4`. Exact conf
 | --- | ---: | ---: | ---: |
 | `gpt-5.6` | 5 | 0.5 | 30 |
 | `gpt-5.6-sol` | 5 | 0.5 | 30 |
-| `gpt-5.6-terra` | 2.5 | 0.25 | 15 |
-| `gpt-5.6-luna` | 1 | 0.1 | 6 |
+| `gpt-5.6-terra` | 2 | 0.2 | 12 |
+| `gpt-5.6-luna` | 0.2 | 0.02 | 1.2 |
 | `gpt-5.5` | 5 | 0.5 | 30 |
 | `gpt-5.4` | 2.5 | 0.25 | 15 |
 | `gpt-5.4-mini` | 0.75 | 0.075 | 4.5 |
 | `gpt-5.4-nano` | 0.2 | 0.02 | 1.25 |
 
-The `gpt-5.6` alias is priced as GPT-5.6 Sol. Models outside the supported families are grouped as `Others`. `Others` remains visible in token statistics but has a zero token-cost estimate. The exact source model value `unknown` is grouped as `Unknown attribution`; its tokens are included in `unpricedTokens` and are not represented as a zero-cost priced model. A newly observed source model within a supported family but missing from the exact rate table is also unpriced.
+The `gpt-5.6` alias is priced as GPT-5.6 Sol. The exact source model `codex-auto-review` is preserved as its own category. Because no rate is configured, its tokens remain visible, are included in `unpricedTokens`, and have no estimated cost. Models outside the supported families are grouped as `Others`. `Others` remains visible in token statistics but has a zero token-cost estimate. The exact source model value `unknown` is grouped as `Unknown attribution`; its tokens are included in `unpricedTokens` and are not represented as a zero-cost priced model. A newly observed source model within a supported family but missing from the exact rate table is also unpriced.
 
 ## Cost calculation
 
@@ -47,7 +47,7 @@ otherOutputCost   = (output - reasoningOutput) * outputRate / 1,000,000
 totalCost         = sum of the four components
 ```
 
-The UI shows the four cost components separately. Reasoning and other output have the same configured output rate; separating them is analytical only and does not change total output pricing.
+The UI shows the four cost components separately. Reasoning and other output have the same configured output rate; separating them is analytical only and does not change total output pricing. The current rate table is applied uniformly to all stored usage, without preserving historical rate versions.
 
 ## Codex subscription context policy
 

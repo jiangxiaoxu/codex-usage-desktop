@@ -9,7 +9,8 @@ public sealed record RolloutMetadata(
     ThreadType ThreadType,
     string AgentRole,
     string AgentPath,
-    string AgentNickname);
+    string AgentNickname,
+    bool IsRealtimeVoice);
 
 public sealed record ParsedRolloutUsageEvent(
     string ConversationId,
@@ -37,14 +38,51 @@ public sealed record ParsedRolloutUsageEvent(
 
 public sealed record RolloutParseDiagnostics(
     int BlankLines,
+    int SafeNullPaddingRecordsSkipped,
     int MalformedLines,
     int NonObjectLines,
-    int OversizedRecordsSkipped,
+    ImmutableArray<OversizedRecordDiagnostic> OversizedRecords,
     int InvalidTokenUsageLines,
     int DuplicateSnapshotsSkipped,
     int ZeroBreakdownSnapshotsSkipped,
     int InvalidTokenRelationshipsSkipped,
-    int InvalidTimestampsSkipped);
+    int InvalidTimestampsSkipped)
+{
+    public int SafeOpaqueOversizedRecordsSkipped => OversizedRecords.Count(value =>
+        value.Disposition == OversizedRecordDisposition.SafeOpaqueSkipped);
+
+    public bool HasUnsafeOversizedRecords => OversizedRecords.Any(value =>
+        value.Disposition != OversizedRecordDisposition.SafeOpaqueSkipped);
+}
+
+public enum OversizedRecordDisposition
+{
+    SafeOpaqueSkipped,
+    UnsafeCritical,
+    UnsafeUnclassified,
+    Malformed,
+}
+
+public enum OversizedRecordKind
+{
+    Unknown,
+    SessionMetadata,
+    TurnContext,
+    InterAgentCommunicationMetadata,
+    TokenCount,
+    EventMessageContext,
+    ResponseItemAgentMessage,
+    ResponseItemOpaque,
+    Compacted,
+    ImageGenerationEnd,
+    McpToolCallEnd,
+}
+
+public sealed record OversizedRecordDiagnostic(
+    int StableLineNumber,
+    int ByteLength,
+    OversizedRecordDisposition Disposition,
+    OversizedRecordKind Kind);
 
 public enum ForkReplayStatus
 {

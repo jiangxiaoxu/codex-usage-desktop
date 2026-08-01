@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using CodexUsage.Application;
 
 namespace CodexUsage.App.Platform;
 
@@ -7,8 +9,8 @@ internal sealed class ShellTrayIcon : IDisposable
 {
     private const int GwlWndProc = -4;
     private const uint WmNull = 0x0000;
+    private const uint WmGetMinMaxInfo = 0x0024;
     private const uint WmContextMenu = 0x007B;
-    private const uint WmDpiChanged = 0x02E0;
     private const uint WmLButtonUp = 0x0202;
     private const uint WmLButtonDoubleClick = 0x0203;
     private const uint WmRButtonUp = 0x0205;
@@ -23,6 +25,10 @@ internal sealed class ShellTrayIcon : IDisposable
     private const uint TpmRightButton = 0x0002;
     private const uint TpmNonotify = 0x0080;
     private const uint TpmReturnCommand = 0x0100;
+    private const uint ImageIcon = 1;
+    private const uint LrLoadFromFile = 0x00000010;
+    private const int SmCxSmallIcon = 49;
+    private const int SmCySmallIcon = 50;
     private const uint ShowCommand = 1;
     private const uint ExitCommand = 2;
     private const int IdiApplication = 32512;
@@ -30,9 +36,13 @@ internal sealed class ShellTrayIcon : IDisposable
     private readonly IntPtr _windowHandle;
     private readonly Action _showWindow;
     private readonly Action _requestExit;
-    private readonly Action _dpiChanged;
+    private readonly int _minimumEffectiveClientWidth;
+    private readonly int _minimumEffectiveClientHeight;
     private readonly WindowProcedure _windowProcedure;
-    private readonly IntPtr _previousWindowProcedure;
+    private IntPtr _previousWindowProcedure;
+    private bool _subclassInstalled;
+    private bool _trayIconAdded;
+    private bool _ownsIconHandle;
     private NotifyIconData _iconData;
     private int _disposed;
 
@@ -40,39 +50,69 @@ internal sealed class ShellTrayIcon : IDisposable
         IntPtr windowHandle,
         Action showWindow,
         Action requestExit,
-        Action dpiChanged)
+        int minimumEffectiveClientWidth,
+        int minimumEffectiveClientHeight)
     {
+        if (minimumEffectiveClientWidth <= 0) throw new ArgumentOutOfRangeException(nameof(minimumEffectiveClientWidth));
+        if (minimumEffectiveClientHeight <= 0) throw new ArgumentOutOfRangeException(nameof(minimumEffectiveClientHeight));
+
         _windowHandle = windowHandle;
         _showWindow = showWindow;
         _requestExit = requestExit;
-        _dpiChanged = dpiChanged;
+        _minimumEffectiveClientWidth = minimumEffectiveClientWidth;
+        _minimumEffectiveClientHeight = minimumEffectiveClientHeight;
         _windowProcedure = WindowProc;
-        _previousWindowProcedure = SetWindowLongPtr(
-            windowHandle,
-            GwlWndProc,
-            Marshal.GetFunctionPointerForDelegate(_windowProcedure));
-        if (_previousWindowProcedure == IntPtr.Zero)
+        try
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法安装 tray window procedure");
+            _previousWindowProcedure = SetWindowLongPtr(
+                windowHandle,
+                GwlWndProc,
+                Marshal.GetFunctionPointerForDelegate(_windowProcedure));
+            if (_previousWindowProcedure == IntPtr.Zero)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法安装 tray window procedure");
+            }
+            _subclassInstalled = true;
+
+            var iconPath = Path.GetFullPath(
+                Path.Combine(AppContext.BaseDirectory, "Assets", "codex-usage-desktop.ico"));
+            var iconHandle = LoadImage(
+                IntPtr.Zero,
+                iconPath,
+                ImageIcon,
+                GetSystemMetrics(SmCxSmallIcon),
+                GetSystemMetrics(SmCySmallIcon),
+                LrLoadFromFile);
+            _ownsIconHandle = iconHandle != IntPtr.Zero;
+            if (!_ownsIconHandle)
+            {
+                iconHandle = LoadIcon(IntPtr.Zero, new IntPtr(IdiApplication));
+            }
+            _iconData.IconHandle = iconHandle;
+
+            _iconData = new NotifyIconData
+            {
+                Size = (uint)Marshal.SizeOf<NotifyIconData>(),
+                WindowHandle = windowHandle,
+                Id = 1,
+                Flags = NifMessage | NifIcon | NifTip,
+                CallbackMessage = TrayCallbackMessage,
+                IconHandle = iconHandle,
+                ToolTip = "Codex Usage Desktop",
+                Info = string.Empty,
+                InfoTitle = string.Empty,
+            };
+
+            if (!ShellNotifyIcon(NimAdd, ref _iconData))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建系统托盘图标");
+            }
+            _trayIconAdded = true;
         }
-
-        _iconData = new NotifyIconData
+        catch
         {
-            Size = (uint)Marshal.SizeOf<NotifyIconData>(),
-            WindowHandle = windowHandle,
-            Id = 1,
-            Flags = NifMessage | NifIcon | NifTip,
-            CallbackMessage = TrayCallbackMessage,
-            IconHandle = LoadIcon(IntPtr.Zero, new IntPtr(IdiApplication)),
-            ToolTip = "Codex Usage Desktop",
-            Info = string.Empty,
-            InfoTitle = string.Empty,
-        };
-
-        if (!ShellNotifyIcon(NimAdd, ref _iconData))
-        {
-            _ = SetWindowLongPtr(windowHandle, GwlWndProc, _previousWindowProcedure);
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建系统托盘图标");
+            ReleaseNativeResources();
+            throw;
         }
     }
 
@@ -83,18 +123,77 @@ internal sealed class ShellTrayIcon : IDisposable
             return;
         }
 
-        _ = ShellNotifyIcon(NimDelete, ref _iconData);
-        _ = SetWindowLongPtr(_windowHandle, GwlWndProc, _previousWindowProcedure);
-        GC.KeepAlive(_windowProcedure);
+        ReleaseNativeResources();
+    }
+
+    private void ReleaseNativeResources()
+    {
+        try
+        {
+            foreach (var step in ShellResourceCleanupPlan.OrderedSteps(
+                         _trayIconAdded,
+                         _subclassInstalled,
+                         _ownsIconHandle))
+            {
+                try
+                {
+                    ReleaseNativeResource(step);
+                }
+                catch (Exception error)
+                {
+                    Debug.WriteLine($"Shell resource cleanup step {step} failed: {error}");
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            Debug.WriteLine($"Shell resource cleanup planning failed: {error}");
+        }
+        finally
+        {
+            GC.KeepAlive(_windowProcedure);
+        }
+    }
+
+    private void ReleaseNativeResource(ShellResourceCleanupStep step)
+    {
+        switch (step)
+        {
+            case ShellResourceCleanupStep.RemoveTrayIcon:
+                _ = ShellNotifyIcon(NimDelete, ref _iconData);
+                _trayIconAdded = false;
+                break;
+            case ShellResourceCleanupStep.RestoreWindowProcedure:
+                var restoredProcedure = SetWindowLongPtr(_windowHandle, GwlWndProc, _previousWindowProcedure);
+                if (restoredProcedure == IntPtr.Zero)
+                {
+                    Debug.WriteLine($"Window procedure restoration failed with Win32 error {Marshal.GetLastWin32Error()}.");
+                }
+                else
+                {
+                    _subclassInstalled = false;
+                }
+                break;
+            case ShellResourceCleanupStep.DestroyOwnedIcon:
+                _ = DestroyIcon(_iconData.IconHandle);
+                _iconData.IconHandle = IntPtr.Zero;
+                _ownsIconHandle = false;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(step), step, null);
+        }
     }
 
     private IntPtr WindowProc(IntPtr window, uint message, IntPtr wParam, IntPtr lParam)
     {
-        if (message == WmDpiChanged)
+        if (message == WmGetMinMaxInfo && lParam != IntPtr.Zero)
         {
-            _dpiChanged();
+            var result = CallWindowProc(_previousWindowProcedure, window, message, wParam, lParam);
+            ApplyMinimumTrackSize(window, lParam);
+            return result;
         }
-        else if (message == TrayCallbackMessage)
+
+        if (message == TrayCallbackMessage)
         {
             var notification = unchecked((uint)lParam.ToInt64());
             if (notification is WmLButtonUp or WmLButtonDoubleClick)
@@ -111,6 +210,18 @@ internal sealed class ShellTrayIcon : IDisposable
         }
 
         return CallWindowProc(_previousWindowProcedure, window, message, wParam, lParam);
+    }
+
+    private void ApplyMinimumTrackSize(IntPtr window, IntPtr minMaxInfoPointer)
+    {
+        var minimum = WindowPixelMetrics.MinimumTrackSize(
+            window,
+            _minimumEffectiveClientWidth,
+            _minimumEffectiveClientHeight);
+        var constraints = Marshal.PtrToStructure<MinMaxInfo>(minMaxInfoPointer);
+        constraints.MinimumTrackSize.X = Math.Max(constraints.MinimumTrackSize.X, minimum.Width);
+        constraints.MinimumTrackSize.Y = Math.Max(constraints.MinimumTrackSize.Y, minimum.Height);
+        Marshal.StructureToPtr(constraints, minMaxInfoPointer, fDeleteOld: false);
     }
 
     private void ShowContextMenu()
@@ -186,6 +297,16 @@ internal sealed class ShellTrayIcon : IDisposable
         public int Y;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public Point Reserved;
+        public Point MaximumSize;
+        public Point MaximumPosition;
+        public Point MinimumTrackSize;
+        public Point MaximumTrackSize;
+    }
+
     [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", SetLastError = true, CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShellNotifyIcon(uint message, ref NotifyIconData data);
@@ -198,6 +319,22 @@ internal sealed class ShellTrayIcon : IDisposable
 
     [DllImport("user32.dll", EntryPoint = "LoadIconW")]
     private static extern IntPtr LoadIcon(IntPtr instance, IntPtr iconName);
+
+    [DllImport("user32.dll", EntryPoint = "LoadImageW", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadImage(
+        IntPtr instance,
+        string name,
+        uint type,
+        int desiredWidth,
+        int desiredHeight,
+        uint loadFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr icon);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr CreatePopupMenu();

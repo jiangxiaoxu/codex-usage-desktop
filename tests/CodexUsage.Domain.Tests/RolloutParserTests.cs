@@ -14,7 +14,7 @@ public sealed class RolloutParserTests
             Line("session_meta", new { session_id = "conversation-a", id = "rollout-a", thread_source = "user" }),
             Line("turn_context", new { turn_id = "turn-a", model = "gpt-main" }),
             Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])), "fallback");
-        Assert.Equal(new("conversation-a", "rollout-a", "", ThreadType.Main, "main", "/root", ""), main.Metadata);
+        Assert.Equal(new("conversation-a", "rollout-a", "", ThreadType.Main, "main", "/root", "", false), main.Metadata);
         Assert.Equal("gpt-main", Assert.Single(main.Events).Model);
 
         var child = RolloutParser.Parse(Jsonl(Line("session_meta", new
@@ -23,15 +23,19 @@ public sealed class RolloutParserTests
             id = "child",
             source = new { subagent = new { thread_spawn = new { parent_thread_id = "parent", agent_role = "worker", agent_path = "/root/worker", agent_nickname = "worker-a" } } },
         })), "fallback");
-        Assert.Equal(new("parent", "child", "parent", ThreadType.Subagent, "worker", "/root/worker", "worker-a"), child.Metadata);
+        Assert.Equal(new("parent", "child", "parent", ThreadType.Subagent, "worker", "/root/worker", "worker-a", false), child.Metadata);
     }
 
     [Fact]
     public void RealtimeVoiceIsMainAndMissingSubagentRoleIsUnknown()
     {
-        var voice = RolloutParser.Parse(Jsonl(Line("session_meta", new { id = "voice", thread_source = "realtime_voice" })), "fallback");
+        var voice = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new { id = "voice", thread_source = "realtime_voice" }),
+            Token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6])), "fallback");
         Assert.Equal(ThreadType.Main, voice.Metadata.ThreadType);
         Assert.Equal("main", voice.Metadata.AgentRole);
+        Assert.True(voice.Metadata.IsRealtimeVoice);
+        Assert.Empty(voice.Events);
 
         var child = RolloutParser.Parse(Jsonl(Line("session_meta", new
         {
@@ -243,7 +247,362 @@ public sealed class RolloutParserTests
         }));
         Assert.True(yields > 2);
         Assert.Single(result.Events);
-        Assert.Equal(1, result.Diagnostics.OversizedRecordsSkipped);
+        var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
+        Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified, oversized.Disposition);
+    }
+
+    [Fact]
+    public async Task OversizedOpaqueResponseItemIsFullyValidatedAndAccountingContinues()
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(
+            Line("session_meta", new { id = "oversized-safe", thread_source = "user" }),
+            Line("turn_context", new { turn_id = "turn-safe", model = "gpt-5.6-sol" }),
+            Line("response_item", new { type = "custom_tool_call_output", output = new string('x', 2 * 1024) }),
+            Token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6])));
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        var usage = Assert.Single(result.Events);
+        Assert.Equal("gpt-5.6-sol", usage.Model);
+        var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped, oversized.Disposition);
+        Assert.Equal(OversizedRecordKind.ResponseItemOpaque, oversized.Kind);
+    }
+
+    [Theory]
+    [InlineData("session_meta", "ignored", OversizedRecordKind.SessionMetadata)]
+    [InlineData("turn_context", "ignored", OversizedRecordKind.TurnContext)]
+    [InlineData("inter_agent_communication_metadata", "ignored", OversizedRecordKind.InterAgentCommunicationMetadata)]
+    [InlineData("event_msg", "token_count", OversizedRecordKind.TokenCount)]
+    [InlineData("event_msg", "thread_settings_applied", OversizedRecordKind.EventMessageContext)]
+    [InlineData("event_msg", "task_started", OversizedRecordKind.EventMessageContext)]
+    [InlineData("event_msg", "task_complete", OversizedRecordKind.EventMessageContext)]
+    [InlineData("response_item", "agent_message", OversizedRecordKind.ResponseItemAgentMessage)]
+    public async Task OversizedAccountingOrAttributionRecordsAreUnsafe(
+        string eventType,
+        string payloadType,
+        OversizedRecordKind expectedKind)
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(Line(eventType, new
+        {
+            type = payloadType,
+            padding = new string('x', 2 * 1024),
+        })));
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
+        Assert.Equal(OversizedRecordDisposition.UnsafeCritical, oversized.Disposition);
+        Assert.Equal(expectedKind, oversized.Kind);
+    }
+
+    [Fact]
+    public async Task OversizedUnknownAndMalformedRecordsRemainUnsafe()
+    {
+        var unknown = Encoding.UTF8.GetBytes(Jsonl(Line("future_record", new
+        {
+            type = "future_payload",
+            padding = new string('x', 2 * 1024),
+        })));
+        var malformed = Encoding.UTF8.GetBytes(
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\""
+            + new string('x', 2 * 1024) + "\"}\n");
+
+        var unknownResult = await ParseWithRecordLimitAsync(unknown, 1024);
+        var malformedResult = await ParseWithRecordLimitAsync(malformed, 1024);
+
+        Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified,
+            Assert.Single(unknownResult.Diagnostics.OversizedRecords).Disposition);
+        Assert.Equal(OversizedRecordDisposition.Malformed,
+            Assert.Single(malformedResult.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Theory]
+    [InlineData("compacted", "ignored", OversizedRecordKind.Compacted)]
+    [InlineData("event_msg", "image_generation_end", OversizedRecordKind.ImageGenerationEnd)]
+    [InlineData("event_msg", "mcp_tool_call_end", OversizedRecordKind.McpToolCallEnd)]
+    public async Task KnownOpaqueOversizedRecordsAreSafe(
+        string eventType,
+        string payloadType,
+        OversizedRecordKind expectedKind)
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(Line(eventType, new
+        {
+            type = payloadType,
+            padding = new string('x', 2 * 1024),
+        })));
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped, oversized.Disposition);
+        Assert.Equal(expectedKind, oversized.Kind);
+    }
+
+    [Fact]
+    public async Task OversizedMcpToolCallEndIsFullyValidatedAndAccountingContinues()
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(
+            Line("session_meta", new { id = "mcp-safe", thread_source = "user" }),
+            Line("turn_context", new { turn_id = "turn-mcp", model = "gpt-5.6-sol" }),
+            Line("event_msg", new { type = "mcp_tool_call_end", result = new string('x', 1024 * 1024 + 1) }),
+            Token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6])));
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        var usage = Assert.Single(result.Events);
+        Assert.Equal("gpt-5.6-sol", usage.Model);
+        var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped, oversized.Disposition);
+        Assert.Equal(OversizedRecordKind.McpToolCallEnd, oversized.Kind);
+    }
+
+    [Fact]
+    public async Task ExactNullPaddingRecordIsSkippedButMixedNullContentRemainsMalformed()
+    {
+        var prefix = Encoding.UTF8.GetBytes(Jsonl(
+            Line("session_meta", new { id = "null-padding", thread_source = "user" }),
+            Line("turn_context", new { turn_id = "turn-null", model = "gpt-5.6-sol" })));
+        var token = Encoding.UTF8.GetBytes(Token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6]) + "\n");
+        var safe = prefix.Concat(new byte[3411]).Append((byte)'\n').Concat(token).ToArray();
+        var mixed = prefix.Concat(new byte[3411]).Append((byte)' ').Append((byte)'\n').Concat(token).ToArray();
+
+        var safeResult = await ParseWithRecordLimitAsync(safe, 1024);
+        var mixedResult = await ParseWithRecordLimitAsync(mixed, 1024);
+
+        Assert.Equal(1, safeResult.Diagnostics.SafeNullPaddingRecordsSkipped);
+        Assert.Equal(0, safeResult.Diagnostics.MalformedLines);
+        Assert.Equal("gpt-5.6-sol", Assert.Single(safeResult.Events).Model);
+        Assert.Equal(0, mixedResult.Diagnostics.SafeNullPaddingRecordsSkipped);
+        Assert.Equal(OversizedRecordDisposition.Malformed,
+            Assert.Single(mixedResult.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Theory]
+    [InlineData("message")]
+    [InlineData("reasoning")]
+    [InlineData("local_shell_call")]
+    [InlineData("function_call")]
+    [InlineData("tool_search_call")]
+    [InlineData("function_call_output")]
+    [InlineData("tool_search_output")]
+    [InlineData("custom_tool_call")]
+    [InlineData("custom_tool_call_output")]
+    [InlineData("web_search_call")]
+    [InlineData("image_generation_call")]
+    [InlineData("compaction")]
+    [InlineData("compaction_summary")]
+    [InlineData("context_compaction")]
+    public async Task PersistedNonAccountingResponseItemTypesAreSafe(string payloadType)
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(Line("response_item", new
+        {
+            type = payloadType,
+            padding = new string('x', 2 * 1024),
+        })));
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped,
+            Assert.Single(result.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Fact]
+    public async Task OversizedImageGenerationResultYieldsAndRemainsSafe()
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(Line("response_item", new
+        {
+            type = "image_generation_call",
+            status = "completed",
+            result = new string('x', 2 * 1024 * 1024),
+        })));
+        var yields = 0;
+
+        var result = await RolloutParser.ParseChunkCooperativelyAsync(input, "fallback", new(
+            64 * 1024, 20, TimeSpan.FromMilliseconds(8), 1024, _ =>
+            {
+                yields++;
+                return ValueTask.CompletedTask;
+            }));
+
+        Assert.True(yields > 2);
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped,
+            Assert.Single(result.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Fact]
+    public async Task OversizedClassificationCanCancelWhileExpandingALargeValue()
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(Line("response_item", new
+        {
+            type = "image_generation_call",
+            result = new string('x', 2 * 1024 * 1024),
+        })));
+        using var cancellation = new CancellationTokenSource();
+        var yields = 0;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await RolloutParser.ParseChunkCooperativelyAsync(input, "fallback", new(
+                64 * 1024, 20, TimeSpan.FromMilliseconds(8), 1024, _ =>
+                {
+                    if (++yields == 2) cancellation.Cancel();
+                    return ValueTask.CompletedTask;
+                }), cancellationToken: cancellation.Token));
+
+        Assert.Equal(2, yields);
+    }
+
+    [Fact]
+    public async Task OversizedClassificationCanCancelInsideASixteenMegabyteString()
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(Line("response_item", new
+        {
+            type = "image_generation_call",
+            result = new string('x', 16 * 1024 * 1024),
+        })));
+        using var cancellation = new CancellationTokenSource();
+        var yields = 0;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await RolloutParser.ParseChunkCooperativelyAsync(input, "fallback", new(
+                64 * 1024, 20, TimeSpan.FromMilliseconds(8), 1024, _ =>
+                {
+                    if (++yields == 4) cancellation.Cancel();
+                    return ValueTask.CompletedTask;
+                }), cancellationToken: cancellation.Token));
+
+        Assert.Equal(4, yields);
+    }
+
+    [Fact]
+    public async Task OversizedMalformedEscapeAndUtf8AreRejectedAfterCooperativeValidation()
+    {
+        var badEscape = Encoding.UTF8.GetBytes(
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\""
+            + new string('x', 2 * 1024) + "\\q\"}}\n");
+        var prefix = Encoding.UTF8.GetBytes(
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\"");
+        var suffix = Encoding.UTF8.GetBytes("\"}}\n");
+        var badUtf8 = prefix.Concat(Enumerable.Repeat((byte)'x', 2 * 1024))
+            .Concat([(byte)0xC3, (byte)0x28]).Concat(suffix).ToArray();
+
+        var escapeResult = await ParseWithRecordLimitAsync(badEscape, 1024);
+        var utf8Result = await ParseWithRecordLimitAsync(badUtf8, 1024);
+
+        Assert.Equal(OversizedRecordDisposition.Malformed,
+            Assert.Single(escapeResult.Diagnostics.OversizedRecords).Disposition);
+        Assert.Equal(OversizedRecordDisposition.Malformed,
+            Assert.Single(utf8Result.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"v\":[true,false,null,-12.5e+2],\"s\":\"\\uD800\\n\"}}")]
+    [InlineData("{\"payload\":{\"type\":\"message\"},\"type\":\"response_item\"}")]
+    [InlineData("[1,{\"a\":2},3]")]
+    [InlineData("{\"a\":01}")]
+    [InlineData("{\"a\":1.}")]
+    [InlineData("{\"a\":1e}")]
+    [InlineData("{\"a\":tru}")]
+    [InlineData("{\"a\":true,}")]
+    [InlineData("{\"a\" 1}")]
+    [InlineData("{\"a\":\"\\q\"}")]
+    [InlineData("{\"a\":[1 2]}")]
+    public async Task OversizedLexicalAndStructuralAcceptanceMatchesSystemTextJson(string json)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json + "\n");
+        var expectedValid = IsValidSystemTextJson(Encoding.UTF8.GetBytes(json));
+
+        var result = await ParseWithRecordLimitAsync(bytes, 1);
+        var actualValid = Assert.Single(result.Diagnostics.OversizedRecords).Disposition
+            != OversizedRecordDisposition.Malformed;
+
+        Assert.Equal(expectedValid, actualValid);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(7)]
+    public async Task OversizedSanitizedCarryPreservesTokensAcrossTinyFlushBoundaries(int sliceBytes)
+    {
+        var input = Encoding.UTF8.GetBytes(
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\","
+            + "\"number\":-12.5e+2,\"literal\":true,\"string\":\"value\",\"array\":[null,false],"
+            + $"\"content\":\"{new string('x', 2 * 1024)}\"}}}}\n");
+
+        var result = await ParseWithSliceAsync(input, sliceBytes, 1);
+
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped,
+            Assert.Single(result.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Fact]
+    public async Task OversizedSanitizedCarryPreservesPropertyBeforeColonAtProductionSliceBoundary()
+    {
+        const int sliceBytes = 256 * 1024;
+        const int zeroCount = 131_067;
+        var json = new StringBuilder(sliceBytes + 32);
+        json.Append("{\"p\":[");
+        for (var index = 0; index < zeroCount; index++)
+        {
+            if (index > 0) json.Append(',');
+            json.Append('0');
+        }
+        json.Append("],\"a\":1}\n");
+        var input = Encoding.UTF8.GetBytes(json.ToString());
+
+        var result = await ParseWithSliceAsync(input, sliceBytes, 1);
+
+        Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified,
+            Assert.Single(result.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Fact]
+    public async Task OversizedPayloadTypeMustBeADirectChildOfTheUniquePayloadObject()
+    {
+        var padding = new string('x', 2 * 1024);
+        var siblingSpoof = Encoding.UTF8.GetBytes(
+            $"{{\"type\":\"response_item\",\"payload\":{{\"content\":\"{padding}\"}},\"sibling\":{{\"type\":\"message\"}}}}\n");
+        var nestedThenDirect = Encoding.UTF8.GetBytes(
+            $"{{\"payload\":{{\"nested\":{{\"type\":\"future\"}},\"type\":\"message\",\"content\":\"{padding}\"}},\"type\":\"response_item\"}}\n");
+
+        var spoofResult = await ParseWithRecordLimitAsync(siblingSpoof, 1024);
+        var orderedResult = await ParseWithRecordLimitAsync(nestedThenDirect, 1024);
+
+        Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified,
+            Assert.Single(spoofResult.Diagnostics.OversizedRecords).Disposition);
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped,
+            Assert.Single(orderedResult.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"response_item\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\"__PADDING__\"}}")]
+    [InlineData("{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"type\":\"message\",\"content\":\"__PADDING__\"}}")]
+    [InlineData("{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\"__PADDING__\"},\"payload\":{\"type\":\"message\"}}")]
+    public async Task OversizedDuplicateDiscriminatorsAreUnsafe(string template)
+    {
+        var input = Encoding.UTF8.GetBytes(
+            template.Replace("__PADDING__", new string('x', 2 * 1024), StringComparison.Ordinal) + "\n");
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified,
+            Assert.Single(result.Diagnostics.OversizedRecords).Disposition);
+    }
+
+    [Fact]
+    public async Task OversizedEscapedDiscriminatorNamesAndValuesAreRecognized()
+    {
+        var input = Encoding.UTF8.GetBytes(
+            $"{{\"t\\u0079pe\":\"response_\\u0069tem\",\"payl\\u006fad\":{{\"t\\u0079pe\":\"mess\\u0061ge\",\"content\":\"{new string('x', 2 * 1024)}\"}}}}\n");
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped,
+            Assert.Single(result.Diagnostics.OversizedRecords).Disposition);
     }
 
     [Fact]
@@ -291,6 +650,30 @@ public sealed class RolloutParserTests
 
     private static string Line(string type, object payload, string timestamp = "2026-07-15T01:02:03.004Z") =>
         JsonSerializer.Serialize(new { timestamp, type, payload });
+
+    private static ValueTask<RolloutChunkParseResult> ParseWithRecordLimitAsync(byte[] input, int maximumRecordBytes) =>
+        RolloutParser.ParseChunkCooperativelyAsync(input, "fallback", new(
+            512, 20, TimeSpan.FromMilliseconds(8), maximumRecordBytes, _ => ValueTask.CompletedTask));
+
+    private static ValueTask<RolloutChunkParseResult> ParseWithSliceAsync(
+        byte[] input,
+        int sliceBytes,
+        int maximumRecordBytes) =>
+        RolloutParser.ParseChunkCooperativelyAsync(input, "fallback", new(
+            sliceBytes, 20, TimeSpan.FromMilliseconds(8), maximumRecordBytes, _ => ValueTask.CompletedTask));
+
+    private static bool IsValidSystemTextJson(byte[] input)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(input);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     private static string Token(long[] last, long[] total, string timestamp = "2026-07-15T01:02:03.004Z") =>
         Line("event_msg", new

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
@@ -10,6 +11,7 @@ namespace CodexUsage.Domain;
 public static partial class RolloutParser
 {
     public const int CooperativeHardMaximumRecordBytes = 1024 * 1024;
+    private const int MaximumSanitizedCarryBytes = 128 * 1024;
     private const long JavaScriptMaxSafeInteger = 9_007_199_254_740_991;
 
     public static RolloutParseResult Parse(string input, string fallbackRolloutId)
@@ -40,7 +42,13 @@ public static partial class RolloutParser
             var relativeNewline = input.Span[cursor..stable.ByteLength].IndexOf((byte)'\n');
             cursor = relativeNewline < 0 ? stable.ByteLength : cursor + relativeNewline + 1;
             var contentEnd = ContentEnd(input.Span, lineStart, cursor);
-            accumulator.ProcessRecord(input[lineStart..contentEnd]);
+            var record = input[lineStart..contentEnd];
+            if (IsAllNullPadding(record.Span))
+                accumulator.SkipNullPaddingRecord();
+            else if (record.Length > CooperativeHardMaximumRecordBytes)
+                accumulator.ClassifyOversizedRecord(record, stableLineCount + 1);
+            else
+                accumulator.ProcessRecord(record);
             stableLineCount++;
         }
         return accumulator.Complete(stableLineCount, stable.ByteLength, stable.TrailingPartialLine);
@@ -99,9 +107,14 @@ public static partial class RolloutParser
 
             var contentEnd = ContentEnd(input.Span, lineStart, cursor);
             var recordBytes = contentEnd - lineStart;
-            if (recordBytes > options.MaximumRecordBytes)
+            if (IsAllNullPadding(input.Span[lineStart..contentEnd]))
             {
-                accumulator.SkipOversizedRecord();
+                accumulator.SkipNullPaddingRecord();
+            }
+            else if (recordBytes > options.MaximumRecordBytes)
+            {
+                accumulator.AddOversizedDiagnostic(await InspectOversizedRecordCooperativelyAsync(
+                    input[lineStart..contentEnd], stableLineCount + 1, options, cancellationToken).ConfigureAwait(false));
             }
             else
             {
@@ -169,7 +182,13 @@ public static partial class RolloutParser
             _previousSnapshot = priorState?.PreviousSnapshot;
         }
 
-        public void SkipOversizedRecord() => _diagnostics.OversizedRecordsSkipped++;
+        public void ClassifyOversizedRecord(ReadOnlyMemory<byte> rawLine, int stableLineNumber) =>
+            AddOversizedDiagnostic(InspectOversizedRecord(rawLine.Span, stableLineNumber));
+
+        public void AddOversizedDiagnostic(OversizedRecordDiagnostic diagnostic) =>
+            _diagnostics.OversizedRecords.Add(diagnostic);
+
+        public void SkipNullPaddingRecord() => _diagnostics.SafeNullPaddingRecordsSkipped++;
 
         public void ProcessRecord(ReadOnlyMemory<byte> rawLine)
         {
@@ -205,6 +224,11 @@ public static partial class RolloutParser
                 {
                     _hasMetadata = true;
                     _metadata = MetadataFrom(payload, _metadata.RolloutId);
+                    if (_metadata.IsRealtimeVoice)
+                    {
+                        _candidates.Clear();
+                        _previousSnapshot = null;
+                    }
                     _forkReplay = ForkReplayFrom(payload, _metadata, root);
                     return;
                 }
@@ -330,6 +354,7 @@ public static partial class RolloutParser
 
         private void ProcessTokenCount(JsonElement root, JsonElement payload)
         {
+            if (_metadata.IsRealtimeVoice) return;
             TokenTuple? usage = null, total = null;
             if (TryGetObject(payload, "info", out var info))
             {
@@ -487,6 +512,134 @@ public static partial class RolloutParser
         }
     }
 
+    private static OversizedRecordDiagnostic InspectOversizedRecord(
+        ReadOnlySpan<byte> rawLine,
+        int stableLineNumber)
+    {
+        var inspector = new OversizedRecordInspector(stableLineNumber, rawLine.Length);
+        try
+        {
+            var reader = new Utf8JsonReader(rawLine, isFinalBlock: true, state: default);
+            while (reader.Read()) inspector.ProcessToken(ref reader);
+        }
+        catch (JsonException)
+        {
+            return inspector.Malformed();
+        }
+        return inspector.Complete();
+    }
+
+    private static async ValueTask<OversizedRecordDiagnostic> InspectOversizedRecordCooperativelyAsync(
+        ReadOnlyMemory<byte> rawLine,
+        int stableLineNumber,
+        CooperativeParseOptions options,
+        CancellationToken cancellationToken)
+    {
+        var inspector = new OversizedRecordInspector(stableLineNumber, rawLine.Length);
+        var sanitizer = new OversizedJsonSanitizer();
+        var readerState = new JsonReaderState();
+        var sanitized = new ArrayBufferWriter<byte>(Math.Min(options.MaxBytesPerSlice, 64 * 1024));
+        var cursor = 0;
+        while (cursor < rawLine.Length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var byteBoundary = (int)Math.Min(rawLine.Length, cursor + (long)options.MaxBytesPerSlice);
+            var sliceStarted = Stopwatch.GetTimestamp();
+            var initialSanitizedBytes = sanitized.WrittenCount;
+            while (cursor < byteBoundary
+                && (sanitized.WrittenCount < options.MaxBytesPerSlice
+                    || sanitized.WrittenCount == initialSanitizedBytes)
+                && Stopwatch.GetElapsedTime(sliceStarted) < options.MaxTimePerSlice)
+            {
+                if (!sanitizer.Consume(rawLine.Span, ref cursor, byteBoundary, sanitized)) return inspector.Malformed();
+            }
+
+            if (cursor < rawLine.Length && sanitized.WrittenCount >= options.MaxBytesPerSlice)
+            {
+                var slice = InspectOversizedRecordSlice(
+                    sanitized.WrittenMemory, false, readerState, inspector);
+                if (slice.Malformed) return inspector.Malformed();
+                readerState = slice.ReaderState;
+                var carryLength = sanitized.WrittenCount - slice.BytesConsumed;
+                if (carryLength > MaximumSanitizedCarryBytes) return inspector.Malformed();
+                var next = new ArrayBufferWriter<byte>(Math.Max(
+                    Math.Min(options.MaxBytesPerSlice, 64 * 1024),
+                    carryLength));
+                sanitized.WrittenMemory[slice.BytesConsumed..].CopyTo(next.GetMemory(carryLength));
+                next.Advance(carryLength);
+                sanitized = next;
+            }
+
+            if (cursor < rawLine.Length)
+            {
+                await options.YieldControl(cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+
+        if (!sanitizer.Complete(sanitized)) return inspector.Malformed();
+        var finalSlice = InspectOversizedRecordSlice(sanitized.WrittenMemory, true, readerState, inspector);
+        if (finalSlice.Malformed || finalSlice.BytesConsumed != sanitized.WrittenCount) return inspector.Malformed();
+
+        return inspector.Complete();
+    }
+
+    private static OversizedRecordSliceResult InspectOversizedRecordSlice(
+        ReadOnlyMemory<byte> input,
+        bool finalBlock,
+        JsonReaderState readerState,
+        OversizedRecordInspector inspector)
+    {
+        try
+        {
+            var reader = new Utf8JsonReader(input.Span, finalBlock, readerState);
+            while (reader.Read()) inspector.ProcessToken(ref reader);
+            return new(checked((int)reader.BytesConsumed), reader.CurrentState, false);
+        }
+        catch (JsonException)
+        {
+            return new(0, readerState, true);
+        }
+    }
+
+    private static OversizedEventType ReadOversizedEventType(ref Utf8JsonReader reader)
+    {
+        if (reader.ValueTextEquals("session_meta"u8)) return OversizedEventType.SessionMeta;
+        if (reader.ValueTextEquals("turn_context"u8)) return OversizedEventType.TurnContext;
+        if (reader.ValueTextEquals("inter_agent_communication_metadata"u8))
+            return OversizedEventType.InterAgentCommunicationMetadata;
+        if (reader.ValueTextEquals("response_item"u8)) return OversizedEventType.ResponseItem;
+        if (reader.ValueTextEquals("event_msg"u8)) return OversizedEventType.EventMessage;
+        if (reader.ValueTextEquals("compacted"u8)) return OversizedEventType.Compacted;
+        return OversizedEventType.Other;
+    }
+
+    private static OversizedPayloadType ReadOversizedPayloadType(ref Utf8JsonReader reader)
+    {
+        if (reader.ValueTextEquals("agent_message"u8)) return OversizedPayloadType.AgentMessage;
+        if (reader.ValueTextEquals("token_count"u8)) return OversizedPayloadType.TokenCount;
+        if (reader.ValueTextEquals("thread_settings_applied"u8)
+            || reader.ValueTextEquals("task_started"u8)
+            || reader.ValueTextEquals("task_complete"u8)) return OversizedPayloadType.EventContext;
+        if (reader.ValueTextEquals("image_generation_end"u8)) return OversizedPayloadType.ImageGenerationEnd;
+        if (reader.ValueTextEquals("mcp_tool_call_end"u8)) return OversizedPayloadType.McpToolCallEnd;
+        if (reader.ValueTextEquals("custom_tool_call"u8)
+            || reader.ValueTextEquals("custom_tool_call_output"u8)
+            || reader.ValueTextEquals("function_call"u8)
+            || reader.ValueTextEquals("function_call_output"u8)
+            || reader.ValueTextEquals("local_shell_call"u8)
+            || reader.ValueTextEquals("message"u8)
+            || reader.ValueTextEquals("reasoning"u8)
+            || reader.ValueTextEquals("tool_search_call"u8)
+            || reader.ValueTextEquals("tool_search_output"u8)
+            || reader.ValueTextEquals("web_search_call"u8)
+            || reader.ValueTextEquals("image_generation_call"u8)
+            || reader.ValueTextEquals("compaction"u8)
+            || reader.ValueTextEquals("compaction_summary"u8)
+            || reader.ValueTextEquals("context_compaction"u8)) return OversizedPayloadType.OpaqueResponseItem;
+        return OversizedPayloadType.Other;
+    }
+
     private static RolloutMetadata MetadataFrom(JsonElement? payload, string fallbackRolloutId)
     {
         JsonElement spawn = default;
@@ -509,7 +662,8 @@ public static partial class RolloutParser
             threadType,
             threadType == ThreadType.Main ? "main" : Field("agent_role", "agent_role", "unknown"),
             threadType == ThreadType.Main ? "/root" : Field("agent_path", "agent_path", "/root"),
-            Field("agent_nickname", "agent_nickname", string.Empty));
+            Field("agent_nickname", "agent_nickname", string.Empty),
+            threadSource == "realtime_voice");
     }
 
     private static RolloutForkReplayState ForkReplayFrom(JsonElement payload, RolloutMetadata metadata, JsonElement root)
@@ -594,6 +748,14 @@ public static partial class RolloutParser
         return new(newline + 1, true);
     }
 
+    private static bool IsAllNullPadding(ReadOnlySpan<byte> input)
+    {
+        if (input.IsEmpty) return false;
+        foreach (var value in input)
+            if (value != 0) return false;
+        return true;
+    }
+
     [GeneratedRegex("^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$", RegexOptions.CultureInvariant)]
     private static partial Regex TimestampPattern();
 
@@ -601,6 +763,10 @@ public static partial class RolloutParser
     private static partial Regex UuidV7Pattern();
 
     private sealed record StableInput(int ByteLength, bool TrailingPartialLine);
+    private sealed record OversizedRecordSliceResult(
+        int BytesConsumed,
+        JsonReaderState ReaderState,
+        bool Malformed);
     private sealed record TokenTuple(long InputTokens, long CachedInputTokens, long OutputTokens, long ReasoningOutputTokens, long TotalTokens)
     {
         public string Snapshot => $"{InputTokens}:{CachedInputTokens}:{OutputTokens}:{ReasoningOutputTokens}:{TotalTokens}";
@@ -610,16 +776,157 @@ public static partial class RolloutParser
     private sealed class MutableDiagnostics
     {
         public int BlankLines { get; set; }
+        public int SafeNullPaddingRecordsSkipped { get; set; }
         public int MalformedLines { get; set; }
         public int NonObjectLines { get; set; }
-        public int OversizedRecordsSkipped { get; set; }
+        public List<OversizedRecordDiagnostic> OversizedRecords { get; } = [];
         public int InvalidTokenUsageLines { get; set; }
         public int DuplicateSnapshotsSkipped { get; set; }
         public int ZeroBreakdownSnapshotsSkipped { get; set; }
         public int InvalidTokenRelationshipsSkipped { get; set; }
         public int InvalidTimestampsSkipped { get; set; }
-        public RolloutParseDiagnostics ToImmutable() => new(BlankLines, MalformedLines, NonObjectLines, OversizedRecordsSkipped,
+        public RolloutParseDiagnostics ToImmutable() => new(BlankLines, SafeNullPaddingRecordsSkipped,
+            MalformedLines, NonObjectLines, [.. OversizedRecords],
             InvalidTokenUsageLines, DuplicateSnapshotsSkipped, ZeroBreakdownSnapshotsSkipped,
             InvalidTokenRelationshipsSkipped, InvalidTimestampsSkipped);
+    }
+
+    private sealed class OversizedRecordInspector(int stableLineNumber, int recordByteLength)
+    {
+        private OversizedEventType _eventType = OversizedEventType.Unknown;
+        private OversizedPayloadType _payloadType = OversizedPayloadType.Unknown;
+        private bool _rootTypeSeen;
+        private bool _payloadSeen;
+        private bool _payloadWasObject;
+        private int? _payloadObjectDepth;
+        private bool _payloadTypeSeen;
+        private bool _structureAmbiguous;
+        private bool _rootObject;
+        private OversizedPendingProperty _pending;
+
+        public void ProcessToken(ref Utf8JsonReader reader)
+        {
+            if (!_rootObject)
+            {
+                if (reader.TokenType != JsonTokenType.StartObject || reader.CurrentDepth != 0)
+                    _structureAmbiguous = true;
+                _rootObject = true;
+                return;
+            }
+
+            if (reader.TokenType == JsonTokenType.EndObject
+                && _payloadObjectDepth == reader.CurrentDepth)
+            {
+                _payloadObjectDepth = null;
+                _pending = OversizedPendingProperty.None;
+                return;
+            }
+
+            if (reader.TokenType == JsonTokenType.PropertyName)
+            {
+                _pending = reader.CurrentDepth switch
+                {
+                    1 when reader.ValueTextEquals("type"u8) => OversizedPendingProperty.RootType,
+                    1 when reader.ValueTextEquals("payload"u8) => OversizedPendingProperty.Payload,
+                    var depth when _payloadObjectDepth is { } payloadDepth
+                        && depth == payloadDepth + 1
+                        && reader.ValueTextEquals("type"u8) => OversizedPendingProperty.PayloadType,
+                    _ => OversizedPendingProperty.None,
+                };
+                return;
+            }
+
+            switch (_pending)
+            {
+                case OversizedPendingProperty.RootType:
+                    if (_rootTypeSeen || reader.TokenType != JsonTokenType.String)
+                        _eventType = OversizedEventType.Ambiguous;
+                    else
+                        _eventType = ReadOversizedEventType(ref reader);
+                    _rootTypeSeen = true;
+                    break;
+                case OversizedPendingProperty.Payload:
+                    if (_payloadSeen || reader.TokenType != JsonTokenType.StartObject)
+                        _structureAmbiguous = true;
+                    else
+                    {
+                        _payloadWasObject = true;
+                        _payloadObjectDepth = reader.CurrentDepth;
+                    }
+                    _payloadSeen = true;
+                    break;
+                case OversizedPendingProperty.PayloadType:
+                    if (_payloadTypeSeen || reader.TokenType != JsonTokenType.String)
+                        _payloadType = OversizedPayloadType.Ambiguous;
+                    else
+                        _payloadType = ReadOversizedPayloadType(ref reader);
+                    _payloadTypeSeen = true;
+                    break;
+            }
+            _pending = OversizedPendingProperty.None;
+        }
+
+        public OversizedRecordDiagnostic Complete()
+        {
+            if (_structureAmbiguous)
+                return Create(OversizedRecordDisposition.UnsafeUnclassified, OversizedRecordKind.Unknown);
+            return (_eventType, _payloadType, _payloadWasObject) switch
+            {
+                (OversizedEventType.SessionMeta, _, _) =>
+                    Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.SessionMetadata),
+                (OversizedEventType.TurnContext, _, _) =>
+                    Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.TurnContext),
+                (OversizedEventType.InterAgentCommunicationMetadata, _, _) =>
+                    Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.InterAgentCommunicationMetadata),
+                (OversizedEventType.ResponseItem, OversizedPayloadType.AgentMessage, true) =>
+                    Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.ResponseItemAgentMessage),
+                (OversizedEventType.ResponseItem, OversizedPayloadType.OpaqueResponseItem, true) =>
+                    Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.ResponseItemOpaque),
+                (OversizedEventType.EventMessage, OversizedPayloadType.TokenCount, true) =>
+                    Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.TokenCount),
+                (OversizedEventType.EventMessage, OversizedPayloadType.EventContext, true) =>
+                    Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.EventMessageContext),
+                (OversizedEventType.EventMessage, OversizedPayloadType.ImageGenerationEnd, true) =>
+                    Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.ImageGenerationEnd),
+                (OversizedEventType.EventMessage, OversizedPayloadType.McpToolCallEnd, true) =>
+                    Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.McpToolCallEnd),
+                (OversizedEventType.Compacted, _, _) =>
+                    Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.Compacted),
+                _ => Create(OversizedRecordDisposition.UnsafeUnclassified, OversizedRecordKind.Unknown),
+            };
+        }
+
+        public OversizedRecordDiagnostic Malformed() =>
+            Create(OversizedRecordDisposition.Malformed, OversizedRecordKind.Unknown);
+
+        private OversizedRecordDiagnostic Create(
+            OversizedRecordDisposition disposition,
+            OversizedRecordKind kind) => new(stableLineNumber, recordByteLength, disposition, kind);
+    }
+
+    private enum OversizedPendingProperty { None, RootType, Payload, PayloadType }
+    private enum OversizedEventType
+    {
+        Unknown,
+        Ambiguous,
+        Other,
+        SessionMeta,
+        TurnContext,
+        InterAgentCommunicationMetadata,
+        ResponseItem,
+        EventMessage,
+        Compacted,
+    }
+    private enum OversizedPayloadType
+    {
+        Unknown,
+        Ambiguous,
+        Other,
+        AgentMessage,
+        TokenCount,
+        EventContext,
+        OpaqueResponseItem,
+        ImageGenerationEnd,
+        McpToolCallEnd,
     }
 }

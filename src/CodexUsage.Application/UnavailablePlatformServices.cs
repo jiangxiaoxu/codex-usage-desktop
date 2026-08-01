@@ -29,4 +29,27 @@ public sealed class UnconfiguredReleaseUpdateService : IReleaseUpdateService
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(new ReleaseUpdateCheckResult(false, false, DiagnosticMessage));
     }
+
+    public Task<ReleaseUpdateDownloadResult> DownloadAsync(
+        ReleaseUpdatePackage package,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new ReleaseUpdateDownloadResult(
+            ReleaseUpdateDownloadStatus.Failed,
+            DiagnosticMessage));
+    }
+
+    public Task<ReleaseUpdateInstallerVerificationResult> VerifyDownloadedInstallerAsync(
+        ReleaseUpdatePackage package,
+        string installerPath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+        ArgumentException.ThrowIfNullOrWhiteSpace(installerPath);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new ReleaseUpdateInstallerVerificationResult(false, DiagnosticMessage));
+    }
+
 }
