@@ -63,13 +63,13 @@ Run from the repository root:
 dotnet restore CodexUsageDesktop.sln
 dotnet test CodexUsageDesktop.sln -c Release
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3
 git diff --check
 ```
 
 Then perform installed validation:
 
-1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.2-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
+1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.3-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
 2. Confirm all required resources exist beside the installed executable: application `.pri`, `App.xbf`, `MainWindow.xbf`, `Controls\AuditFilterContent.xbf`, and `Controls\CostRow.xbf`.
 3. Run installed `Codex Usage Desktop.exe --smoke-test` and require exit code 0.
 4. Launch normally with the existing real ledger. Existing totals must appear promptly while status may still show background reconciliation.

@@ -25,10 +25,10 @@ dotnet format CodexUsageDesktop.sln --verify-no-changes
 需要 NSIS 3.x,并确保 `makensis.exe` 位于 PATH、标准安装目录或现有 electron-builder cache.生成 unpackaged、self-contained 的 x64 WinUI 3 应用和全用户 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3
 ```
 
-setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.2-x64.exe`.构建会先生成唯一 pending EXE,仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
+setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.3-x64.exe`.构建会先生成唯一 pending EXE,仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
 
 setup 可识别旧 Electron 0.2.6 安装并原位替换为 WinUI 3.它会检测并强制终止仍在运行的 Codex Usage Desktop process,再备份 `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite` 及其 WAL/SHM,保留 ledger 和自启动选择,并清理旧 Electron payload.卸载 WinUI 3 默认不删除 LocalAppData ledger.当前 EXE 未签名,仍可能触发 `Unknown Publisher` 或 SmartScreen.用户可显式检查 GitHub Release,实验通道在下载时校验 SHA-256;运行前需要在警示 dialog 中确认并再次校验文件,随后 NSIS 结束当前应用和 collector process.
 
@@ -78,7 +78,7 @@ dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.2
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3
 git diff --check
 ```
 

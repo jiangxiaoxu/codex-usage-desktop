@@ -16,10 +16,10 @@ Unicode true
   !error "APP_ICON_FILE is required"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.2"
+  !define PRODUCT_VERSION "0.3.3"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.2.0"
+  !define PRODUCT_FILE_VERSION "0.3.3.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
@@ -145,7 +145,9 @@ Var HadStartMenuShortcut
 Function .onInit
   SetRegView 64
   SetShellVarContext current
-  StrCpy $StartupRequested "0"
+  ; New installations opt in by default. Existing installations are reset to
+  ; their persisted choice after the startup registration is inspected below.
+  StrCpy $StartupRequested "1"
   StrCpy $LegacyStartupDetected "0"
   StrCpy $ExistingStartupRun ""
   StrCpy $CurrentAdminOptIn ""
@@ -194,6 +196,11 @@ Function .onInit
   ReadRegStr $OldInstallLocation HKLM "${UNINSTALL_KEY}" "InstallLocation"
   ReadRegStr $OldDisplayIcon HKLM "${UNINSTALL_KEY}" "DisplayIcon"
   StrCpy $InstalledVersion $OldDisplayVersion
+  ${If} $InstalledVersion != ""
+  ${AndIf} $LegacyStartupDetected == "0"
+  ${AndIf} $ExistingStartupRun == ""
+    StrCpy $StartupRequested "0"
+  ${EndIf}
   StrCpy $0 $InstalledVersion 4
   ${If} $0 == "0.2."
     StrCpy $LegacyInstallDetected "1"

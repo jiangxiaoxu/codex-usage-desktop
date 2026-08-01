@@ -4,6 +4,12 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-01
+
+- Default the installer start-at-sign-in option to checked for new installations while preserving the existing choice during upgrades.
+- Simplified the cost composition legend to show percentages without repeating prices.
+- Added update download progress feedback to the desktop command bar.
+
 ## [0.3.2] - 2026-08-01
 
 - Enlarged the cost composition price total, legend labels, and color swatches while preserving the compact responsive layout and safe wrapping at the minimum window width.
