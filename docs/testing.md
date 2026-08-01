@@ -11,7 +11,7 @@ dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.3 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.4 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 

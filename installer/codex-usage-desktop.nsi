@@ -19,10 +19,10 @@ Unicode true
   !error "APP_ICON_FILE is required"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.3"
+  !define PRODUCT_VERSION "0.3.4"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.3.0"
+  !define PRODUCT_FILE_VERSION "0.3.4.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
@@ -78,7 +78,6 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 ${PRODUCT_PUBLIS
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXE}"
-!define MUI_FINISHPAGE_RUN_NOTCHECKED
 
 !insertmacro MUI_PAGE_LICENSE "${LICENSE_FILE}"
 !insertmacro MUI_PAGE_DIRECTORY

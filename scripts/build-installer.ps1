@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.3',
+    [string]$Version = '0.3.4',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -449,6 +449,7 @@ function Assert-InstallerSafety {
         '!ifndef PAYLOAD_EXTRACTOR',
         'File /oname=payload.7z "${PAYLOAD_ARCHIVE}"',
         'File /oname=7zr.exe "${PAYLOAD_EXTRACTOR}"',
+        '!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXE}"',
         '!ifndef APP_ICON_FILE',
         '!define MUI_ICON "${APP_ICON_FILE}"',
         '!define MUI_UNICON "${APP_ICON_FILE}"',
@@ -493,7 +494,8 @@ function Assert-InstallerSafety {
         'Function BackupLedger',
         'Function RestoreLedgerAfterLegacyUninstall',
         'preinstall-${PRODUCT_VERSION}',
-        'usage ledger backup'
+        'usage ledger backup',
+        'MUI_FINISHPAGE_RUN_NOTCHECKED'
     )) {
         if ($source.IndexOf($forbidden, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
             throw "Installer must not retain ledger backup behavior: $forbidden"
