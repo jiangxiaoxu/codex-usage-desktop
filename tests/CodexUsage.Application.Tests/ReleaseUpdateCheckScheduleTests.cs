@@ -101,6 +101,20 @@ public sealed class ReleaseUpdateCheckScheduleTests
     }
 
     [Fact]
+    public void NewDownloadGetsANewTicketAfterThePreviousDownloadCompletes()
+    {
+        var coordinator = new ReleaseUpdateDownloadCoordinator();
+        Assert.True(coordinator.TryBegin(out var oldDownload));
+        coordinator.Complete(oldDownload);
+
+        Assert.True(coordinator.TryBegin(out var newDownload));
+
+        Assert.NotEqual(oldDownload, newDownload);
+        Assert.False(coordinator.IsCurrent(oldDownload));
+        Assert.True(coordinator.IsCurrent(newDownload));
+    }
+
+    [Fact]
     public void InstallerLaunchCoordinatorPreventsDuplicateConfirmationFlows()
     {
         var coordinator = new ReleaseUpdateInstallerLaunchCoordinator();

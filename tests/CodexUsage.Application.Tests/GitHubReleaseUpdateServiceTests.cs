@@ -130,7 +130,7 @@ public sealed class GitHubReleaseUpdateServiceTests
             var service = CreateService(client, dataDirectory);
             var check = await service.CheckAsync();
 
-            var download = await service.DownloadAsync(check.Package!);
+            var download = await service.DownloadAsync(check.Package!, progress: null);
 
             Assert.True(download.Status == ReleaseUpdateDownloadStatus.Completed, download.Message);
             Assert.NotNull(download.InstallerPath);
@@ -149,10 +149,43 @@ public sealed class GitHubReleaseUpdateServiceTests
     }
 
     [Fact]
+    public async Task DownloadReportsStartIntermediateAndCompletedProgressUsingMetadataSizeWhenContentLengthIsUnknown()
+    {
+        var payload = new string('x', 200_000);
+        var manifest = CreateManifest("v0.3.3", payload);
+        using var client = CreateClient(
+            [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new ChunkedReadStream(Encoding.UTF8.GetBytes(payload), 4096)),
+            }]);
+        var dataDirectory = CreateDataDirectory();
+        try
+        {
+            var service = CreateService(client, dataDirectory);
+            var check = await service.CheckAsync();
+            var progress = new RecordingProgress();
+
+            var download = await service.DownloadAsync(check.Package!, progress);
+
+            Assert.Equal(ReleaseUpdateDownloadStatus.Completed, download.Status);
+            Assert.Equal(new ReleaseUpdateDownloadProgress(0, check.Package!.SizeBytes), progress.Values[0]);
+            Assert.Contains(progress.Values, value => value.BytesReceived is > 0 and < 200_000);
+            Assert.Equal(
+                new ReleaseUpdateDownloadProgress(check.Package.SizeBytes, check.Package.SizeBytes),
+                progress.Values[^1]);
+            Assert.All(progress.Values, value => Assert.Equal(check.Package.SizeBytes, value.TotalBytes));
+        }
+        finally
+        {
+            Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DownloadRejectsDigestMismatchAndDoesNotKeepTheInstaller()
     {
         const string expected = "expected installer bytes";
-        const string received = "modified installer bytes";
+        const string received = "tampered installer bytes";
         var manifest = CreateManifest("v0.3.3", expected);
         using var client = CreateClient(
             [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
@@ -164,14 +197,60 @@ public sealed class GitHubReleaseUpdateServiceTests
         {
             var service = CreateService(client, dataDirectory);
             var check = await service.CheckAsync();
+            var progress = new RecordingProgress();
 
-            var download = await service.DownloadAsync(check.Package!);
+            var download = await service.DownloadAsync(check.Package!, progress);
 
             Assert.Equal(ReleaseUpdateDownloadStatus.Failed, download.Status);
             Assert.Null(download.InstallerPath);
             Assert.Contains("SHA-256", download.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(progress.Values, value => value.BytesReceived == value.TotalBytes);
             var updateDirectory = Path.Combine(dataDirectory, "update-downloads");
             Assert.True(!Directory.Exists(updateDirectory) || !Directory.EnumerateFiles(updateDirectory).Any());
+        }
+        finally
+        {
+            Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadSizeFailureAndCancellationDoNotReportCompletedProgress()
+    {
+        const string expected = "expected installer bytes";
+        const string oversized = "oversized installer bytes";
+        var manifest = CreateManifest("v0.3.3", expected);
+        var dataDirectory = CreateDataDirectory();
+        try
+        {
+            using var sizeClient = CreateClient(
+                [JsonResponse(manifest), new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(oversized)),
+                }]);
+            var sizeService = CreateService(sizeClient, dataDirectory);
+            var sizeCheck = await sizeService.CheckAsync();
+            var sizeProgress = new RecordingProgress();
+
+            var sizeDownload = await sizeService.DownloadAsync(sizeCheck.Package!, sizeProgress);
+
+            Assert.Equal(ReleaseUpdateDownloadStatus.Failed, sizeDownload.Status);
+            Assert.DoesNotContain(sizeProgress.Values, value => value.BytesReceived == value.TotalBytes);
+
+            using var cancelledClient = CreateClient([JsonResponse(manifest)]);
+            var cancelledService = CreateService(cancelledClient, dataDirectory);
+            var cancelledCheck = await cancelledService.CheckAsync();
+            var cancelledProgress = new RecordingProgress();
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            var cancelledDownload = await cancelledService.DownloadAsync(
+                cancelledCheck.Package!,
+                cancelledProgress,
+                cancellation.Token);
+
+            Assert.Equal(ReleaseUpdateDownloadStatus.Cancelled, cancelledDownload.Status);
+            Assert.DoesNotContain(cancelledProgress.Values, value => value.BytesReceived == value.TotalBytes);
         }
         finally
         {
@@ -194,7 +273,7 @@ public sealed class GitHubReleaseUpdateServiceTests
         {
             var service = CreateService(client, dataDirectory);
             var check = await service.CheckAsync();
-            var download = await service.DownloadAsync(check.Package!);
+            var download = await service.DownloadAsync(check.Package!, progress: null);
             await File.WriteAllTextAsync(download.InstallerPath!, "modified installer bytes");
 
             var verification = await service.VerifyDownloadedInstallerAsync(
@@ -227,7 +306,7 @@ public sealed class GitHubReleaseUpdateServiceTests
             var service = CreateService(client, dataDirectory);
             var check = await service.CheckAsync();
 
-            var download = await service.DownloadAsync(check.Package!);
+            var download = await service.DownloadAsync(check.Package!, progress: null);
 
             Assert.Equal(ReleaseUpdateDownloadStatus.Failed, download.Status);
             Assert.Contains("不受信任", download.Message, StringComparison.Ordinal);
@@ -358,5 +437,61 @@ public sealed class GitHubReleaseUpdateServiceTests
             response.RequestMessage ??= request;
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class RecordingProgress : IProgress<ReleaseUpdateDownloadProgress>
+    {
+        public List<ReleaseUpdateDownloadProgress> Values { get; } = [];
+
+        public void Report(ReleaseUpdateDownloadProgress value) => Values.Add(value);
+    }
+
+    private sealed class ChunkedReadStream(byte[] bytes, int maximumChunkSize) : Stream
+    {
+        private readonly byte[] _bytes = bytes;
+        private readonly int _maximumChunkSize = maximumChunkSize;
+        private int _position;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            var available = _bytes.Length - _position;
+            if (available == 0) return 0;
+
+            var read = Math.Min(Math.Min(available, _maximumChunkSize), buffer.Length);
+            _bytes.AsSpan(_position, read).CopyTo(buffer);
+            _position += read;
+            return read;
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(Read(buffer.Span));
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

@@ -32,6 +32,7 @@ public sealed class UnconfiguredReleaseUpdateService : IReleaseUpdateService
 
     public Task<ReleaseUpdateDownloadResult> DownloadAsync(
         ReleaseUpdatePackage package,
+        IProgress<ReleaseUpdateDownloadProgress>? progress,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(package);

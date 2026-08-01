@@ -94,6 +94,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
 
     public async Task<ReleaseUpdateDownloadResult> DownloadAsync(
         ReleaseUpdatePackage package,
+        IProgress<ReleaseUpdateDownloadProgress>? progress,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(package);
@@ -101,6 +102,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
         try
         {
             ValidatePackage(package);
+            progress?.Report(new ReleaseUpdateDownloadProgress(0, package.SizeBytes));
             _protectedPathPolicy.AssertWritablePath(_downloadDirectory);
             Directory.CreateDirectory(_downloadDirectory);
 
@@ -127,6 +129,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
                 response.Content,
                 temporaryPath,
                 package.SizeBytes,
+                progress,
                 cancellationToken).ConfigureAwait(false);
 
             if (!CryptographicOperations.FixedTimeEquals(
@@ -143,6 +146,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
 
             File.Move(temporaryPath, installerPath, overwrite: true);
             temporaryPath = null;
+            progress?.Report(new ReleaseUpdateDownloadProgress(downloadedBytes.Count, package.SizeBytes));
             return new ReleaseUpdateDownloadResult(
                 ReleaseUpdateDownloadStatus.Completed,
                 $"已校验 SHA-256 并下载未签名实验安装器 {package.Version}; 运行前会再次校验文件",
@@ -333,6 +337,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
         HttpContent content,
         string destinationPath,
         long expectedBytes,
+        IProgress<ReleaseUpdateDownloadProgress>? progress,
         CancellationToken cancellationToken)
     {
         await using var input = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -360,6 +365,10 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
 
                 hash.AppendData(buffer, 0, read);
                 await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                if (count < expectedBytes)
+                {
+                    progress?.Report(new ReleaseUpdateDownloadProgress(count, expectedBytes));
+                }
             }
 
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);

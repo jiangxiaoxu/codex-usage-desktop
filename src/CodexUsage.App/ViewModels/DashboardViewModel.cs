@@ -53,6 +53,11 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private ReleaseUpdatePackage? _availableUpdate;
     private string? _downloadedUpdateInstallerPath;
     private ReleaseUpdateDownloadTicket? _downloadedUpdateTicket;
+    private ReleaseUpdateDownloadTicket? _activeUpdateDownloadTicket;
+    private bool _isDownloading;
+    private double _updateDownloadProgressPercent;
+    private bool _isUpdateDownloadIndeterminate = true;
+    private string _updateDownloadProgressText = "下载中";
     private long _updateStateGeneration;
     private int _busyCount;
     private int _queryInFlight;
@@ -118,6 +123,22 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     public bool CanRunDownloadedUpdate => _downloadedUpdateInstallerPath is not null
         && _downloadedUpdateTicket is { } ticket
         && _updateDownloadCoordinator.IsCurrent(ticket);
+    public bool IsDownloading { get => _isDownloading; private set => SetProperty(ref _isDownloading, value); }
+    public double UpdateDownloadProgressPercent
+    {
+        get => _updateDownloadProgressPercent;
+        private set => SetProperty(ref _updateDownloadProgressPercent, value);
+    }
+    public bool IsUpdateDownloadIndeterminate
+    {
+        get => _isUpdateDownloadIndeterminate;
+        private set => SetProperty(ref _isUpdateDownloadIndeterminate, value);
+    }
+    public string UpdateDownloadProgressText
+    {
+        get => _updateDownloadProgressText;
+        private set => SetProperty(ref _updateDownloadProgressText, value);
+    }
     public string DownloadUpdateLabel => _availableUpdate is { } update
         ? $"下载并校验 {update.Version}"
         : "下载更新";
@@ -314,31 +335,29 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
         BeginBusy();
         QueuePropertyChanged(nameof(CanDownloadUpdate));
+        QueueUi(() => StartUpdateDownload(ticket));
         try
         {
-            var result = await _packageUpdate.DownloadAsync(update, cancellationToken).ConfigureAwait(false);
-            var isCurrent = _updateDownloadCoordinator.IsCurrent(ticket);
-            QueueUi(() => ApplyUpdateDownload(result, ticket, isCurrent));
+            var progress = new Progress<ReleaseUpdateDownloadProgress>(
+                value => QueueUi(() => ApplyUpdateDownloadProgress(value, ticket)));
+            var result = await _packageUpdate.DownloadAsync(update, progress, cancellationToken).ConfigureAwait(false);
+            QueueUi(() => ApplyUpdateDownload(result, ticket));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            var isCurrent = _updateDownloadCoordinator.IsCurrent(ticket);
             QueueUi(() => ApplyUpdateDownload(
                 new ReleaseUpdateDownloadResult(
                     ReleaseUpdateDownloadStatus.Cancelled,
                     "更新下载已取消; 未启动安装器"),
-                ticket,
-                isCurrent));
+                ticket));
         }
         catch (Exception error)
         {
-            var isCurrent = _updateDownloadCoordinator.IsCurrent(ticket);
             QueueUi(() => ApplyUpdateDownload(
                 new ReleaseUpdateDownloadResult(
                     ReleaseUpdateDownloadStatus.Failed,
                     $"更新下载失败: {error.Message}"),
-                ticket,
-                isCurrent));
+                ticket));
         }
         finally
         {
@@ -796,6 +815,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _availableUpdate = result.IsUpdateAvailable ? result.Package : null;
         _downloadedUpdateInstallerPath = null;
         _downloadedUpdateTicket = null;
+        ResetUpdateDownloadPresentation();
 
         QueuePropertyChanged(nameof(CanDownloadUpdate));
         QueuePropertyChanged(nameof(CanRunDownloadedUpdate));
@@ -806,10 +826,16 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyUpdateDownload(
         ReleaseUpdateDownloadResult result,
-        ReleaseUpdateDownloadTicket ticket,
-        bool isCurrent)
+        ReleaseUpdateDownloadTicket ticket)
     {
-        if (!isCurrent) return;
+        if (!_updateDownloadCoordinator.IsCurrent(ticket)
+            || _activeUpdateDownloadTicket != ticket)
+        {
+            return;
+        }
+
+        _activeUpdateDownloadTicket = null;
+        IsDownloading = false;
 
         if (result.Status == ReleaseUpdateDownloadStatus.Completed
             && !string.IsNullOrWhiteSpace(result.InstallerPath))
@@ -821,6 +847,50 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         }
 
         SetPlatformStatus(result.Message);
+    }
+
+    private void StartUpdateDownload(ReleaseUpdateDownloadTicket ticket)
+    {
+        if (!_updateDownloadCoordinator.IsCurrent(ticket)) return;
+
+        _activeUpdateDownloadTicket = ticket;
+        IsDownloading = true;
+        UpdateDownloadProgressPercent = 0;
+        IsUpdateDownloadIndeterminate = true;
+        UpdateDownloadProgressText = "下载中";
+    }
+
+    private void ApplyUpdateDownloadProgress(
+        ReleaseUpdateDownloadProgress progress,
+        ReleaseUpdateDownloadTicket ticket)
+    {
+        if (_activeUpdateDownloadTicket != ticket
+            || !_updateDownloadCoordinator.IsCurrent(ticket))
+        {
+            return;
+        }
+
+        if (progress.TotalBytes is not > 0)
+        {
+            IsUpdateDownloadIndeterminate = true;
+            UpdateDownloadProgressText = "下载中";
+            return;
+        }
+
+        var received = Math.Clamp(progress.BytesReceived, 0, progress.TotalBytes.Value);
+        var percent = received * 100d / progress.TotalBytes.Value;
+        UpdateDownloadProgressPercent = percent;
+        IsUpdateDownloadIndeterminate = false;
+        UpdateDownloadProgressText = $"下载中 {percent:F0}%";
+    }
+
+    private void ResetUpdateDownloadPresentation()
+    {
+        _activeUpdateDownloadTicket = null;
+        IsDownloading = false;
+        UpdateDownloadProgressPercent = 0;
+        IsUpdateDownloadIndeterminate = true;
+        UpdateDownloadProgressText = "下载中";
     }
 
 

@@ -28,7 +28,7 @@ public sealed class ReleaseUpdateDownloadCoordinator
             if (_cancelled || _isInFlight) return false;
 
             _isInFlight = true;
-            ticket = new ReleaseUpdateDownloadTicket(_generation);
+            ticket = new ReleaseUpdateDownloadTicket(++_generation);
             return true;
         }
     }

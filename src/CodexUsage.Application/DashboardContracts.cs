@@ -42,6 +42,10 @@ public sealed record ReleaseUpdateDownloadResult(
     string Message,
     string? InstallerPath = null);
 
+public sealed record ReleaseUpdateDownloadProgress(
+    long BytesReceived,
+    long? TotalBytes);
+
 public sealed record ReleaseUpdateInstallerVerificationResult(
     bool IsValid,
     string Message);
@@ -150,6 +154,7 @@ public interface IReleaseUpdateService
 
     Task<ReleaseUpdateDownloadResult> DownloadAsync(
         ReleaseUpdatePackage package,
+        IProgress<ReleaseUpdateDownloadProgress>? progress,
         CancellationToken cancellationToken = default);
 
     Task<ReleaseUpdateInstallerVerificationResult> VerifyDownloadedInstallerAsync(

@@ -172,6 +172,24 @@
                                 IsOn="{Binding IsStartupEnabled, Mode=TwoWay}"
                                 OffContent="关"
                                 OnContent="开" />
+                            <StackPanel
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                Visibility="{Binding IsDownloading, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <ProgressBar
+                                    Width="104"
+                                    Height="4"
+                                    VerticalAlignment="Center"
+                                    IsIndeterminate="{Binding IsUpdateDownloadIndeterminate}"
+                                    Maximum="100"
+                                    Value="{Binding UpdateDownloadProgressPercent}" />
+                                <TextBlock
+                                    VerticalAlignment="Center"
+                                    FontSize="13"
+                                    Foreground="{StaticResource SecondaryTextBrush}"
+                                    Text="{Binding UpdateDownloadProgressText}" />
+                            </StackPanel>
                         </StackPanel>
                     </CommandBar.Content>
                     <AppBarButton Height="40" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新（未签名实验）" />
@@ -201,6 +219,24 @@
                                 IsOn="{Binding IsStartupEnabled, Mode=TwoWay}"
                                 OffContent="关"
                                 OnContent="开" />
+                            <StackPanel
+                                VerticalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                Visibility="{Binding IsDownloading, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <ProgressBar
+                                    Width="104"
+                                    Height="4"
+                                    VerticalAlignment="Center"
+                                    IsIndeterminate="{Binding IsUpdateDownloadIndeterminate}"
+                                    Maximum="100"
+                                    Value="{Binding UpdateDownloadProgressPercent}" />
+                                <TextBlock
+                                    VerticalAlignment="Center"
+                                    FontSize="13"
+                                    Foreground="{StaticResource SecondaryTextBrush}"
+                                    Text="{Binding UpdateDownloadProgressText}" />
+                            </StackPanel>
                         </StackPanel>
                     </CommandBar.Content>
                     <AppBarButton Height="40" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新（未签名实验）" />
