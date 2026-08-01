@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.4',
+    [string]$Version = '0.3.5',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -443,6 +443,7 @@ function Assert-InstallerSafety {
         'Call RemoveInstalledPayload',
         'Call DeployPayload',
         'taskkill.exe',
+        'taskkill.exe" /F /IM "${PRODUCT_EXE}"',
         '/S /allusers',
         '!include "${UNINSTALL_FILES_INCLUDE}"',
         '!ifndef PAYLOAD_ARCHIVE',
@@ -495,7 +496,8 @@ function Assert-InstallerSafety {
         'Function RestoreLedgerAfterLegacyUninstall',
         'preinstall-${PRODUCT_VERSION}',
         'usage ledger backup',
-        'MUI_FINISHPAGE_RUN_NOTCHECKED'
+        'MUI_FINISHPAGE_RUN_NOTCHECKED',
+        'taskkill.exe" /T'
     )) {
         if ($source.IndexOf($forbidden, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
             throw "Installer must not retain ledger backup behavior: $forbidden"

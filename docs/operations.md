@@ -69,10 +69,10 @@ CSV export 是明确 user action.选定 snapshot 只会写入通过 protected-pa
 ```powershell
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.4 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.5 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-构建需要本地 7-Zip Extra 的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载工具.脚本生成 self-contained x64 publish,用 7-Zip LZMA2 生成并校验 payload archive,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.4-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /T /F` 终止 process tree,确认退出后才替换程序文件;无法确认退出时安装失败.
+构建需要本地 7-Zip Extra 的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载工具.脚本生成 self-contained x64 publish,用 7-Zip LZMA2 生成并校验 payload archive,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.5-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /F /IM` 终止同名 process,不会递归杀掉启动它的安装器,确认退出后才替换程序文件;无法确认退出时安装失败.
 
 setup 支持从旧 Electron 0.2.6 原位升级.安装器直接结束旧 process、调用旧 Electron uninstaller 并覆盖 payload,不再创建 ledger 备份.旧 Electron uninstaller 可能删除 `%LOCALAPPDATA%\Codex Usage Desktop` 下的 ledger.旧 Startup shortcut 会迁移为 HKCU Run entry,安装页允许保留或改变该选择.检测到更高版本时拒绝降级,相同版本可执行 repair install.
 

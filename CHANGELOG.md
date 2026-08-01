@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-01
+
+- Installer process shutdown no longer recursively kills its own in-app update launcher.
+
 ## [0.3.4] - 2026-08-01
 
 - Installer upgrades now directly replace the legacy payload without creating or restoring a ledger backup.

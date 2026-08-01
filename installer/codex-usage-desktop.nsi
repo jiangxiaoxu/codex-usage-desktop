@@ -19,10 +19,10 @@ Unicode true
   !error "APP_ICON_FILE is required"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.4"
+  !define PRODUCT_VERSION "0.3.5"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.4.0"
+  !define PRODUCT_FILE_VERSION "0.3.5.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
@@ -379,7 +379,7 @@ Function EnsureAppClosed
   ${EndIf}
 
   DetailPrint "Stopping ${PRODUCT_NAME} before replacing program files."
-  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /T /F /IM "${PRODUCT_EXE}"'
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM "${PRODUCT_EXE}"'
   Pop $0
   Pop $1
   ${If} $0 != "0"
@@ -645,7 +645,7 @@ Function un.EnsureAppClosed
   ${ElseIf} $AppRunning == "2"
     Goto close_failed
   ${EndIf}
-  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /T /F /IM "${PRODUCT_EXE}"'
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM "${PRODUCT_EXE}"'
   Pop $0
   Pop $1
   ${If} $0 != "0"
