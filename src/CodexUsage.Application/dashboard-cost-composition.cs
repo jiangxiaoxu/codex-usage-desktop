@@ -1,4 +1,3 @@
-using System.Globalization;
 using CodexUsage.Domain;
 
 namespace CodexUsage.Application;
@@ -25,7 +24,7 @@ public static class DashboardCostComposition
         return new CostSlice(
             label,
             percentage,
-            $"${displayedValue.ToString("N1", CultureInfo.CurrentCulture)} · {percentage:F1}%",
+            $"{percentage:F1}%",
             brushKey);
     }
 }

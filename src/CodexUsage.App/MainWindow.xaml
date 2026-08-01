@@ -333,20 +333,7 @@
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1">
                     <StackPanel Spacing="8">
-                        <Grid ColumnDefinitions="*,Auto">
-                            <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
-                            <TextBlock
-                                Grid.Column="1"
-                                MaxWidth="240"
-                                VerticalAlignment="Center"
-                                FontSize="14"
-                                FontWeight="SemiBold"
-                                Foreground="{StaticResource SecondaryTextBrush}"
-                                TextWrapping="WrapWholeWords">
-                                <Run Text="价格占比 · " />
-                                <Run Text="{Binding Metrics[4].Value}" />
-                            </TextBlock>
-                        </Grid>
+                        <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
                         <controls:CostCompositionBar
                             Height="10"
                             Background="{StaticResource ProgressTrackBrush}"

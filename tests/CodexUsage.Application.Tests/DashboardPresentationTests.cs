@@ -277,16 +277,16 @@ public sealed class DashboardPresentationTests
     }
 
     [Fact]
-    public void CostCompositionUsesTheFourPricedCategoriesAndTheirCostShares()
+    public void CostCompositionUsesTheFourPricedCategoriesAndPercentageOnlyDetails()
     {
         var slices = DashboardCostComposition.From(new CostBreakdown(20, 60, 15, 5, 100, Priced: true));
 
         Assert.Collection(
             slices,
-            slice => AssertSlice(slice, "无缓存输入", 20, "PrimaryBrush"),
-            slice => AssertSlice(slice, "缓存输入", 60, "SuccessBrush"),
-            slice => AssertSlice(slice, "思考输出", 15, "WarningBrush"),
-            slice => AssertSlice(slice, "其他输出", 5, "PurpleBrush"));
+            slice => AssertSlice(slice, "无缓存输入", 20, "20.0%", "PrimaryBrush"),
+            slice => AssertSlice(slice, "缓存输入", 60, "60.0%", "SuccessBrush"),
+            slice => AssertSlice(slice, "思考输出", 15, "15.0%", "WarningBrush"),
+            slice => AssertSlice(slice, "其他输出", 5, "5.0%", "PurpleBrush"));
     }
 
     [Fact]
@@ -298,7 +298,7 @@ public sealed class DashboardPresentationTests
         Assert.All(slices, slice =>
         {
             Assert.Equal(0, slice.Percentage);
-            Assert.Contains("0.0%", slice.Detail, StringComparison.Ordinal);
+            Assert.Equal("0.0%", slice.Detail);
         });
     }
 
@@ -945,10 +945,11 @@ public sealed class DashboardPresentationTests
         collections.AgentOptions.CollectionChanged += (_, args) => changes.Add(args.Action);
     }
 
-    private static void AssertSlice(CostSlice slice, string label, double percentage, string brushKey)
+    private static void AssertSlice(CostSlice slice, string label, double percentage, string detail, string brushKey)
     {
         Assert.Equal(label, slice.Label);
         Assert.Equal(percentage, slice.Percentage);
+        Assert.Equal(detail, slice.Detail);
         Assert.Equal(brushKey, slice.BrushKey);
     }
 

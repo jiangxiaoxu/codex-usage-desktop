@@ -219,10 +219,10 @@ public sealed class DashboardPresentationCollections
         };
         CostSlices = new ObservableCollection<CostSlice>
         {
-            new("无缓存输入", 0, "$0.0 · 0.0%", "PrimaryBrush"),
-            new("缓存输入", 0, "$0.0 · 0.0%", "SuccessBrush"),
-            new("思考输出", 0, "$0.0 · 0.0%", "WarningBrush"),
-            new("其他输出", 0, "$0.0 · 0.0%", "PurpleBrush"),
+            new("无缓存输入", 0, "0.0%", "PrimaryBrush"),
+            new("缓存输入", 0, "0.0%", "SuccessBrush"),
+            new("思考输出", 0, "0.0%", "WarningBrush"),
+            new("其他输出", 0, "0.0%", "PurpleBrush"),
         };
         Models = [];
         Subjects = [];
