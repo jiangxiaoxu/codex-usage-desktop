@@ -26,10 +26,10 @@ The production application is unpackaged and self-contained. The supported insta
 ```powershell
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-.\scripts\build-installer.ps1 -Version 0.3.6 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+.\scripts\build-installer.ps1 -Version 0.3.7 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-The build requires local 7-Zip Extra `7za.exe` and `7zr.exe`; it does not download build tools. It creates and validates a 7-Zip LZMA2 payload before compiling the NSIS installer. The result is `release\winui-installer\codex-usage-desktop-setup-0.3.6-x64.exe`. It is an all-users installer under `%ProgramFiles%` and therefore requires UAC. It can replace the legacy Electron 0.2.6 installation in place, invokes the legacy uninstaller without creating a ledger backup, and migrates the startup choice to HKCU Run. The legacy uninstaller may remove the LocalAppData ledger; uninstalling the WinUI payload does not remove it by default.
+The build requires local 7-Zip Extra `7za.exe` and `7zr.exe`; it does not download build tools. It creates and validates a 7-Zip LZMA2 payload before compiling the NSIS installer. The result is `release\winui-installer\codex-usage-desktop-setup-0.3.7-x64.exe`. It is an all-users installer under `%ProgramFiles%` and therefore requires UAC. It can replace the legacy Electron 0.2.6 installation in place, invokes the legacy uninstaller without creating a ledger backup, and migrates the startup choice to HKCU Run. The legacy uninstaller may remove the LocalAppData ledger; uninstalling the WinUI payload does not remove it by default.
 
 The setup EXE is currently unsigned and can show `Unknown Publisher` or SmartScreen. The SHA-256-only experimental GitHub Release metadata check runs at startup and every six hours; it requires a strict repository, SemVer tag, one x64 installer asset and a matching GitHub digest. Before launch, the user confirms a warning and the application rechecks both the local SHA-256 and current update generation; NSIS then closes the application and collector. Authenticode signing is still required before public distribution.
 

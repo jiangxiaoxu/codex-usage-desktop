@@ -27,10 +27,10 @@ dotnet format CodexUsageDesktop.sln --verify-no-changes
 ```powershell
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.6 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.7 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.6-x64.exe`.构建会先用 7-Zip 生成并校验 payload archive,再生成唯一 pending EXE;仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
+setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.7-x64.exe`.构建会先用 7-Zip 生成并校验 payload archive,再生成唯一 pending EXE;仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
 
 setup 可识别旧 Electron 0.2.6 安装并原位替换为 WinUI 3.它会检测并强制终止仍在运行的 Codex Usage Desktop process,调用旧 Electron uninstaller 后覆盖 WinUI payload,不再创建 ledger 备份;旧 Electron uninstaller 可能删除 LocalAppData ledger.卸载 WinUI 3 默认不删除 LocalAppData ledger.当前 EXE 未签名,仍可能触发 `Unknown Publisher` 或 SmartScreen.用户可显式检查 GitHub Release,实验通道在下载时校验 SHA-256;运行前需要在警示 dialog 中确认并再次校验文件,随后 NSIS 结束当前应用和 collector process.
 
@@ -82,7 +82,7 @@ dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.6 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.7 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
