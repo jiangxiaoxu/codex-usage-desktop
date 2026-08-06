@@ -67,10 +67,10 @@ git diff --check
 ```powershell
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.7 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.8 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-构建需要本地 7-Zip Extra 中的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载或安装压缩工具.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.7-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+构建需要本地 7-Zip Extra 中的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载或安装压缩工具.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.8-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
 该安装包支持从旧 Electron 0.2.6 原位升级到 WinUI 3.安装器直接检测并强制终止仍在运行的 Codex Usage Desktop process,调用旧 Electron uninstaller 后覆盖 WinUI payload,不再创建 ledger 备份.旧 Startup shortcut 会迁移为当前用户的 HKCU Run entry.旧 Electron uninstaller 可能删除 LocalAppData ledger;新版卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 ledger.
 

@@ -5,10 +5,10 @@
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>CodexUsage.App</RootNamespace>
     <AssemblyName>Codex Usage Desktop</AssemblyName>
-    <Version>0.3.7</Version>
-    <AssemblyVersion>0.3.7.0</AssemblyVersion>
-    <FileVersion>0.3.7.0</FileVersion>
-    <InformationalVersion>0.3.7</InformationalVersion>
+    <Version>0.3.8</Version>
+    <AssemblyVersion>0.3.8.0</AssemblyVersion>
+    <FileVersion>0.3.8.0</FileVersion>
+    <InformationalVersion>0.3.8</InformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>..\..\assets\codex-usage-desktop.ico</ApplicationIcon>
     <UseWinUI>true</UseWinUI>

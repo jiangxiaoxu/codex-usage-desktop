@@ -681,9 +681,9 @@
                                 ScrollViewer.VerticalScrollMode="Disabled">
                                 <ListView.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid MinHeight="42" Padding="10,7" ColumnDefinitions="220,140,*">
+                                        <Grid MinHeight="42" Padding="10,7" ColumnDefinitions="220,160,*" ColumnSpacing="32">
                                             <TextBlock FontSize="14" FontWeight="SemiBold" Text="{Binding Label}" />
-                                            <TextBlock Grid.Column="1" FontSize="14" Text="{Binding Value}" />
+                                            <TextBlock Grid.Column="1" FontSize="14" Text="{Binding Value}" TextWrapping="Wrap" />
                                             <TextBlock Grid.Column="2" Style="{StaticResource CaptionStyle}" Text="{Binding Detail}" TextWrapping="Wrap" />
                                         </Grid>
                                     </DataTemplate>

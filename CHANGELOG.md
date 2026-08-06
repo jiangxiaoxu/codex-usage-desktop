@@ -4,6 +4,10 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-08-06
+
+- Improved diagnostics layout with a wider value column, 32 px column spacing, and wrapping for long values.
+
 ## [0.3.7] - 2026-08-04
 
 - Widened the diagnostics panel's first column to keep its labels readable.

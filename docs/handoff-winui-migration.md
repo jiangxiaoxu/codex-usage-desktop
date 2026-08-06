@@ -65,13 +65,13 @@ dotnet test CodexUsageDesktop.sln -c Release
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.7 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.8 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
 Then perform installed validation:
 
-1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.7-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
+1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.8-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
 2. Confirm all required resources exist beside the installed executable: application `.pri`, `App.xbf`, `MainWindow.xbf`, `Controls\AuditFilterContent.xbf`, and `Controls\CostRow.xbf`.
 3. Run installed `Codex Usage Desktop.exe --smoke-test` and require exit code 0.
 4. Launch normally with the existing real ledger. Existing totals must appear promptly while status may still show background reconciliation.
