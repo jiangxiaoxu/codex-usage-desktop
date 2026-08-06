@@ -10,7 +10,7 @@
 
 ```text
 src/CodexUsage.App/             WinUI 3 shell,XAML,view model,Windows integration
-src/CodexUsage.Application/     lifecycle,query/export orchestration
+src/CodexUsage.Application/     lifecycle,query orchestration
 src/CodexUsage.Infrastructure/  collector,watcher,SQLite ledger,path policy
 src/CodexUsage.Domain/          validated rollout parsing,accounting,filtering
 tests/                          Domain,Infrastructure,Application tests
@@ -27,7 +27,6 @@ CodexUsageDesktop.sln           solution entry
 - canonical active/archive promotion 不重复计费.稳定候选只有在 metadata exact 且 semantic relation 为 `Equal` 或 `Extension` 时才可自动恢复;恢复只更新应用 ledger,不会修改 Codex source.
 - 按 model、实际 role、thread 和时间范围筛选并汇总 token 与费用.
 - `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.`codex-auto-review` 保持独立未定价分类并计入未定价 tokens,其余 GPT-5.4、GPT-5.5、GPT-5.6 之外的 model 归入未计费的 `Others`,`source_model=unknown` 保持独立 attribution.
-- 将当前筛选快照导出为 CSV,并拒绝位于受保护 Codex 目录中的输出路径.
 
 ## 数据目录与安全边界
 
@@ -46,7 +45,7 @@ Default:  %LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite
 Override: %CODEX_USAGE_DATA_DIR%\usage.sqlite
 ```
 
-`CODEX_USAGE_DATA_DIR` 必须是应用可写且不位于受保护目录内的绝对目录.ledger、cache、migration staging 和 CSV export 均受 resolved-path boundary 检查.
+`CODEX_USAGE_DATA_DIR` 必须是应用可写且不位于受保护目录内的绝对目录.ledger、更新下载 cache 和 migration staging 均受 resolved-path boundary 检查.
 
 从旧 release 目录复制 ledger 时,先退出应用,然后运行 `scripts/migrate-usage-ledger.ps1 -WhatIf` 预览.该工具要求确认、创建校验过的备份且不删除 source.
 
@@ -67,10 +66,10 @@ git diff --check
 ```powershell
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.8 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.9 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-构建需要本地 7-Zip Extra 中的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载或安装压缩工具.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.8-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+构建需要本地 7-Zip Extra 中的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载或安装压缩工具.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.9-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
 该安装包支持从旧 Electron 0.2.6 原位升级到 WinUI 3.安装器直接检测并强制终止仍在运行的 Codex Usage Desktop process,调用旧 Electron uninstaller 后覆盖 WinUI payload,不再创建 ledger 备份.旧 Startup shortcut 会迁移为当前用户的 HKCU Run entry.旧 Electron uninstaller 可能删除 LocalAppData ledger;新版卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 ledger.
 

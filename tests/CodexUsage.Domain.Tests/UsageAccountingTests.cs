@@ -143,20 +143,4 @@ public sealed class UsageAccountingTests
         Assert.Equal(0, autoReviewOnly.Summary.Cost.Total);
     }
 
-    [Fact]
-    public void CsvPreservesSourceModelAndProtectsSpreadsheetFormulaFields()
-    {
-        var csv = UsageAccounting.CsvRows([
-            Event,
-            Event with { RolloutId = "=formula", TokenEventOrdinal = 1, Model = "o3" },
-            Event with { RolloutId = "auto-review", TokenEventOrdinal = 2, Model = "codex-auto-review" },
-        ], Filter);
-        Assert.StartsWith("\uFEFFtimestamp_sgt", csv, StringComparison.Ordinal);
-        Assert.Contains("\"2026-07-15T09:00:00+08:00\"", csv, StringComparison.Ordinal);
-        Assert.Contains("\"gpt-5.6-sol\",\"gpt-5.6-sol\"", csv, StringComparison.Ordinal);
-        Assert.Contains("\"Others\",\"o3\"", csv, StringComparison.Ordinal);
-        Assert.Contains("\"codex-auto-review\",\"codex-auto-review\"", csv, StringComparison.Ordinal);
-        Assert.Contains("\"'=formula\"", csv, StringComparison.Ordinal);
-        Assert.Contains("\"4.4\"", csv, StringComparison.Ordinal);
-    }
 }

@@ -1089,6 +1089,153 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
+    public async Task ScheduledWatcherRetryUsesRetryingPhase()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-retrying.jsonl");
+        var valid = Rollout("retrying", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        WriteRollout(rolloutPath, valid);
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            EnableWatchers = false,
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromSeconds(2),
+            RetryAttempts = 1,
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        });
+        await StartAndWaitForInventoryAsync(collector);
+
+        WriteRollout(rolloutPath, valid + "{not-json}\n");
+        collector.EnqueueWatcherObservationForTest(rolloutPath);
+
+        var status = await WaitForPhaseAsync(collector, CollectorPhase.Retrying);
+
+        Assert.Equal(0, status.Conflicts);
+        Assert.Equal(1, status.PendingFiles);
+    }
+
+    [Fact]
+    public async Task InFlightWatcherRetryKeepsStatusAndQueriesResponsive()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-retrying-in-flight.jsonl");
+        var valid = Rollout("retrying-in-flight", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        var corrected = valid + string.Join('\n', Enumerable.Range(0, 64)
+            .Select(index => Line("ignored_record", new { index }))) + "\n";
+        var retryAttemptEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRetryAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var captureRetryAttempt = 0;
+        var hooks = new CollectorTestHooks(AfterStableAppendSnapshotCapturedAsync: async (_, token) =>
+        {
+            if (Volatile.Read(ref captureRetryAttempt) == 0) return;
+            retryAttemptEntered.TrySetResult();
+            await releaseRetryAttempt.Task.WaitAsync(token);
+        });
+        WriteRollout(rolloutPath, valid);
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            EnableWatchers = false,
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromMilliseconds(500),
+            RetryAttempts = 1,
+            CooperativeItemLimit = 1,
+            CooperativeTimeBudget = TimeSpan.FromMilliseconds(1),
+            ParserSliceBytes = 128,
+            ParserSliceRecords = 1,
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        }, hooks);
+        await StartAndWaitForInventoryAsync(collector);
+
+        WriteRollout(rolloutPath, valid + "{not-json}\n");
+        collector.EnqueueWatcherObservationForTest(rolloutPath);
+        _ = await WaitForPhaseAsync(collector, CollectorPhase.Retrying);
+        WriteRollout(rolloutPath, corrected);
+        Interlocked.Exchange(ref captureRetryAttempt, 1);
+
+        await retryAttemptEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var status = collector.GetStatusAsync().AsTask();
+        var query = collector.QueryEventsAsync(AllTimeQuery()).AsTask();
+        releaseRetryAttempt.TrySetResult();
+
+        Assert.Equal(CollectorPhase.Retrying, (await status.WaitAsync(TimeSpan.FromSeconds(2))).Phase);
+        Assert.Single(await query.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task MultipleScheduledWatcherRetriesUseRetryingPhase()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var firstPath = Path.Combine(codexHome, "sessions", "rollout-retrying-first.jsonl");
+        var secondPath = Path.Combine(codexHome, "sessions", "rollout-retrying-second.jsonl");
+        var first = Rollout("retrying-first", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        var second = Rollout("retrying-second", Token([20, 3, 6, 2, 26], [20, 3, 6, 2, 26]));
+        WriteRollout(firstPath, first);
+        WriteRollout(secondPath, second);
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            EnableWatchers = false,
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromSeconds(2),
+            RetryAttempts = 1,
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        });
+        await StartAndWaitForInventoryAsync(collector);
+
+        WriteRollout(firstPath, first + "{not-json}\n");
+        WriteRollout(secondPath, second + "{not-json}\n");
+        collector.EnqueueWatcherObservationForTest(firstPath);
+        collector.EnqueueWatcherObservationForTest(secondPath);
+
+        var status = await WaitForPhaseAsync(collector, CollectorPhase.Retrying);
+
+        Assert.Equal(0, status.Conflicts);
+        Assert.Equal(2, status.PendingFiles);
+    }
+
+    [Fact]
+    public async Task ExhaustedWatcherRetryUsesDegradedPhase()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-retry-exhausted.jsonl");
+        var valid = Rollout("retry-exhausted", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        WriteRollout(rolloutPath, valid);
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            EnableWatchers = false,
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromMilliseconds(100),
+            RetryAttempts = 1,
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        });
+        await StartAndWaitForInventoryAsync(collector);
+
+        WriteRollout(rolloutPath, valid + "{not-json}\n");
+        collector.EnqueueWatcherObservationForTest(rolloutPath);
+
+        _ = await WaitForPhaseAsync(collector, CollectorPhase.Retrying);
+        var status = await WaitForPhaseAsync(collector, CollectorPhase.Degraded);
+
+        Assert.Equal(0, status.Conflicts);
+        Assert.True(status.PendingFiles > 0);
+    }
+
+    [Fact]
     public async Task RetryDeadlineUsesInjectedMonotonicTimestamp()
     {
         using var temporary = new TemporaryDirectory();
@@ -1767,6 +1914,22 @@ public sealed class CollectionIntegrationTests
             await Task.Delay(10);
         }
         throw new TimeoutException("Collector inventory did not complete within the test deadline.");
+    }
+
+    private static async Task<CollectorStatus> WaitForPhaseAsync(
+        UsageCollector collector,
+        CollectorPhase expected,
+        TimeSpan? timeout = null)
+    {
+        var expires = Stopwatch.StartNew();
+        var limit = timeout ?? TimeSpan.FromSeconds(2);
+        while (expires.Elapsed < limit)
+        {
+            var status = await collector.GetStatusAsync();
+            if (status.Phase == expected) return status;
+            await Task.Delay(10);
+        }
+        throw new TimeoutException($"Collector did not enter {expected} within the test deadline.");
     }
 
     private static void SeedLedger(

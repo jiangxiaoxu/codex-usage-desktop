@@ -306,9 +306,10 @@ public sealed class DashboardPresentationTests
     [InlineData(CollectorPhase.Watching, "正在监测", "\uE73E", DashboardHeaderStatusTone.Success)]
     [InlineData(CollectorPhase.Partial, "正在监测 · 部分数据可能不完整", "\uE7BA", DashboardHeaderStatusTone.Warning)]
     [InlineData(CollectorPhase.Syncing, "正在同步", "\uE895", DashboardHeaderStatusTone.Accent)]
-    [InlineData(CollectorPhase.Degraded, "正在重试", "\uE7BA", DashboardHeaderStatusTone.Danger)]
+    [InlineData(CollectorPhase.Retrying, "正在更新数据", "\uE72C", DashboardHeaderStatusTone.Accent)]
+    [InlineData(CollectorPhase.Degraded, "需要关注", "\uE7BA", DashboardHeaderStatusTone.Danger)]
     [InlineData(CollectorPhase.Stopped, "已暂停", "\uE711", DashboardHeaderStatusTone.Muted)]
-    public void HeaderStatusPresentationUsesDistinctNonSuccessTonesForNonHealthyPhases(
+    public void HeaderStatusPresentationUsesExpectedToneForEachPhase(
         CollectorPhase phase,
         string text,
         string glyph,
@@ -906,7 +907,7 @@ public sealed class DashboardPresentationTests
         new("Watcher", $"watcher-{marker}", $"watcher-detail-{marker}"),
         new("上次对账", $"reconciliation-{marker}", $"reconciliation-detail-{marker}"),
         new("源文件", $"sources-{marker}", $"sources-detail-{marker}"),
-        new("重试队列", $"retry-{marker}", $"retry-detail-{marker}"),
+        new("待处理文件", $"retry-{marker}", $"retry-detail-{marker}"),
         new("观察覆盖", $"coverage-{marker}", $"coverage-detail-{marker}"),
     ];
 

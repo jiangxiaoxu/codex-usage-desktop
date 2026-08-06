@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Text;
 using CodexUsage.Domain;
 using CodexUsage.Infrastructure;
 using CodexUsage.Infrastructure.Collection;
@@ -16,18 +15,13 @@ public sealed class DashboardApplicationService : IUsageDashboardService
 
     private readonly IUsageCollector _collector;
     private readonly IProcessEfficiencyMode _efficiencyMode;
-    private readonly ProtectedPathPolicy _protectedPathPolicy;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly SemaphoreSlim _efficiencyGate = new(1, 1);
     private readonly object _efficiencyStateLock = new();
-    private readonly object _refreshLock = new();
     private CollectorStatus? _collectorStatus;
     private ProcessEfficiencyModeResult _efficiencyResult = EfficiencyNotAttempted;
     private ProcessExecutionMode _requestedExecutionMode = ProcessExecutionMode.Efficiency;
     private long _efficiencyRevision;
-    private Task<DashboardSnapshot>? _refreshInFlight;
-    private DashboardQueryRequest? _refreshRequest;
-    private CancellationTokenSource? _refreshCancellation;
     private long? _lastUsageRevision;
     private bool _started;
     private bool _efficiencyAttempted;
@@ -35,12 +29,10 @@ public sealed class DashboardApplicationService : IUsageDashboardService
 
     public DashboardApplicationService(
         IUsageCollector collector,
-        IProcessEfficiencyMode efficiencyMode,
-        ProtectedPathPolicy protectedPathPolicy)
+        IProcessEfficiencyMode efficiencyMode)
     {
         _collector = collector ?? throw new ArgumentNullException(nameof(collector));
         _efficiencyMode = efficiencyMode ?? throw new ArgumentNullException(nameof(efficiencyMode));
-        _protectedPathPolicy = protectedPathPolicy ?? throw new ArgumentNullException(nameof(protectedPathPolicy));
         _collector.StatusChanged += OnCollectorStatusChanged;
     }
 
@@ -75,81 +67,6 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         }
     }
 
-    public Task<DashboardSnapshot> RefreshAsync(
-        DashboardQueryRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        ValidateRequest(request);
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_refreshLock)
-        {
-            ThrowIfDisposed();
-            if (_refreshInFlight is { IsCompleted: false } active)
-            {
-                return RequestsEquivalent(_refreshRequest!, request)
-                    ? active.WaitAsync(cancellationToken)
-                    : QueryAfterRefreshAsync(active, request, cancellationToken);
-            }
-
-            var refreshCancellation = new CancellationTokenSource();
-            var refresh = RefreshCoreAsync(request, refreshCancellation.Token);
-            _refreshInFlight = refresh;
-            _refreshRequest = request;
-            _refreshCancellation = refreshCancellation;
-            _ = refresh.ContinueWith(
-                completed => ClearRefresh(completed, refreshCancellation),
-                CancellationToken.None,
-                TaskContinuationOptions.None,
-                TaskScheduler.Default);
-            return refresh.WaitAsync(cancellationToken);
-        }
-    }
-
-    private async Task<DashboardSnapshot> RefreshCoreAsync(
-        DashboardQueryRequest request,
-        CancellationToken cancellationToken)
-    {
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            ThrowIfDisposed();
-            EnsureStarted();
-            var sync = await _collector.RefreshAsync(cancellationToken).ConfigureAwait(false);
-            _collectorStatus = sync.Status;
-            return await QueryCoreAsync(request, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            _operationGate.Release();
-        }
-    }
-
-    private async Task<DashboardSnapshot> QueryAfterRefreshAsync(
-        Task<DashboardSnapshot> refresh,
-        DashboardQueryRequest request,
-        CancellationToken cancellationToken)
-    {
-        await refresh.WaitAsync(cancellationToken).ConfigureAwait(false);
-        return await QueryAsync(request, cancellationToken).ConfigureAwait(false);
-    }
-
-    private void ClearRefresh(
-        Task<DashboardSnapshot> completed,
-        CancellationTokenSource refreshCancellation)
-    {
-        lock (_refreshLock)
-        {
-            if (ReferenceEquals(_refreshInFlight, completed))
-            {
-                _refreshInFlight = null;
-                _refreshRequest = null;
-                _refreshCancellation = null;
-            }
-        }
-        refreshCancellation.Dispose();
-    }
-
     public async Task<DashboardSnapshot> QueryAsync(
         DashboardQueryRequest request,
         CancellationToken cancellationToken = default)
@@ -169,21 +86,6 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         }
     }
 
-    public async Task<CsvExportResult> ExportCsvAsync(
-        DashboardQueryRequest request,
-        string outputPath,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            return await ExportCsvCoreAsync(request, outputPath, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return new(CsvExportStatus.Cancelled, null, 0);
-        }
-    }
-
     public Task<ProcessEfficiencyModeResult> SetProcessExecutionModeAsync(ProcessExecutionMode mode)
     {
         ThrowIfDisposed();
@@ -200,48 +102,6 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         return ApplyRequestedExecutionModeAsync();
     }
 
-    private async Task<CsvExportResult> ExportCsvCoreAsync(
-        DashboardQueryRequest request,
-        string outputPath,
-        CancellationToken cancellationToken)
-    {
-        ThrowIfDisposed();
-        ValidateRequest(request);
-        ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
-        var normalizedPath = Path.GetFullPath(outputPath);
-        _protectedPathPolicy.AssertWritablePath(normalizedPath);
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            ThrowIfDisposed();
-            EnsureStarted();
-            var storedEvents = await QueryStoredEventsAsync(request, cancellationToken).ConfigureAwait(false);
-            var export = await Task.Run(
-                () =>
-                {
-                    var events = storedEvents.Select(ToDomainEvent).ToArray();
-                    var filter = ToFilterSpec(request);
-                    return new
-                    {
-                        Csv = UsageAccounting.CsvRows(events, filter),
-                        EventCount = events.LongCount(value => UsageAccounting.MatchesFilter(value, filter)),
-                    };
-                },
-                cancellationToken).ConfigureAwait(false);
-            _protectedPathPolicy.AssertWritablePath(normalizedPath);
-            await File.WriteAllTextAsync(
-                normalizedPath,
-                export.Csv,
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                cancellationToken).ConfigureAwait(false);
-            return new(CsvExportStatus.Completed, normalizedPath, export.EventCount);
-        }
-        finally
-        {
-            _operationGate.Release();
-        }
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -249,10 +109,6 @@ public sealed class DashboardApplicationService : IUsageDashboardService
             return;
         }
 
-        lock (_refreshLock)
-        {
-            _refreshCancellation?.Cancel();
-        }
         await _operationGate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -367,7 +223,7 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         _collectorStatus = status;
         PublishStatus(status.Message);
         var usageChanged = _started
-            && status.Phase is CollectorPhase.Watching or CollectorPhase.Partial or CollectorPhase.Degraded
+            && status.Phase is CollectorPhase.Watching or CollectorPhase.Partial or CollectorPhase.Retrying or CollectorPhase.Degraded
             && _lastUsageRevision is { } previous
             && previous != status.UsageRevision;
         _lastUsageRevision = status.UsageRevision;
@@ -446,18 +302,6 @@ public sealed class DashboardApplicationService : IUsageDashboardService
 
         ArgumentNullException.ThrowIfNull(request.PathQuery);
     }
-
-    private static bool RequestsEquivalent(DashboardQueryRequest left, DashboardQueryRequest right) =>
-        left.StartUtc == right.StartUtc
-        && left.EndUtc == right.EndUtc
-        && string.Equals(left.PathQuery, right.PathQuery, StringComparison.Ordinal)
-        && NullableSequenceEqual(left.Models, right.Models)
-        && NullableSequenceEqual(left.Subjects, right.Subjects);
-
-    private static bool NullableSequenceEqual<T>(ImmutableArray<T>? left, ImmutableArray<T>? right) =>
-        left is null
-            ? right is null
-            : right is not null && left.Value.SequenceEqual(right.Value);
 
     private void EnsureStarted()
     {

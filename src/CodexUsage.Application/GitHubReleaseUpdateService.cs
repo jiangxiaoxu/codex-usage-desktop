@@ -73,7 +73,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
                 return new ReleaseUpdateCheckResult(
                     true,
                     true,
-                    $"发现未签名实验版本 {package.Version}; 仅校验 GitHub SHA-256 后才可下载",
+                    $"发现版本 {package.Version}; 下载时将校验 GitHub Release SHA-256",
                     package);
             }
 
@@ -149,7 +149,7 @@ public sealed class GitHubReleaseUpdateService : IReleaseUpdateService
             progress?.Report(new ReleaseUpdateDownloadProgress(downloadedBytes.Count, package.SizeBytes));
             return new ReleaseUpdateDownloadResult(
                 ReleaseUpdateDownloadStatus.Completed,
-                $"已校验 SHA-256 并下载未签名实验安装器 {package.Version}; 运行前会再次校验文件",
+                $"已下载并校验安装器 {package.Version} 的 SHA-256; 运行前会再次校验文件",
                 installerPath);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

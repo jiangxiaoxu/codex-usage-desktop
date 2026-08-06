@@ -13,7 +13,7 @@ Codex sessions / archived_sessions JSONL
 UsageCollector -> RolloutParser -> UsageStore -> usage.sqlite
       |               |              |
       |               v              v
-      |          UsageEvent      query/export
+      |          UsageEvent      query
       v                              |
 DashboardApplicationService --------+
                 |
@@ -24,7 +24,7 @@ DashboardViewModel -> WinUI 3 XAML
 这些 component 位于一个 native .NET process 中,但职责边界保持独立:
 
 - `CodexUsage.App` 拥有 WinUI lifecycle、window、tray、HKCU Run startup、native dialogs 和 UI dispatcher.
-- `CodexUsage.Application` 编排 collector、query、export 和 platform service,并向 UI 暴露类型化 contract.
+- `CodexUsage.Application` 编排 collector、query 和 platform service,并向 UI 暴露类型化 contract.
 - `CodexUsage.Infrastructure` 拥有 FileSystemWatcher、collector actor、SQLite access 和 protected-path policy.
 - `CodexUsage.Domain` 验证不受信任 JSONL,执行 canonicalization、filtering 和 accounting.
 
@@ -40,9 +40,9 @@ UI 不直接打开 rollout 或 SQLite.耗时任务不占用 UI thread;Applicatio
 
 ## Collection actor
 
-`UsageCollector` 通过单 consumer channel 串行化状态变更.FileSystemWatcher callback 只规范化路径并入队,不会读取或解析完整 JSONL.重复 path event 经过 debounce 和去重,每批最多处理 16 个 path.失败 path 使用有界指数 backoff;watch event 不会清零失败状态,只有成功处理才会清除.相同 source/error diagnostic 按时间窗口节流.仍有 retry 或 conflict 时状态为 `degraded`.
+`UsageCollector` 通过单 consumer channel 串行化状态变更.FileSystemWatcher callback 只规范化路径并入队,不会读取或解析完整 JSONL.重复 path event 经过 debounce 和去重,每批最多处理 16 个 path.失败 path 使用有界指数 backoff;watch event 不会清零失败状态,只有成功处理才会清除.相同 source/error diagnostic 按时间窗口节流.单个已调度且仍在允许次数内的可恢复 retry 显示为 `Retrying`;watcher 不健康、source conflict、多个 retry 或耗尽 retry 时显示为 `Degraded`.
 
-full inventory 在 startup、manual sync 和每 5 分钟的兜底 reconciliation 运行.它不可重入;活动期间的手动同步最多排队一个 trailing run.目录采用 breadth-first 分片 enumeration,outer work 和 parser/hash work 在小片之间 cooperative yield,降低长时间占用 CPU 的峰值.这些值是 duty-cycle target,不是严格的单条 record latency 或 memory bound.
+full inventory 在 startup 和每 5 分钟的兜底 reconciliation 自动运行.它不可重入.目录采用 breadth-first 分片 enumeration,outer work 和 parser/hash work 在小片之间 cooperative yield,降低长时间占用 CPU 的峰值.这些值是 duty-cycle target,不是严格的单条 record latency 或 memory bound.
 
 collector 记录 source size、mtime、committed byte offset 和 consumed prefix boundary hash.稳定读取使用 stat-before/read/stat-after.追加读取先验证既有 boundary;验证失败时执行完整 reparse.
 
@@ -59,7 +59,7 @@ cold restart 只接受 canonical path、rollout、revision、state hash、ledger
 - 如果 changed path 的 rollout ID 已变化,旧 rollout 只可从安全 fallback 恢复,changed path 作为新 rollout 独立解析.
 - `Shorter`、`Diverged`、attribution 不一致、malformed、unstable 或无法建立信任的候选不进入 ledger replacement.
 
-unsafe 情况保留最后有效 ledger,内部状态保持 degraded,写入 diagnostic 并由后台 retry/reconciliation 重试.GUI contract 不暴露 source conflict banner、counter 或 table row.
+unsafe 情况保留最后有效 ledger,写入 diagnostic 并由后台 retry/reconciliation 重试.单个仍可恢复的已调度 retry 使用 `Retrying`;其余 retry 或 conflict 情况使用 `Degraded`.GUI contract 不暴露 source conflict banner、counter 或 table row.
 
 source 消失时仅标记 absent,已经记账的历史 event 保留.parser revision 变化时,当前可发现 rollout 逐个 transaction rebuild;所有候选成功后才推进 revision marker.
 

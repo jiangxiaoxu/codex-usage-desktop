@@ -15,7 +15,7 @@ public sealed class DashboardApplicationServiceTests
         var order = new List<string>();
         var collector = new FakeCollector(order);
         var efficiency = new FakeEfficiencyMode(order);
-        await using var service = new DashboardApplicationService(collector, efficiency, CreatePolicy());
+        await using var service = new DashboardApplicationService(collector, efficiency);
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
 
         var snapshot = await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
@@ -31,25 +31,10 @@ public sealed class DashboardApplicationServiceTests
     }
 
     [Fact]
-    public async Task RefreshRunsManualInventoryBeforeQuery()
-    {
-        var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-
-        await service.RefreshAsync(request);
-
-        Assert.Equal(1, collector.RefreshCount);
-        Assert.Equal(2, collector.QueryCount);
-    }
-
-    [Fact]
     public async Task EfficiencyFailureDoesNotPreventCollectorStartup()
     {
         var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new ThrowingEfficiencyMode(), CreatePolicy());
+        await using var service = new DashboardApplicationService(collector, new ThrowingEfficiencyMode());
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
 
         var snapshot = await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
@@ -66,8 +51,7 @@ public sealed class DashboardApplicationServiceTests
         var collector = new FakeCollector(order);
         await using var service = new DashboardApplicationService(
             collector,
-            new FakeEfficiencyMode(order),
-            CreatePolicy());
+            new FakeEfficiencyMode(order));
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
 
         await service.SetProcessExecutionModeAsync(ProcessExecutionMode.Interactive);
@@ -110,7 +94,7 @@ public sealed class DashboardApplicationServiceTests
     {
         var collector = new FakeCollector([]);
         var efficiency = new ControlledEfficiencyMode();
-        await using var service = new DashboardApplicationService(collector, efficiency, CreatePolicy());
+        await using var service = new DashboardApplicationService(collector, efficiency);
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
         await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
         var statuses = new List<DashboardApplicationStatus>();
@@ -139,7 +123,7 @@ public sealed class DashboardApplicationServiceTests
     public async Task QueryAppliesModelFilterWhileKeepingDateFacets()
     {
         var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
+        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]));
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
         await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
 
@@ -153,164 +137,10 @@ public sealed class DashboardApplicationServiceTests
     }
 
     [Fact]
-    public async Task ExportWritesCsvAfterProtectedPathValidation()
-    {
-        var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-        var outputPath = Path.Combine(Path.GetTempPath(), $"codex-usage-{Guid.NewGuid():N}.csv");
-        try
-        {
-            var result = await service.ExportCsvAsync(request, outputPath);
-
-            Assert.Equal(CsvExportStatus.Completed, result.Status);
-            Assert.Equal(1, result.EventCount);
-            Assert.Equal([0xEF, 0xBB, 0xBF], (await File.ReadAllBytesAsync(outputPath))[..3]);
-            Assert.StartsWith("timestamp_sgt", await File.ReadAllTextAsync(outputPath), StringComparison.Ordinal);
-        }
-        finally
-        {
-            File.Delete(outputPath);
-        }
-    }
-
-    [Fact]
-    public async Task ExportRejectsProtectedCodexSourcePath()
-    {
-        var codexHome = Path.Combine(Path.GetTempPath(), $"codex-protected-{Guid.NewGuid():N}");
-        var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(
-            collector,
-            new FakeEfficiencyMode([]),
-            ProtectedPathPolicy.ForCodexHome(codexHome));
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ExportCsvAsync(
-            request,
-            Path.Combine(codexHome, "sessions", "forbidden.csv")));
-    }
-
-    [Fact]
-    public async Task ExportReturnsCancelledOutcomeWithoutWriting()
-    {
-        var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-        var outputPath = Path.Combine(Path.GetTempPath(), $"codex-usage-{Guid.NewGuid():N}.csv");
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-
-        var result = await service.ExportCsvAsync(request, outputPath, cancellation.Token);
-
-        Assert.Equal(CsvExportStatus.Cancelled, result.Status);
-        Assert.Null(result.OutputPath);
-        Assert.False(File.Exists(outputPath));
-    }
-
-    [Fact]
-    public async Task ExportCountUsesFilteredDataRows()
-    {
-        var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var all = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(all);
-        var filtered = all with { Models = ImmutableArray.Create("gpt-5.6-terra") };
-        var outputPath = Path.Combine(Path.GetTempPath(), $"codex-usage-{Guid.NewGuid():N}.csv");
-        try
-        {
-            var result = await service.ExportCsvAsync(filtered, outputPath);
-
-            Assert.Equal(CsvExportStatus.Completed, result.Status);
-            Assert.Equal(0, result.EventCount);
-            Assert.DoesNotContain("\"conversation\"", await File.ReadAllTextAsync(outputPath), StringComparison.Ordinal);
-        }
-        finally
-        {
-            File.Delete(outputPath);
-        }
-    }
-
-    [Fact]
-    public async Task ConcurrentEquivalentRefreshesShareOneInventory()
-    {
-        var collector = new FakeCollector([])
-        {
-            RefreshBlock = new(TaskCreationOptions.RunContinuationsAsynchronously),
-        };
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-
-        var first = service.RefreshAsync(request);
-        var second = service.RefreshAsync(request);
-        await Task.Delay(20);
-
-        Assert.Equal(1, collector.RefreshCount);
-        collector.RefreshBlock.SetResult(true);
-        await Task.WhenAll(first, second);
-        Assert.Equal(1, collector.RefreshCount);
-    }
-
-    [Fact]
-    public async Task CancellingOneRefreshWaiterDoesNotCancelSharedInventory()
-    {
-        var collector = new FakeCollector([])
-        {
-            RefreshBlock = new(TaskCreationOptions.RunContinuationsAsynchronously),
-        };
-        var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-        using var waiterCancellation = new CancellationTokenSource();
-
-        var detachedWaiter = service.RefreshAsync(request, waiterCancellation.Token);
-        await collector.RefreshStarted.Task;
-        var remainingWaiter = service.RefreshAsync(request);
-        waiterCancellation.Cancel();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => detachedWaiter);
-        Assert.False(collector.LastRefreshCancellationToken.IsCancellationRequested);
-        collector.RefreshBlock.SetResult(true);
-        await remainingWaiter;
-        Assert.Equal(1, collector.RefreshCount);
-        await service.DisposeAsync();
-    }
-
-    [Fact]
-    public async Task DisposeCancelsOwnedSharedRefreshBeforeWaitingForGate()
-    {
-        var collector = new FakeCollector([])
-        {
-            RefreshBlock = new(TaskCreationOptions.RunContinuationsAsynchronously),
-        };
-        var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var request = new DashboardQueryRequest(end.AddHours(-1), end);
-        await service.StartAsync(request);
-        var refresh = service.RefreshAsync(request);
-        await collector.RefreshStarted.Task;
-
-        await service.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
-
-        Assert.True(collector.LastRefreshCancellationToken.IsCancellationRequested);
-        Assert.Equal(1, collector.DisposeCount);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => refresh);
-    }
-
-    [Fact]
     public async Task ChangedCollectorUsageRevisionRaisesUsageChanged()
     {
         var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
+        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]));
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
         await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
         var changes = 0;
@@ -322,10 +152,25 @@ public sealed class DashboardApplicationServiceTests
     }
 
     [Fact]
+    public async Task ChangedCollectorUsageRevisionDuringRetryingRaisesUsageChanged()
+    {
+        var collector = new FakeCollector([]);
+        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]));
+        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
+        await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
+        var changes = 0;
+        service.UsageChanged += (_, _) => changes++;
+
+        collector.EmitUsageChange(CollectorPhase.Retrying);
+
+        Assert.Equal(1, changes);
+    }
+
+    [Fact]
     public async Task StatusOnlyCollectorChangesDoNotRaiseUsageChanged()
     {
         var collector = new FakeCollector([]);
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]), CreatePolicy());
+        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]));
         var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
         await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
         var statuses = 0;
@@ -355,6 +200,19 @@ public sealed class DashboardApplicationServiceTests
         Assert.False(updateState.IsAvailable);
         Assert.False(updateState.IsUpdateAvailable);
         Assert.Equal(UnconfiguredReleaseUpdateService.DiagnosticMessage, updateState.Message);
+    }
+
+    [Fact]
+    public void StartupStatusKeepsConfiguredReleaseFeedWhenManualCheckIsInFlight()
+    {
+        var startup = new PlatformFeatureResult(true, true, "开机自启动已开启");
+
+        var status = DashboardPlatformStatusText.ForStartup(
+            startup,
+            isReleaseUpdateAvailable: true);
+
+        Assert.Equal(startup.Message, status);
+        Assert.DoesNotContain(UnconfiguredReleaseUpdateService.DiagnosticMessage, status, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -391,9 +249,6 @@ public sealed class DashboardApplicationServiceTests
         Assert.False(StartupLaunchContract.IsStartupLaunch("--start"));
         Assert.False(StartupLaunchContract.IsStartupLaunch(Array.Empty<string>()));
     }
-
-    private static ProtectedPathPolicy CreatePolicy() => new(
-        [Path.Combine(Path.GetTempPath(), "codex-usage-application-tests-protected")]);
 
     private sealed class FakeEfficiencyMode(List<string> order) : IProcessEfficiencyMode
     {
@@ -479,15 +334,7 @@ public sealed class DashboardApplicationServiceTests
 
         public event EventHandler<CollectorStatus>? StatusChanged;
 
-        public int RefreshCount { get; private set; }
-
         public int QueryCount { get; private set; }
-
-        public TaskCompletionSource<bool>? RefreshBlock { get; init; }
-
-        public TaskCompletionSource<bool> RefreshStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public CancellationToken LastRefreshCancellationToken { get; private set; }
 
         public int DisposeCount { get; private set; }
 
@@ -499,17 +346,10 @@ public sealed class DashboardApplicationServiceTests
             return ValueTask.FromResult(_status);
         }
 
-        public async ValueTask<CollectorSyncResult> RefreshAsync(CancellationToken cancellationToken = default)
+        public ValueTask<CollectorSyncResult> RefreshAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            RefreshCount++;
-            LastRefreshCancellationToken = cancellationToken;
-            RefreshStarted.TrySetResult(true);
-            if (RefreshBlock is not null)
-            {
-                await RefreshBlock.Task.WaitAsync(cancellationToken);
-            }
-            return new CollectorSyncResult(_status, true);
+            return ValueTask.FromResult(new CollectorSyncResult(_status, true));
         }
 
         public ValueTask<CollectorStatus> GetStatusAsync(CancellationToken cancellationToken = default)
@@ -553,8 +393,9 @@ public sealed class DashboardApplicationServiceTests
             return ValueTask.CompletedTask;
         }
 
-        public void EmitUsageChange() => StatusChanged?.Invoke(this, _status with
+        public void EmitUsageChange(CollectorPhase phase = CollectorPhase.Watching) => StatusChanged?.Invoke(this, _status with
         {
+            Phase = phase,
             UsageRevision = _status.UsageRevision + 1,
         });
 

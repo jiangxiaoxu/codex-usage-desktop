@@ -4,6 +4,13 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-08-06
+
+- Unified the command bar's font, font size, and vertical alignment.
+- Removed the manual sync and CSV export commands from the command bar.
+- Added clear user feedback after a manual update check, including confirmation when the installed version is current.
+- Distinguished routine data updates from actionable retry and degraded collector states.
+
 ## [0.3.8] - 2026-08-06
 
 - Improved diagnostics layout with a wider value column, 32 px column spacing, and wrapping for long values.

@@ -105,6 +105,7 @@
                 Grid.Column="1"
                 Margin="10,0,0,0"
                 VerticalAlignment="Center"
+                FontFamily="{StaticResource ContentControlThemeFontFamily}"
                 FontSize="12"
                 FontWeight="Medium"
                 Foreground="{StaticResource SecondaryTextBrush}"
@@ -125,6 +126,7 @@
                 <TextBlock
                     x:Name="CommandTitle"
                     VerticalAlignment="Center"
+                    FontFamily="{StaticResource ContentControlThemeFontFamily}"
                     FontWeight="SemiBold"
                     Foreground="{StaticResource PrimaryTextBrush}"
                     Text="Codex 用量概览" />
@@ -146,9 +148,7 @@
                     <TextBlock
                         Grid.Column="1"
                         Margin="7,0,0,0"
-                        VerticalAlignment="Center"
-                        FontSize="12"
-                        Foreground="{StaticResource SecondaryTextBrush}"
+                        Style="{StaticResource CommandHeaderTextStyle}"
                         Text="{Binding HeaderStatusText}"
                         TextTrimming="CharacterEllipsis" />
                 </Grid>
@@ -158,16 +158,18 @@
                     Grid.Column="2"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Center"
+                    VerticalContentAlignment="Center"
                     Background="Transparent"
                     DefaultLabelPosition="Right"
                     IsDynamicOverflowEnabled="True"
                     Padding="0">
                     <CommandBar.Content>
                         <StackPanel VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
-                            <ProgressRing Width="16" Height="16" IsActive="{Binding IsSyncing}" />
-                            <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{StaticResource SecondaryTextBrush}" Text="开机自启动" />
+                            <TextBlock Style="{StaticResource CommandHeaderTextStyle}" Text="开机自启动" />
                             <ToggleSwitch
                                 VerticalAlignment="Center"
+                                FontFamily="{StaticResource ContentControlThemeFontFamily}"
+                                FontSize="14"
                                 IsEnabled="{Binding IsStartupAvailable}"
                                 IsOn="{Binding IsStartupEnabled, Mode=TwoWay}"
                                 OffContent="关"
@@ -185,18 +187,14 @@
                                     Maximum="100"
                                     Value="{Binding UpdateDownloadProgressPercent}" />
                                 <TextBlock
-                                    VerticalAlignment="Center"
-                                    FontSize="13"
-                                    Foreground="{StaticResource SecondaryTextBrush}"
+                                    Style="{StaticResource CommandHeaderTextStyle}"
                                     Text="{Binding UpdateDownloadProgressText}" />
                             </StackPanel>
                         </StackPanel>
                     </CommandBar.Content>
-                    <AppBarButton Height="40" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新（未签名实验）" />
-                    <AppBarButton Height="40" Click="OnDownloadUpdateRequested" Icon="Download" IsEnabled="{Binding CanDownloadUpdate}" Label="{Binding DownloadUpdateLabel}" Visibility="{Binding CanDownloadUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                    <AppBarButton Height="40" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="未签名安装器会先复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                    <AppBarButton Height="40" Click="OnSyncRequested" Icon="Sync" IsEnabled="{Binding CanSync}" Label="立即同步" />
-                    <AppBarButton Height="40" Click="OnExportRequested" Icon="Download" Label="导出 CSV" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnDownloadUpdateRequested" Icon="Download" IsEnabled="{Binding CanDownloadUpdate}" Label="{Binding DownloadUpdateLabel}" Visibility="{Binding CanDownloadUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="未签名安装器会先复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </CommandBar>
 
                 <CommandBar
@@ -204,6 +202,7 @@
                     Grid.Row="1"
                     Grid.ColumnSpan="3"
                     HorizontalAlignment="Stretch"
+                    VerticalContentAlignment="Center"
                     Background="Transparent"
                     DefaultLabelPosition="Right"
                     IsDynamicOverflowEnabled="True"
@@ -211,10 +210,11 @@
                     Visibility="Collapsed">
                     <CommandBar.Content>
                         <StackPanel VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
-                            <ProgressRing Width="16" Height="16" IsActive="{Binding IsSyncing}" />
-                            <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{StaticResource SecondaryTextBrush}" Text="开机自启动" />
+                            <TextBlock Style="{StaticResource CommandHeaderTextStyle}" Text="开机自启动" />
                             <ToggleSwitch
                                 VerticalAlignment="Center"
+                                FontFamily="{StaticResource ContentControlThemeFontFamily}"
+                                FontSize="14"
                                 IsEnabled="{Binding IsStartupAvailable}"
                                 IsOn="{Binding IsStartupEnabled, Mode=TwoWay}"
                                 OffContent="关"
@@ -232,18 +232,14 @@
                                     Maximum="100"
                                     Value="{Binding UpdateDownloadProgressPercent}" />
                                 <TextBlock
-                                    VerticalAlignment="Center"
-                                    FontSize="13"
-                                    Foreground="{StaticResource SecondaryTextBrush}"
+                                    Style="{StaticResource CommandHeaderTextStyle}"
                                     Text="{Binding UpdateDownloadProgressText}" />
                             </StackPanel>
                         </StackPanel>
                     </CommandBar.Content>
-                    <AppBarButton Height="40" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新（未签名实验）" />
-                    <AppBarButton Height="40" Click="OnDownloadUpdateRequested" Icon="Download" IsEnabled="{Binding CanDownloadUpdate}" Label="{Binding DownloadUpdateLabel}" Visibility="{Binding CanDownloadUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                    <AppBarButton Height="40" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="未签名安装器会先复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                    <AppBarButton Height="40" Click="OnSyncRequested" Icon="Sync" IsEnabled="{Binding CanSync}" Label="立即同步" />
-                    <AppBarButton Height="40" Click="OnExportRequested" Icon="Download" Label="导出 CSV" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnDownloadUpdateRequested" Icon="Download" IsEnabled="{Binding CanDownloadUpdate}" Label="{Binding DownloadUpdateLabel}" Visibility="{Binding CanDownloadUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="未签名安装器会先复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </CommandBar>
             </Grid>
         </Border>

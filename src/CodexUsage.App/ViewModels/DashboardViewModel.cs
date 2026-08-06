@@ -19,7 +19,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private readonly IUiDispatcher _dispatcher;
     private readonly StartupRegistrationCoordinator _startupTask;
     private readonly IReleaseUpdateService _packageUpdate;
-    private readonly IExportDestinationPicker _exportPicker;
     private readonly TimeProvider _timeProvider;
     private readonly ReleaseUpdateCheckCoordinator _updateCheckCoordinator = new();
     private readonly ReleaseUpdateCheckSchedule _automaticUpdateSchedule = new(TimeSpan.FromHours(6));
@@ -63,7 +62,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private int _queryInFlight;
     private int _queryPending;
     private int _pendingQueryPurpose = (int)DashboardSnapshotApplyPurpose.UserFilter;
-    private int _syncing;
+    private int _updateCheckInFlight;
     private int _disposed;
 
     public DashboardViewModel(
@@ -71,14 +70,12 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         IUiDispatcher dispatcher,
         IStartupRegistrationService startupTask,
         IReleaseUpdateService packageUpdate,
-        IExportDestinationPicker exportPicker,
         TimeProvider? timeProvider = null)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _startupTask = new StartupRegistrationCoordinator(startupTask ?? throw new ArgumentNullException(nameof(startupTask)));
         _packageUpdate = packageUpdate ?? throw new ArgumentNullException(nameof(packageUpdate));
-        _exportPicker = exportPicker ?? throw new ArgumentNullException(nameof(exportPicker));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _platformStatusText = packageUpdate.IsAvailable
             ? "Release feed 可用"
@@ -116,7 +113,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         private set => SetProperty(ref _isStartupAvailable, value);
     }
 
-    public bool CanCheckUpdates => _packageUpdate.IsAvailable;
+    public bool CanCheckUpdates => _packageUpdate.IsAvailable && Volatile.Read(ref _updateCheckInFlight) == 0;
     public bool CanDownloadUpdate => _availableUpdate is not null
         && _downloadedUpdateInstallerPath is null
         && !_updateDownloadCoordinator.IsInFlight;
@@ -208,8 +205,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     public string CollectorStatusText { get => _collectorStatusText; private set => SetProperty(ref _collectorStatusText, value); }
     public string PlatformStatusText { get => _platformStatusText; private set => SetProperty(ref _platformStatusText, value); }
     public bool IsBusy => Volatile.Read(ref _busyCount) > 0;
-    public bool IsSyncing => Volatile.Read(ref _syncing) != 0;
-    public bool CanSync => !IsSyncing;
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -223,59 +218,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _initialized = true;
     }
 
-    public async Task SynchronizeAsync(CancellationToken cancellationToken = default)
-    {
-        if (Interlocked.CompareExchange(ref _syncing, 1, 0) != 0) return;
-        QueuePropertyChanged(nameof(IsSyncing));
-        QueuePropertyChanged(nameof(CanSync));
-        var request = CreateRequest();
-        try
-        {
-            await ExecuteSnapshotAsync(
-                token => _service.RefreshAsync(request, token),
-                DashboardSnapshotApplyPurpose.DataRefresh,
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _syncing, 0);
-            QueuePropertyChanged(nameof(IsSyncing));
-            QueuePropertyChanged(nameof(CanSync));
-        }
-    }
-
-    public async Task ExportCsvAsync(CancellationToken cancellationToken = default)
-    {
-        var busyStarted = false;
-        try
-        {
-            var outputPath = await _exportPicker.PickCsvPathAsync(cancellationToken);
-            if (outputPath is null) return;
-            BeginBusy();
-            busyStarted = true;
-            var result = await _service.ExportCsvAsync(CreateRequest(), outputPath, cancellationToken).ConfigureAwait(false);
-            QueueUi(() => SetPlatformStatus(result.Status == CsvExportStatus.Cancelled
-                ? "CSV 导出已取消"
-                : $"已导出 {result.EventCount:N0} 条记录: {result.OutputPath}"));
-        }
-        catch (OperationCanceledException)
-        {
-            QueueUi(() => SetPlatformStatus("CSV 导出已取消"));
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            QueueUi(() => SetPlatformStatus($"导出失败: {error.Message}"));
-        }
-        finally
-        {
-            if (busyStarted) EndBusy();
-        }
-    }
-
-    public async Task CheckForUpdatesAsync(CancellationToken cancellationToken = default)
-    {
-        _ = await CheckForUpdatesCoreAsync(cancellationToken).ConfigureAwait(false);
-    }
+    public Task<ReleaseUpdateCheckResult?> CheckForUpdatesAsync(CancellationToken cancellationToken = default) =>
+        CheckForUpdatesCoreAsync(cancellationToken);
 
     public void StartAutomaticUpdateChecks(CancellationToken applicationLifetime)
     {
@@ -287,39 +231,44 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _automaticUpdateLoop = RunAutomaticUpdateChecksAsync(cancellation.Token);
     }
 
-    private async Task<bool> CheckForUpdatesCoreAsync(CancellationToken cancellationToken)
+    private async Task<ReleaseUpdateCheckResult?> CheckForUpdatesCoreAsync(CancellationToken cancellationToken)
     {
-        if (!_updateCheckCoordinator.TryBegin()) return false;
+        if (!_updateCheckCoordinator.TryBegin()) return null;
+        Interlocked.Exchange(ref _updateCheckInFlight, 1);
+        QueuePropertyChanged(nameof(CanCheckUpdates));
         BeginBusy();
         try
         {
-            var result = await _packageUpdate.CheckAsync(cancellationToken).ConfigureAwait(false);
-            if (_installerLaunchCoordinator.IsInFlight)
+            ReleaseUpdateCheckResult result;
+            try
             {
-                return true;
+                result = await _packageUpdate.CheckAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                result = new ReleaseUpdateCheckResult(
+                    _packageUpdate.IsAvailable,
+                    false,
+                    $"检查更新失败: {error.Message}");
             }
 
-            var generation = Interlocked.Increment(ref _updateStateGeneration);
-            _updateDownloadCoordinator.Invalidate();
-            QueuePropertyChanged(nameof(CanDownloadUpdate));
-            QueuePropertyChanged(nameof(CanRunDownloadedUpdate));
-            QueueUi(() => ApplyUpdateCheck(result, generation));
-            return true;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            QueueUi(() => SetPlatformStatus("检查更新已取消"));
-            return true;
-        }
-        catch (Exception error)
-        {
-            QueueUi(() => SetPlatformStatus($"检查更新失败: {error.Message}"));
-            return true;
+            if (!_installerLaunchCoordinator.IsInFlight)
+            {
+                var generation = Interlocked.Increment(ref _updateStateGeneration);
+                _updateDownloadCoordinator.Invalidate();
+                QueuePropertyChanged(nameof(CanDownloadUpdate));
+                QueuePropertyChanged(nameof(CanRunDownloadedUpdate));
+                QueueUi(() => ApplyUpdateCheck(result, generation));
+            }
+
+            return result;
         }
         finally
         {
             EndBusy();
             _updateCheckCoordinator.Complete();
+            Interlocked.Exchange(ref _updateCheckInFlight, 0);
+            QueuePropertyChanged(nameof(CanCheckUpdates));
         }
     }
 
@@ -729,9 +678,9 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _suppressStartupUpdate = true;
         IsStartupAvailable = state.IsAvailable;
         IsStartupEnabled = state.IsEnabled;
-        SetPlatformStatus(CanCheckUpdates
-            ? state.Message
-            : $"{state.Message} · {UnconfiguredReleaseUpdateService.DiagnosticMessage}");
+        SetPlatformStatus(DashboardPlatformStatusText.ForStartup(
+            state,
+            _packageUpdate.IsAvailable));
         _suppressStartupUpdate = false;
     }
 
@@ -743,8 +692,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnUsageChanged(object? sender, EventArgs args)
     {
-        if (Volatile.Read(ref _syncing) == 0)
-            QueueUi(() => ScheduleQuery(DashboardSnapshotApplyPurpose.DataRefresh));
+        QueueUi(() => ScheduleQuery(DashboardSnapshotApplyPurpose.DataRefresh));
     }
 
     private void ApplyStatus(CollectorStatus status, bool synchronizeDiagnostics = true)
@@ -754,7 +702,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             CollectorPhase.Watching => "正常",
             CollectorPhase.Partial => "部分解析",
             CollectorPhase.Syncing => "同步中",
-            CollectorPhase.Degraded => "重试中",
+            CollectorPhase.Retrying => "后台处理中",
+            CollectorPhase.Degraded => "需要关注",
             CollectorPhase.Stopped => "已停止",
             _ => "初始化",
         };
@@ -769,7 +718,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             CollectorPhase.Watching => "运行中",
             CollectorPhase.Partial => "运行中 · 部分解析",
             CollectorPhase.Syncing => "同步中",
-            CollectorPhase.Degraded => "重试中",
+            CollectorPhase.Retrying => "正在处理最新变更",
+            CollectorPhase.Degraded => "需要检查",
             CollectorPhase.Stopped => "已停止",
             _ => "启动中",
         };
@@ -789,7 +739,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         new("Watcher", WatcherStatusText, CollectorStatusText),
         new("上次对账", LastReconciliationText, "最近完成的全量对账"),
         new("源文件", SourceFilesText, "已发现的 rollout JSONL"),
-        new("重试队列", RetryQueueText, "等待处理的源文件"),
+        new("待处理文件", RetryQueueText, "等待处理的源文件"),
         new("观察覆盖", CoverageText, "本次运行的数据观察范围"),
     ];
 
@@ -801,7 +751,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private DiagnosticRow CreatePlatformStatusDiagnostic() => new(
         "操作状态",
         PlatformStatusText,
-        "检查更新和 CSV 导出结果");
+        "更新检查和安装结果");
 
     private void SetPlatformStatus(string value)
     {

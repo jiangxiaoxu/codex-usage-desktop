@@ -1,8 +1,6 @@
 using System.Security;
 using CodexUsage.Application;
 using Microsoft.Win32;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
 
 namespace CodexUsage.App.Services;
 
@@ -67,21 +65,4 @@ public sealed class WindowsRunStartupRegistrationService : IStartupRegistrationS
     }
 
     private static PlatformFeatureResult Unavailable(string message) => new(false, false, message);
-}
-
-public sealed class WinUiExportDestinationPicker(IntPtr windowHandle) : IExportDestinationPicker
-{
-    public async Task<string?> PickCsvPathAsync(CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var picker = new FileSavePicker
-        {
-            SuggestedFileName = $"codex-usage-{DateTime.Now:yyyyMMdd-HHmmss}",
-            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
-        };
-        picker.FileTypeChoices.Add("CSV", [".csv"]);
-        InitializeWithWindow.Initialize(picker, windowHandle);
-        var file = await picker.PickSaveFileAsync().AsTask(cancellationToken);
-        return file?.Path;
-    }
 }

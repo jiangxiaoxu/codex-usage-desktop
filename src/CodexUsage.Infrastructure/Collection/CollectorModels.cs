@@ -35,6 +35,7 @@ public enum CollectorPhase
 {
     Initializing,
     Syncing,
+    Retrying,
     Watching,
     Partial,
     Degraded,

@@ -18,7 +18,7 @@ Repository state at handoff:
 - Final layout node: `90:2`. Responsive contract node: `90:329`.
 - Minimum window is `720 x 640 DIP`. Wide is `>=1200`,Medium is `800-1199`,and Compact is `<800`.
 - The four top-level filters each occupy one row. Compact splits the time control into two rows. The page owns the only vertical scroll; each table owns horizontal scrolling only. Model order is Sol,Terra,Luna,Others.
-- AppInstance single instance, tray residency, hidden `--startup`, HKCU Run startup, ledger mutex, bounded shutdown, DPI handling, and CSV export.
+- AppInstance single instance, tray residency, hidden `--startup`, HKCU Run startup, ledger mutex, bounded shutdown and DPI handling.
 - Focus-aware Efficiency Mode and process-priority work is deferred and must not be treated as implemented acceptance scope.
 - The legacy multi-size product icon is embedded in the EXE and reused by AppWindow/taskbar, tray, setup, uninstaller, shortcuts, and Apps & features.
 - Collector retains strict read-only access to `%USERPROFILE%\.codex\sessions`, `archived_sessions`, and `agents`.
@@ -65,13 +65,13 @@ dotnet test CodexUsageDesktop.sln -c Release
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.8 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.9 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
 Then perform installed validation:
 
-1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.8-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
+1. Run the generated `release\winui-installer\codex-usage-desktop-setup-0.3.9-x64.exe` interactively with elevation. Do not use silent installer arguments for user acceptance.
 2. Confirm all required resources exist beside the installed executable: application `.pri`, `App.xbf`, `MainWindow.xbf`, `Controls\AuditFilterContent.xbf`, and `Controls\CostRow.xbf`.
 3. Run installed `Codex Usage Desktop.exe --smoke-test` and require exit code 0.
 4. Launch normally with the existing real ledger. Existing totals must appear promptly while status may still show background reconciliation.

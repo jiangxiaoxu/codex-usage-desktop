@@ -16,6 +16,19 @@ public sealed record PlatformFeatureResult(
     bool IsEnabled,
     string Message);
 
+public static class DashboardPlatformStatusText
+{
+    public static string ForStartup(
+        PlatformFeatureResult startup,
+        bool isReleaseUpdateAvailable)
+    {
+        ArgumentNullException.ThrowIfNull(startup);
+        return isReleaseUpdateAvailable
+            ? startup.Message
+            : $"{startup.Message} · {UnconfiguredReleaseUpdateService.DiagnosticMessage}";
+    }
+}
+
 public sealed record ReleaseUpdateCheckResult(
     bool IsAvailable,
     bool IsUpdateAvailable,
@@ -49,17 +62,6 @@ public sealed record ReleaseUpdateDownloadProgress(
 public sealed record ReleaseUpdateInstallerVerificationResult(
     bool IsValid,
     string Message);
-
-public enum CsvExportStatus
-{
-    Completed,
-    Cancelled,
-}
-
-public sealed record CsvExportResult(
-    CsvExportStatus Status,
-    string? OutputPath,
-    long EventCount);
 
 public enum ProcessExecutionMode
 {
@@ -164,11 +166,6 @@ public interface IReleaseUpdateService
 
 }
 
-public interface IExportDestinationPicker
-{
-    Task<string?> PickCsvPathAsync(CancellationToken cancellationToken = default);
-}
-
 public interface IUsageDashboardService : IAsyncDisposable
 {
     event EventHandler<DashboardApplicationStatus>? StatusChanged;
@@ -179,18 +176,9 @@ public interface IUsageDashboardService : IAsyncDisposable
         DashboardQueryRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<DashboardSnapshot> RefreshAsync(
-        DashboardQueryRequest request,
-        CancellationToken cancellationToken = default);
-
     Task<DashboardSnapshot> QueryAsync(
         DashboardQueryRequest request,
         CancellationToken cancellationToken = default);
 
     Task<ProcessEfficiencyModeResult> SetProcessExecutionModeAsync(ProcessExecutionMode mode);
-
-    Task<CsvExportResult> ExportCsvAsync(
-        DashboardQueryRequest request,
-        string outputPath,
-        CancellationToken cancellationToken = default);
 }

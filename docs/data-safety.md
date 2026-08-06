@@ -12,17 +12,16 @@ collector 只读观察 `sessions` 和 `archived_sessions`.`agents` 不被读取�
 
 ## Enforcement
 
-- `ProtectedPathPolicy` 对 ledger、export 和其他 output path 执行 absolute-path normalization,解析现有 reparse point 和 ancestor,拒绝位于 protected tree 内的 candidate.
+- `ProtectedPathPolicy` 对 ledger、更新下载和其他 output path 执行 absolute-path normalization,解析现有 reparse point 和 ancestor,拒绝位于 protected tree 内的 candidate.
 - rollout source 只以 read access 打开.FileSystemWatcher 只订阅 notification,不会改变 source.
 - `UsageStore` 只写应用拥有的 SQLite ledger.
-- CSV save path 在打开 output stream 前验证.
 - 测试中的 source mutation 仅作用于 disposable fixture directory,绝不指向用户真实 `.codex`.
 
-source 在 stat/read/stat window 中变化时,当前 snapshot 不会被接受.collector 记录节流后的 retry diagnostic 并等待后续 event 或 reconciliation,不会修复 source.watch event 不重置该 path 的 backoff;成功处理后才清除失败状态.
+source 在 stat/read/stat window 中变化时,当前 snapshot 不会被接受.collector 记录节流后的 retry diagnostic 并等待后续 watcher event 或 reconciliation,不会修复 source.watch event 不重置该 path 的 backoff;成功处理后才清除失败状态.单个已调度且仍在允许次数内的可恢复 retry 显示为 `Retrying`;watcher 不健康、source conflict、多个 retry 或耗尽 retry 时显示为 `Degraded`.
 
 ## Consistency and recovery
 
-watch event 经过 debounce、deduplication 和有界 batch.不可重入 full inventory 在 startup、manual sync 和每 5 分钟运行.目录、解析和 hashing work 被切片,在片之间 cooperative yield,以降低后台 CPU 峰值.
+watch event 经过 debounce、deduplication 和有界 batch.不可重入 full inventory 在 startup 和每 5 分钟自动运行.目录、解析和 hashing work 被切片,在片之间 cooperative yield,以降低后台 CPU 峰值.
 
 append-only source 可以从 verified byte offset 继续读取.如果 source 变短、prefix boundary 改变或 canonicalization 需要,collector 重新解析当前 stable snapshot.
 
@@ -30,7 +29,7 @@ restart checkpoint 位于应用 ledger,不写回 source.Windows file identity �
 
 自动恢复只写应用 ledger.候选必须通过双重稳定快照,metadata exact match,且 semantic relation 为 `Equal` 或 `Extension`.多个安全候选按 `Extension` 优先于 `Equal`,再按稳定 byte length、mtime 和 path 确定性选择.选定候选在单一 SQLite transaction 中替换 canonical event 与 source metadata,并只 demote 精确匹配的 conflict source.
 
-`Shorter`、`Diverged`、attribution 不一致、malformed、unstable 或其他无法建立信任的候选不会覆盖 ledger.超过 1 MiB 的完整 JSONL record 仍需由 streaming reader 验证整行语法和外层类型;只有明确的 opaque 非计费类型可安全跳过,关键、未知或损坏类型仍拒绝整个 source.应用保留最后有效 ledger,记录内部 degraded/diagnostic 并后台重试.GUI 不显示 source conflict.无论结果如何,恢复过程都不写入、修复、移动或锁定 Codex source.
+`Shorter`、`Diverged`、attribution 不一致、malformed、unstable 或其他无法建立信任的候选不会覆盖 ledger.超过 1 MiB 的完整 JSONL record 仍需由 streaming reader 验证整行语法和外层类型;只有明确的 opaque 非计费类型可安全跳过,关键、未知或损坏类型仍拒绝整个 source.应用保留最后有效 ledger,记录内部 diagnostic 并后台重试.单个仍可恢复的已调度 retry 显示为 `Retrying`;其余 retry 或 conflict 情况显示为 `Degraded`.GUI 不显示 source conflict.无论结果如何,恢复过程都不写入、修复、移动或锁定 Codex source.
 
 ## Local data
 
@@ -39,7 +38,7 @@ Default:  %LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite
 Override: %CODEX_USAGE_DATA_DIR%\usage.sqlite
 ```
 
-ledger 可包含 token event、source metadata、collector diagnostics、agent path、nickname、conversation ID 和 rollout ID.CSV 与 log 也可能包含本地 usage data,应使用相同访问控制.
+ledger 可包含 token event、source metadata、collector diagnostics、agent path、nickname、conversation ID 和 rollout ID.日志也可能包含本地 usage data,应使用相同访问控制.
 
 source 被 archive 或删除不会删除已采集 event.ledger 保留历史以维持 accounting continuity;source deletion 不是 ledger deletion request.
 
@@ -48,6 +47,6 @@ source 被 archive 或删除不会删除已采集 event.ledger 保留历史以�
 - data directory 必须位于三个 protected directory 以外.
 - 复制或恢复 `usage.sqlite` 前退出应用,并一起处理可能存在的 `-wal` 与 `-shm` companion.
 - 不要在不明确支持 SQLite WAL 的 network-synced location 中运行 live ledger.
-- degraded 状态出现时先保留 ledger 和 source,再使用 `Sync now` 或重启重试.内部 source diagnostic 不在 GUI 展示.不要编辑 rollout JSONL 以强制 parse.
+- degraded 状态出现时先保留 ledger 和 source,等待自动重试或重启应用.内部 source diagnostic 不在 GUI 展示.不要编辑 rollout JSONL 以强制 parse.
 - 旧 ledger 迁移脚本只复制、校验和备份,不会删除 source.
 - 应用默认 offline,没有 remote audit API.

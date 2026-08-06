@@ -11,7 +11,7 @@ dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.8 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.9 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
@@ -19,9 +19,9 @@ git diff --check
 
 | Project | Focus |
 | --- | --- |
-| `CodexUsage.Domain.Tests` | runtime JSONL validation,oversized streaming classification,typed parser-state checkpoint codec,token relationship,cumulative deduplication,fork replay,model attribution,filters,cost and CSV |
+| `CodexUsage.Domain.Tests` | runtime JSONL validation,oversized streaming classification,typed parser-state checkpoint codec,token relationship,cumulative deduplication,fork replay,model attribution,filters and cost |
 | `CodexUsage.Infrastructure.Tests` | schema,atomic event/source/checkpoint transaction,restart reverse-token and boundary+tail byte counts,ledger/state tamper detection,file identity invalidation,partial tail,canonical state,protected path,watch batching/backoff,reconciliation,recovery and diagnostic throttling |
-| `CodexUsage.Application.Tests` | lifecycle,query/export orchestration,collector status and platform-service behavior |
+| `CodexUsage.Application.Tests` | lifecycle,query orchestration,collector status and platform-service behavior |
 
 会 append、move、delete 或 rewrite source 的 test 只能使用 temporary fixture directory 和 disposable database.不得将 test root 指向真实 `%USERPROFILE%\.codex` 或 production `usage.sqlite`.
 
@@ -33,14 +33,13 @@ git diff --check
 | --- | --- | --- |
 | Single instance | 连续 launch 两次 | 只保留一个 process,第二次激活现有 window |
 | Startup | enable 后退出并通过 HKCU Run launch | 状态与安装器选择一致,应用可先驻留 tray |
-| Tray | close dashboard,再 Open dashboard、Sync now 和 Exit | close 不停止采集,Exit clean shutdown |
+| Tray | close dashboard,再 Open dashboard、查看 collector status 和 Exit | close 不停止采集,Exit clean shutdown |
 | Initial inventory | 使用 disposable ledger 启动 | watcher ready 后完成 inventory,source metadata 不变 |
 | Restart checkpoint | 对 200 KiB+ fixture 首次同步后重启,再 append token record | unchanged restart 读取不超过 64 KiB boundary;append 只读 boundary+tail;ledger ordinal 和 usage 连续 |
-| Reconciliation | 等待 5 分钟并触发 manual sync | periodic run 发生,manual sync 不产生并行 inventory |
+| Reconciliation | 等待 5 分钟 | periodic run 发生且不会并行 inventory |
 | Conflict recovery | 仅在 fixture source 中构造 Equal、Extension、ID change 和 unsafe candidate | stable metadata-exact Equal/Extension 确定性恢复;unsafe 保留最后有效 ledger、记录内部 degraded/diagnostic 并重试;GUI 无 source conflict |
 | Filters | 独立切换 model/role/thread/time/search | facet 不互相错误移除,range 使用 `[startUtc,endUtc)` |
 | Cost | 检查含 reasoning output 的 event | reasoning 与 other output 对 output cost 只计一次 |
-| Export | 导出到普通目录,再选择 protected directory | 前者成功,后者在创建文件前被拒绝 |
 | Responsive UI | 检查 720x640 minimum、Compact、Medium、Wide、short height 和 high DPI | 四个顶层筛选各一行,Compact 时间两行,页面单一纵向滚动,table 独立横向滚动,无 clipping |
 | Read-only boundary | 监视真实 source metadata | 无 lock、write、rename、delete、truncate 或 repair |
 

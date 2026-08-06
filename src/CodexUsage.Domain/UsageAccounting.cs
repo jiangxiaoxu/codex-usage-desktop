@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Globalization;
-using System.Text;
 
 namespace CodexUsage.Domain;
 
@@ -105,31 +104,6 @@ public static class UsageAccounting
             diagnostics);
     }
 
-    public static string CsvRows(IEnumerable<UsageEvent> events, FilterSpec filter)
-    {
-        const string headers = "timestamp_sgt,conversation_id,rollout_id,thread_type,agent_role,agent_path,model_category,source_model,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,other_output_tokens,total_cost_usd";
-        var rows = events.Where(value => MatchesFilter(value, filter))
-            .OrderBy(value => DateTimeOffset.Parse(value.TimestampUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind))
-            .ThenBy(value => value.RolloutId, StringComparer.Ordinal)
-            .ThenBy(value => value.TokenEventOrdinal)
-            .Select(value =>
-            {
-                var timestamp = DateTimeOffset.Parse(value.TimestampUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToOffset(TimeSpan.FromHours(8));
-                var fields = new string[]
-                {
-                    timestamp.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture), value.ConversationId, value.RolloutId,
-                    ThreadTypeText(value.ThreadType), NormalizedAgentRole(value.ThreadType, value.AgentRole), value.AgentPath,
-                    ModelCategory(value.Model), value.Model, value.InputTokens.ToString(CultureInfo.InvariantCulture),
-                    value.CachedInputTokens.ToString(CultureInfo.InvariantCulture), value.OutputTokens.ToString(CultureInfo.InvariantCulture),
-                    value.ReasoningOutputTokens.ToString(CultureInfo.InvariantCulture),
-                    (value.OutputTokens - value.ReasoningOutputTokens).ToString(CultureInfo.InvariantCulture),
-                    CostFor(value).Total.ToString("0.############", CultureInfo.InvariantCulture),
-                };
-                return string.Join(',', fields.Select(Quote));
-            });
-        return "\uFEFF" + headers + "\n" + string.Join("\n", rows) + "\n";
-    }
-
     private static QueryFacets BuildFacets(IEnumerable<UsageEvent> events)
     {
         var models = events.GroupBy(value => ModelCategory(value.Model), StringComparer.Ordinal)
@@ -149,12 +123,6 @@ public static class UsageAccounting
 
     private static bool TryTimestamp(string value, out DateTimeOffset timestamp) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out timestamp);
-
-    private static string Quote(string value)
-    {
-        var safe = value.Length > 0 && "=+-@\t\r".Contains(value[0], StringComparison.Ordinal) ? "'" + value : value;
-        return '"' + safe.Replace("\"", "\"\"", StringComparison.Ordinal) + '"';
-    }
 
     public static string ThreadTypeText(ThreadType threadType) => threadType switch
     {

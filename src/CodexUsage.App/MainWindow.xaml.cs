@@ -32,6 +32,7 @@ public sealed partial class MainWindow : Window
     private readonly IUsageDashboardService _dashboardService;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly ShellTrayIcon _trayIcon;
+    private readonly SemaphoreSlim _contentDialogGate = new(1, 1);
     private readonly Action _requestApplicationExit;
     private readonly HttpClient _updateHttpClient;
     private readonly IReleaseUpdateService _releaseUpdateService;
@@ -69,8 +70,7 @@ public sealed partial class MainWindow : Window
         StartupDiagnostics.Write($"Window handle acquired; hwnd=0x{_windowHandle.ToInt64():X}");
         _dashboardService = new DashboardApplicationService(
             collector,
-            new DeferredProcessEfficiencyMode(),
-            protectedPathPolicy);
+            new DeferredProcessEfficiencyMode());
         StartupDiagnostics.Write("Dashboard service constructed");
         IStartupRegistrationService startupTask = string.IsNullOrWhiteSpace(Environment.ProcessPath)
             ? new UnavailableStartupRegistrationService("无法确定当前可执行文件路径; 开机自启动不可用")
@@ -89,8 +89,7 @@ public sealed partial class MainWindow : Window
             _dashboardService,
             new UiDispatcher(DispatcherQueue),
             startupTask,
-            packageUpdate,
-            new WinUiExportDestinationPicker(_windowHandle));
+            packageUpdate);
         ViewModel.SnapshotApplying += OnSnapshotApplying;
         ViewModel.SnapshotApplied += OnSnapshotApplied;
         StartupDiagnostics.Write("Dashboard view model constructed");
@@ -162,7 +161,7 @@ public sealed partial class MainWindow : Window
             var version = typeof(MainWindow).Assembly.GetName().Version;
             return version is { Major: >= 0, Minor: >= 0, Build: >= 0 }
                 ? $"{version.Major}.{version.Minor}.{version.Build}"
-                : "0.3.8";
+                : "0.3.9";
         }
     }
 
@@ -256,18 +255,6 @@ public sealed partial class MainWindow : Window
             Debug.WriteLine($"Dashboard initialization failed: {error}");
             StartupDiagnostics.WriteException("Dashboard initialization failed", error);
         }
-    }
-
-    private void OnSyncRequested(object sender, RoutedEventArgs args)
-    {
-        _ = RunUiOperationAsync(
-            () => ViewModel.SynchronizeAsync(_lifetime.Token),
-            "Sync");
-    }
-
-    private void OnExportRequested(object sender, RoutedEventArgs args)
-    {
-        _ = ExportCsvSafelyAsync();
     }
 
     private void OnModelValuesViewChanged(object sender, ScrollViewerViewChangedEventArgs args)
@@ -428,11 +415,29 @@ public sealed partial class MainWindow : Window
         transform.Y = Math.Clamp(-naturalHeaderTop, 0, maximumTranslation);
     }
 
-    private void OnCheckUpdateRequested(object sender, RoutedEventArgs args)
+    private async void OnCheckUpdateRequested(object sender, RoutedEventArgs args)
     {
-        _ = RunUiOperationAsync(
-            () => ViewModel.CheckForUpdatesAsync(_lifetime.Token),
-            "Update check");
+        try
+        {
+            var result = await ViewModel.CheckForUpdatesAsync(_lifetime.Token);
+            if (result is null) return;
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = WindowRoot.XamlRoot,
+                Title = "检查更新",
+                Content = result.Message,
+                CloseButtonText = "确定",
+            };
+            _ = await ShowWindowDialogAsync(dialog);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            Debug.WriteLine($"Update check failed: {error}");
+        }
     }
 
     private void OnDownloadUpdateRequested(object sender, RoutedEventArgs args)
@@ -467,7 +472,7 @@ public sealed partial class MainWindow : Window
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Close,
             };
-            if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+            if (await ShowWindowDialogAsync(confirmation) != ContentDialogResult.Primary) return;
 
             if (!ViewModel.IsDownloadedUpdateCurrent(installerPath, package, updateStateGeneration))
             {
@@ -496,6 +501,9 @@ public sealed partial class MainWindow : Window
                 UseShellExecute = true,
             });
         }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
         catch (Exception error)
         {
             ViewModel.ReportUpdateInstallerLaunchFailure(error);
@@ -503,21 +511,6 @@ public sealed partial class MainWindow : Window
         finally
         {
             ViewModel.CompleteInstallerLaunch();
-        }
-    }
-
-    private async Task ExportCsvSafelyAsync()
-    {
-        try
-        {
-            await ViewModel.ExportCsvAsync(_lifetime.Token);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception error)
-        {
-            Debug.WriteLine($"CSV export failed: {error}");
         }
     }
 
@@ -533,6 +526,21 @@ public sealed partial class MainWindow : Window
         catch (Exception error)
         {
             Debug.WriteLine($"{operationName} failed: {error}");
+        }
+    }
+
+    private async Task<ContentDialogResult> ShowWindowDialogAsync(ContentDialog dialog)
+    {
+        ArgumentNullException.ThrowIfNull(dialog);
+        await _contentDialogGate.WaitAsync(_lifetime.Token);
+        try
+        {
+            if (_lifetime.IsCancellationRequested) return ContentDialogResult.None;
+            return await dialog.ShowAsync();
+        }
+        finally
+        {
+            _contentDialogGate.Release();
         }
     }
 

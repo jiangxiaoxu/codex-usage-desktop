@@ -243,8 +243,8 @@ public sealed class UsageCollector : IUsageCollector
                             && retryState.Scheduled)
                         {
                             retryState.Scheduled = false;
-                            AddPendingPath(retry.FilePath);
-                            ScheduleDebounce(TimeSpan.Zero);
+                            retryState.InFlight = AddPendingPath(retry.FilePath);
+                            if (retryState.InFlight) ScheduleDebounce(TimeSpan.Zero);
                         }
                         break;
                     case HeartbeatCommand:
@@ -960,11 +960,10 @@ public sealed class UsageCollector : IUsageCollector
             store.SetCollectorState(LastInventoryStateKey, _lastSuccessfulInventoryEpochMs.Value.ToString(), _lastSuccessfulInventoryEpochMs.Value);
             store.SetCollectorState(InventoryYieldCountStateKey, yields.Count.ToString(), _lastSuccessfulInventoryEpochMs.Value);
         }
-        var inventoryHealthy = inventorySucceeded && _watcherHealthy
-            && store.CountSourceConflicts() == 0 && _retryStates.Count == 0;
-        _phase = !inventoryHealthy
-            ? CollectorPhase.Degraded
-            : inventoryFullyCovered ? CollectorPhase.Watching : CollectorPhase.Partial;
+        _phase = ResolvePostInventoryPhase(
+            inventorySucceeded,
+            inventoryFullyCovered,
+            store.CountSourceConflicts());
         _message = !inventorySucceeded
             ? $"Inventory incomplete after processing {changedFiles} changed sources"
             : _partialSourceKeys.Count > 0
@@ -1120,18 +1119,45 @@ public sealed class UsageCollector : IUsageCollector
             if (_pendingPaths.Count > 0) await YieldToMailboxAsync(cancellationToken).ConfigureAwait(false);
         }
         _changedFilesLastSync = processed;
-        var watcherHealthy = succeeded && _watcherHealthy
-            && RequireStore().CountSourceConflicts() == 0 && _retryStates.Count == 0;
-        _phase = !watcherHealthy
-            ? CollectorPhase.Degraded
-            : _partialSourceKeys.Count == 0 ? CollectorPhase.Watching : CollectorPhase.Partial;
-        _message = !succeeded
-            ? $"Watcher retry scheduled after processing {processed} paths"
+        _phase = ResolvePostWatcherPhase(RequireStore().CountSourceConflicts());
+        _message = _phase == CollectorPhase.Retrying
+            ? "Watcher is processing the latest change in the background"
+            : !succeeded
+                ? $"Watcher could not process {processed} paths"
             : _partialSourceKeys.Count > 0
                 ? $"Watcher current with {_partialSourceKeys.Count} partially parsed sources"
-            : processed == 0 ? "Watcher changes are current" : $"Processed {processed} watcher paths";
+                : processed == 0 ? "Watcher changes are current" : $"Processed {processed} watcher paths";
         AdvanceUsageRevision(usageChanged);
         if (processed > 0 || usageChanged || !succeeded) PublishStatus();
+    }
+
+    private CollectorPhase ResolvePostInventoryPhase(
+        bool inventorySucceeded,
+        bool inventoryFullyCovered,
+        long conflicts)
+    {
+        if (!inventorySucceeded || !_watcherHealthy || conflicts > 0) return CollectorPhase.Degraded;
+        if (HasScheduledRecoverableRetries()) return CollectorPhase.Retrying;
+        if (_retryStates.Count > 0) return CollectorPhase.Degraded;
+        return inventoryFullyCovered ? CollectorPhase.Watching : CollectorPhase.Partial;
+    }
+
+    private CollectorPhase ResolvePostWatcherPhase(long conflicts)
+    {
+        if (!_watcherHealthy || conflicts > 0) return CollectorPhase.Degraded;
+        if (HasScheduledRecoverableRetries()) return CollectorPhase.Retrying;
+        if (_retryStates.Count > 0) return CollectorPhase.Degraded;
+        return _partialSourceKeys.Count == 0 ? CollectorPhase.Watching : CollectorPhase.Partial;
+    }
+
+    private bool HasScheduledRecoverableRetries()
+    {
+        return _watcherHealthy
+            && _retryStates.Count > 0
+            && _retryStates.Values.All(retry =>
+                (retry.Scheduled || retry.InFlight)
+                && retry.ConsecutiveFailures > 0
+                && retry.ConsecutiveFailures <= _options.RetryAttempts);
     }
 
     private void QueueWatcherPath(string filePath)
@@ -1147,10 +1173,11 @@ public sealed class UsageCollector : IUsageCollector
         ScheduleDebounce(_options.WatcherDebounce);
     }
 
-    private void AddPendingPath(string filePath)
+    private bool AddPendingPath(string filePath)
     {
-        if (!IsResolvedObservedRollout(filePath)) return;
+        if (!IsResolvedObservedRollout(filePath)) return false;
         _pendingPaths[NormalizeKey(filePath)] = Path.GetFullPath(filePath);
+        return true;
     }
 
     private void ScheduleDebounce(TimeSpan delay)
@@ -1170,6 +1197,7 @@ public sealed class UsageCollector : IUsageCollector
             state = new RetryState();
             _retryStates.Add(key, state);
         }
+        state.InFlight = false;
         state.ConsecutiveFailures = checked(state.ConsecutiveFailures + 1);
         var exponent = Math.Min(Math.Min(state.ConsecutiveFailures, _options.RetryAttempts) - 1, 30);
         var multiplier = 1L << exponent;
@@ -2324,9 +2352,11 @@ public sealed class UsageCollector : IUsageCollector
     {
         var store = _store;
         var conflicts = store?.CountSourceConflicts() ?? 0;
-        var phase = conflicts > 0 && _phase is CollectorPhase.Watching or CollectorPhase.Partial
+        var phase = conflicts > 0 && _phase is CollectorPhase.Watching or CollectorPhase.Partial or CollectorPhase.Retrying
             ? CollectorPhase.Degraded
-            : _phase;
+            : _phase == CollectorPhase.Retrying && !HasScheduledRecoverableRetries()
+                ? CollectorPhase.Degraded
+                : _phase;
         return new CollectorStatus(
             phase,
             _options.DatabasePath,
@@ -2745,6 +2775,7 @@ public sealed class UsageCollector : IUsageCollector
         public int Generation { get; set; }
         public long NextAllowedRetryTimestamp { get; set; }
         public bool Scheduled { get; set; }
+        public bool InFlight { get; set; }
     }
 
     private sealed record FailureDiagnosticState(string Signature, long LastRecordedEpochMs);
