@@ -25,7 +25,7 @@ CodexUsageDesktop.sln           solution entry
 - watcher callback 只做轻量入队,collector 通过去重、debounce 和有界 batch 处理增量变化.
 - 每 5 分钟运行一次兜底 inventory reconciliation.目录枚举、解析和 hashing 被拆成小片并 cooperative yield,以降低后台 CPU 峰值.
 - canonical active/archive promotion 不重复计费.稳定候选只有在 metadata exact 且 semantic relation 为 `Equal` 或 `Extension` 时才可自动恢复;恢复只更新应用 ledger,不会修改 Codex source.
-- 按 model、实际 role、thread 和时间范围筛选并汇总 token 与费用.
+- 按 model、实际 role、主线程和时间范围筛选并汇总 token 与费用.主线程下拉最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.也可手动输入完整 UUIDv7 session ID 或使用清空按钮取消筛选.筛选以精确的主线程 `ConversationId` 为根,归集其全部子代理 event.
 - `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.`codex-auto-review` 保持独立未定价分类并计入未定价 tokens,其余 GPT-5.4、GPT-5.5、GPT-5.6 之外的 model 归入未计费的 `Others`,`source_model=unknown` 保持独立 attribution.
 
 ## 数据目录与安全边界
@@ -66,14 +66,14 @@ git diff --check
 ```powershell
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.9 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.13 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 ```
 
-构建需要本地 7-Zip Extra 中的 `7za.exe` 和 `7zr.exe`;脚本不会自动下载或安装压缩工具.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.9-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+构建需要本地 NSIS 3.x 的 `makensis.exe` 和 7-Zip Extra 中的 `7za.exe`、`7zr.exe`;脚本不会自动下载或安装构建工具.`makensis.exe` 必须位于 PATH 或 NSIS 标准安装目录.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.13-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
-该安装包支持从旧 Electron 0.2.6 原位升级到 WinUI 3.安装器直接检测并强制终止仍在运行的 Codex Usage Desktop process,调用旧 Electron uninstaller 后覆盖 WinUI payload,不再创建 ledger 备份.旧 Startup shortcut 会迁移为当前用户的 HKCU Run entry.旧 Electron uninstaller 可能删除 LocalAppData ledger;新版卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 ledger.
+安装器会在替换 payload 前终止正在运行的 Codex Usage Desktop process,并只删除当前 WinUI payload 的已知文件.卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 LocalAppData ledger.
 
-更新检查是 SHA-256 实验功能,仅访问固定的 GitHub Releases endpoint.启动后和每 6 小时的自动检查只读取 metadata;它只接受 `jiangxiaoxu/codex-usage-desktop` 的严格 SemVer release、唯一 x64 installer asset 和 GitHub 提供的 SHA-256 digest.下载完成后,用户必须在“运行安装器”警示 dialog 中明确确认;应用会重新校验 LocalAppData 安装包 SHA-256 和当前 metadata generation,成功后才启动 setup.NSIS 安装器随后会结束当前应用和 collector process 以完成升级.当前 setup EXE 尚未进行 Authenticode 签名,Windows 仍可能显示 `Unknown Publisher` 或 SmartScreen 警告;SHA-256 不能替代可信 code signing.正式发布前仍必须启用 Authenticode signing、时间戳和 publisher allowlist.
+更新检查是 SHA-256 实验功能,仅访问固定的 GitHub Releases endpoint.启动后和每 6 小时的自动检查只读取 metadata;它只接受 `jiangxiaoxu/codex-usage-desktop` 的严格 SemVer release、唯一 x64 installer asset 和 GitHub 提供的 SHA-256 digest.下载完成后,用户必须在“运行安装器”警示 dialog 中明确确认;应用会重新校验 LocalAppData 安装包 SHA-256 和当前 metadata generation,成功后才启动 setup.NSIS 安装器随后会结束当前应用和 collector process 以完成升级.
 
 ## Windows lifecycle
 

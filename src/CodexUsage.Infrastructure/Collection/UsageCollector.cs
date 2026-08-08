@@ -17,7 +17,7 @@ public sealed class UsageCollector : IUsageCollector
 {
     private const int BoundaryWindowBytes = 64 * 1024;
     private const long ReverseReconciliationMaximumBytes = 64L * 1024 * 1024;
-    private const int ParserRevision = 11;
+    private const int ParserRevision = 15;
     private const string PartialSourceErrorPrefix = "partial-opaque-oversized:";
     private static readonly TimeSpan RepeatedFailureDiagnosticInterval = TimeSpan.FromMinutes(5);
     private const string ParserRevisionStateKey = "rollout_parser_revision";
@@ -27,6 +27,7 @@ public sealed class UsageCollector : IUsageCollector
 
     private readonly CollectorOptions _options;
     private readonly string[] _observationRoots;
+    private readonly string _sessionIndexPath;
     private readonly Channel<CollectorCommand> _commands;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Task _ownerTask;
@@ -36,6 +37,7 @@ public sealed class UsageCollector : IUsageCollector
     private readonly Dictionary<string, string> _canonicalByRollout = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _pendingPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _watcherInbox = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _sessionIndexTitles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RetryState> _retryStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FailureDiagnosticState> _failureDiagnostics = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _partialSourceKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -80,6 +82,9 @@ public sealed class UsageCollector : IUsageCollector
     private long _fullReconcileBytesRead;
     private long _appendBytesRead;
     private int _watcherWakeQueued;
+    private int _sessionIndexWatcherPending;
+    private bool _sessionIndexRefreshPending;
+    private int _sessionIndexConsecutiveFailures;
     private string? _watcherErrorInbox;
     private int _disposeStarted;
     private int _lifetimeDisposed;
@@ -106,6 +111,7 @@ public sealed class UsageCollector : IUsageCollector
             Path.Combine(_options.CodexHome, "sessions"),
             Path.Combine(_options.CodexHome, "archived_sessions"),
         ];
+        _sessionIndexPath = Path.Combine(_options.CodexHome, "session_index.jsonl");
         _commands = Channel.CreateUnbounded<CollectorCommand>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -133,6 +139,15 @@ public sealed class UsageCollector : IUsageCollector
         ArgumentNullException.ThrowIfNull(query);
         return RequestAsync<IReadOnlyList<StoredUsageEvent>>(
             (completion, token) => new QueryCommand(query, completion, token), cancellationToken);
+    }
+
+    public ValueTask<IReadOnlyList<MainThreadOption>> QueryRecentMainThreadsAsync(
+        int maximumCount,
+        CancellationToken cancellationToken = default)
+    {
+        if (maximumCount <= 0) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        return RequestAsync<IReadOnlyList<MainThreadOption>>(
+            (completion, token) => new QueryRecentMainThreadsCommand(maximumCount, completion, token), cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
@@ -261,6 +276,12 @@ public sealed class UsageCollector : IUsageCollector
                         break;
                     case QueryCommand query:
                         CompleteQuery(query);
+                        break;
+                    case QueryRecentMainThreadsCommand query when query.CancellationToken.IsCancellationRequested:
+                        query.Completion.TrySetCanceled(query.CancellationToken);
+                        break;
+                    case QueryRecentMainThreadsCommand query:
+                        CompleteRecentMainThreadsQuery(query);
                         break;
                 }
             }
@@ -640,6 +661,30 @@ public sealed class UsageCollector : IUsageCollector
                 AddDiagnostic(root, "watcher-start-failed", error.Message, DiagnosticSeverity.Warning);
             }
         }
+
+        if (!Directory.Exists(_options.CodexHome)) return;
+        try
+        {
+            var watcher = new FileSystemWatcher(_options.CodexHome, "session_index.jsonl")
+            {
+                IncludeSubdirectories = false,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
+                EnableRaisingEvents = false,
+            };
+            watcher.Created += OnSessionIndexWatcherChanged;
+            watcher.Changed += OnSessionIndexWatcherChanged;
+            watcher.Deleted += OnSessionIndexWatcherChanged;
+            watcher.Renamed += OnSessionIndexWatcherRenamed;
+            watcher.Error += OnWatcherError;
+            watcher.EnableRaisingEvents = true;
+            _watchers.Add(watcher);
+        }
+        catch (Exception error)
+        {
+            _watcherHealthy = false;
+            AddDiagnostic(_options.CodexHome, "session-index-watcher-start-failed", error.Message, DiagnosticSeverity.Warning);
+        }
+
     }
 
     private void OnWatcherChanged(object sender, FileSystemEventArgs args) => EnqueueWatcherObservation(args.FullPath);
@@ -650,6 +695,15 @@ public sealed class UsageCollector : IUsageCollector
         EnqueueWatcherObservation(args.FullPath);
     }
 
+    private void OnSessionIndexWatcherChanged(object sender, FileSystemEventArgs args) =>
+        EnqueueSessionIndexObservation(args.FullPath);
+
+    private void OnSessionIndexWatcherRenamed(object sender, RenamedEventArgs args)
+    {
+        EnqueueSessionIndexObservation(args.OldFullPath);
+        EnqueueSessionIndexObservation(args.FullPath);
+    }
+
     private void OnWatcherError(object sender, ErrorEventArgs args)
     {
         Interlocked.Exchange(ref _watcherErrorInbox, args.GetException().Message);
@@ -657,6 +711,8 @@ public sealed class UsageCollector : IUsageCollector
     }
 
     internal void EnqueueWatcherObservationForTest(string filePath) => EnqueueWatcherObservation(filePath);
+
+    internal void EnqueueSessionIndexObservationForTest() => EnqueueSessionIndexObservation(_sessionIndexPath);
 
     internal (int UniquePaths, int WakeSignals) GetWatcherBufferMetricsForTest() =>
         (_watcherInbox.Count, Volatile.Read(ref _watcherWakeQueued));
@@ -671,6 +727,13 @@ public sealed class UsageCollector : IUsageCollector
         if (Volatile.Read(ref _disposeStarted) != 0 || !IsLexicallyObservedRollout(filePath)) return;
         var fullPath = Path.GetFullPath(filePath);
         _watcherInbox[NormalizeKey(fullPath)] = fullPath;
+        SignalWatcherInbox();
+    }
+
+    private void EnqueueSessionIndexObservation(string filePath)
+    {
+        if (Volatile.Read(ref _disposeStarted) != 0 || !IsLexicallyObservedSessionIndex(filePath)) return;
+        Interlocked.Exchange(ref _sessionIndexWatcherPending, 1);
         SignalWatcherInbox();
     }
 
@@ -692,8 +755,14 @@ public sealed class UsageCollector : IUsageCollector
         {
             if (_watcherInbox.TryRemove(item.Key, out var filePath)) QueueWatcherPath(filePath);
         }
+        if (Interlocked.Exchange(ref _sessionIndexWatcherPending, 0) != 0)
+        {
+            _sessionIndexRefreshPending = true;
+            ScheduleDebounce(_options.WatcherDebounce);
+        }
         Interlocked.Exchange(ref _watcherWakeQueued, 0);
-        if (!_watcherInbox.IsEmpty || Volatile.Read(ref _watcherErrorInbox) is not null) SignalWatcherInbox();
+        if (!_watcherInbox.IsEmpty || Volatile.Read(ref _watcherErrorInbox) is not null
+            || Volatile.Read(ref _sessionIndexWatcherPending) != 0) SignalWatcherInbox();
     }
 
     private void StartTimers()
@@ -812,6 +881,16 @@ public sealed class UsageCollector : IUsageCollector
         _inventoryPathsProcessed = 0;
         PublishInventoryProgress("Inventory discovered");
         inventorySucceeded &= inventory.Succeeded;
+        try
+        {
+            usageChanged |= await RefreshSessionIndexAsync(yields, cancellationToken).ConfigureAwait(false);
+            _sessionIndexConsecutiveFailures = 0;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            AddDiagnostic(_sessionIndexPath, "session-index-read-failed", error.Message, DiagnosticSeverity.Warning);
+            inventorySucceeded = false;
+        }
         var present = inventory.Paths.ToDictionary(NormalizeKey, path => path, StringComparer.OrdinalIgnoreCase);
         var slice = new CooperativeSlice(_options, yields, YieldToMailboxAsync);
 
@@ -1062,6 +1141,21 @@ public sealed class UsageCollector : IUsageCollector
         var processed = 0;
         var succeeded = true;
         var usageChanged = false;
+        if (_sessionIndexRefreshPending)
+        {
+            _sessionIndexRefreshPending = false;
+            try
+            {
+                usageChanged |= await RefreshSessionIndexAsync(null, cancellationToken).ConfigureAwait(false);
+                _sessionIndexConsecutiveFailures = 0;
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                AddDiagnostic(_sessionIndexPath, "session-index-read-failed", error.Message, DiagnosticSeverity.Warning);
+                ScheduleSessionIndexRetry();
+                succeeded = false;
+            }
+        }
         while (_pendingPaths.Count > 0)
         {
             var batch = _pendingPaths.Take(_options.WatcherBatchSize).ToArray();
@@ -1225,6 +1319,17 @@ public sealed class UsageCollector : IUsageCollector
             _lifetime.Token);
     }
 
+    private void ScheduleSessionIndexRetry()
+    {
+        _sessionIndexConsecutiveFailures = checked(_sessionIndexConsecutiveFailures + 1);
+        if (_sessionIndexConsecutiveFailures > _options.RetryAttempts) return;
+        var exponent = Math.Min(_sessionIndexConsecutiveFailures - 1, 30);
+        var multiplier = 1L << exponent;
+        var delayMs = Math.Min(_options.RetryBaseDelay.TotalMilliseconds * multiplier, 4_000);
+        _sessionIndexRefreshPending = true;
+        ScheduleDebounce(TimeSpan.FromMilliseconds(delayMs));
+    }
+
     private long RetryDeadlineAfter(TimeSpan delay)
     {
         var frequency = RetryTimestampFrequency();
@@ -1310,6 +1415,7 @@ public sealed class UsageCollector : IUsageCollector
         if (_testHooks?.AfterStableAppendSnapshotCapturedAsync is { } hook)
             await hook(filePath, cancellationToken).ConfigureAwait(false);
         var result = await ParseAsync(snapshot.AppendedBytes, runtime.RolloutId, runtime.State, yields, cancellationToken).ConfigureAwait(false);
+        var metadata = ApplyThreadPickerMetadata(result.Metadata);
         RejectInternalDamage(filePath, result);
         var resolvedTurns = result.State.TurnModels.Keys.ToHashSet(StringComparer.Ordinal);
         if (runtime.State.UnresolvedTurnIds.Concat(runtime.State.ProvisionalTurnIds).Any(resolvedTurns.Contains))
@@ -1329,7 +1435,7 @@ public sealed class UsageCollector : IUsageCollector
                 result.State, runtime.SafeOpaqueOversizedRecordsSkipped, runtime.SafeNullPaddingRecordsSkipped,
                 snapshot.Stat.Size - runtime.ByteOffset);
             RequireStore().AppendRolloutSource(new AppendRolloutSourceInput(
-                result.Metadata, [], partialSource, NowEpochMs(), partialCheckpoint));
+                metadata, [], partialSource, NowEpochMs(), partialCheckpoint));
             RememberSource(new SourceFileInput(
                 partialSource.FilePath, result.Metadata.RolloutId, partialSource.SizeBytes,
                 partialSource.ModifiedAtEpochMs, partialSource.ByteOffset, partialSource.PrefixHash,
@@ -1359,7 +1465,7 @@ public sealed class UsageCollector : IUsageCollector
             filePath, snapshot.Stat, snapshot.SourceIdentity, newOffset, hash, result.State,
             safeOpaqueSkipped, safeNullPaddingSkipped, snapshot.Stat.Size - newOffset);
         var appended = RequireStore().AppendRolloutSource(new AppendRolloutSourceInput(
-            result.Metadata, UsageInputs(result), source, NowEpochMs(), checkpoint));
+            metadata, UsageInputs(result), source, NowEpochMs(), checkpoint));
         RememberSource(new SourceFileInput(
             source.FilePath, result.Metadata.RolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
@@ -1426,6 +1532,7 @@ public sealed class UsageCollector : IUsageCollector
 
         var parsed = (ParsedSnapshot)snapshot;
         var result = parsed.Result;
+        var metadata = ApplyThreadPickerMetadata(result.Metadata);
         var partialSourceMessage = result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
                 || result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
             ? PartialSourceMessage(
@@ -1474,9 +1581,12 @@ public sealed class UsageCollector : IUsageCollector
         var existingSemanticSignatures = store.GetRolloutSemanticSignatures(result.Metadata.RolloutId);
         var semanticRelation = SignatureRelation(existingSemanticSignatures, candidateSemanticSignatures);
         var storedMetadata = store.GetRolloutMetadata(result.Metadata.RolloutId);
+        var threadPickerChanged = !metadata.IsRealtimeVoice
+            && !SameThreadPickerMetadata(storedMetadata, metadata);
         var usageChanged = semanticRelation != SignatureRelationship.Equal
             || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Length > 0)
-            && !SameDashboardUsageMetadata(storedMetadata, result.Metadata);
+            && !SameDashboardUsageMetadata(storedMetadata, metadata)
+            || threadPickerChanged;
         if (context.Reason == ParseReason.ParserRevision)
         {
             if (result.Metadata.RolloutId != context.ExpectedRolloutId)
@@ -1489,7 +1599,7 @@ public sealed class UsageCollector : IUsageCollector
                 result.Diagnostics.SafeNullPaddingRecordsSkipped,
                 parsed.Stat.Size - result.StableByteLength);
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-                result.Metadata,
+                metadata,
                 UsageInputs(result),
                 new CanonicalSourceInput(
                     source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
@@ -1504,7 +1614,7 @@ public sealed class UsageCollector : IUsageCollector
 
         var canonicalPath = GetCanonical(result.Metadata.RolloutId);
         var isCurrentCanonical = canonicalPath is not null && PathsEqual(canonicalPath, filePath);
-        var metadataMatches = SameMetadata(storedMetadata, result.Metadata);
+        var metadataMatches = SameMetadata(storedMetadata, metadata);
         var canonicalIsConflicted = canonicalPath is not null
             && _sourcesByPath.TryGetValue(NormalizeKey(canonicalPath), out var conflictedCanonicalSource)
             && conflictedCanonicalSource.CanonicalStatus == CanonicalStatus.Conflict;
@@ -1571,7 +1681,7 @@ public sealed class UsageCollector : IUsageCollector
             result.Diagnostics.SafeNullPaddingRecordsSkipped,
             parsed.Stat.Size - result.StableByteLength);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            result.Metadata,
+            metadata,
             UsageInputs(result),
             new CanonicalSourceInput(
                 candidateSource.FilePath, candidateSource.SizeBytes, candidateSource.ModifiedAtEpochMs,
@@ -1592,6 +1702,7 @@ public sealed class UsageCollector : IUsageCollector
         string? partialSourceMessage)
     {
         var result = parsed.Result;
+        var metadata = ApplyThreadPickerMetadata(result.Metadata);
         var source = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
             CanonicalStatus.Canonical, PrefixStatus.Matches, partialSourceMessage);
         var checkpoint = CreateCheckpoint(
@@ -1603,7 +1714,7 @@ public sealed class UsageCollector : IUsageCollector
         {
             RequireStore().RekeyLegacyCanonicalRollout(new RekeyLegacyCanonicalRolloutInput(
                 legacyRolloutId,
-                result.Metadata,
+                metadata,
                 UsageInputs(result),
                 new CanonicalSourceInput(
                     source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
@@ -1641,21 +1752,26 @@ public sealed class UsageCollector : IUsageCollector
         if (second is not ParsedSnapshot parsed) throw new InvalidDataException(((UnsafeSnapshot)second).Message);
         if (parsed.Result.Metadata.RolloutId != rolloutId)
             throw new InvalidDataException($"Canonical source rollout changed from {rolloutId} to {parsed.Result.Metadata.RolloutId}.");
+        var metadata = ApplyThreadPickerMetadata(parsed.Result.Metadata);
         var observedAt = NowEpochMs();
         var store = RequireStore();
         var existingSemanticSignatures = store.GetRolloutSemanticSignatures(rolloutId);
         var candidateSemanticSignatures = parsed.Result.Events.Select(EventSemanticSignature).ToArray();
+        var storedMetadata = store.GetRolloutMetadata(rolloutId);
+        var threadPickerChanged = !metadata.IsRealtimeVoice
+            && !SameThreadPickerMetadata(storedMetadata, metadata);
         var usageChanged = SignatureRelation(existingSemanticSignatures, candidateSemanticSignatures)
                 != SignatureRelationship.Equal
             || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Length > 0)
-            && !SameDashboardUsageMetadata(store.GetRolloutMetadata(rolloutId), parsed.Result.Metadata);
+            && !SameDashboardUsageMetadata(storedMetadata, metadata)
+            || threadPickerChanged;
         var checkpoint = CreateCheckpoint(
             filePath, parsed.Stat, parsed.SourceIdentity, parsed.Result.StableByteLength, parsed.BoundaryHash,
             parsed.Result.State, parsed.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
             parsed.Result.Diagnostics.SafeNullPaddingRecordsSkipped,
             parsed.Stat.Size - parsed.Result.StableByteLength);
         store.RecoverDivergedCanonicalSource(new RecoverDivergedCanonicalSourceInput(
-            parsed.Result.Metadata,
+            metadata,
             UsageInputs(parsed.Result),
             new RecoverableCanonicalSourceInput(filePath, parsed.Stat.Size, parsed.Stat.ModifiedAtEpochMs,
                 parsed.Result.StableByteLength, parsed.BoundaryHash, observedAt),
@@ -1746,6 +1862,7 @@ public sealed class UsageCollector : IUsageCollector
         if (selected is null) return new ConflictRecoveryResult(false, false);
 
         var observedAt = NowEpochMs();
+        var selectedMetadata = ApplyThreadPickerMetadata(selected.Snapshot.Result.Metadata);
         var source = SourceFrom(
             selected.FilePath,
             selected.Snapshot.Stat,
@@ -1767,7 +1884,7 @@ public sealed class UsageCollector : IUsageCollector
             selected.Snapshot.Result.Diagnostics.SafeNullPaddingRecordsSkipped,
             selected.Snapshot.Stat.Size - selected.Snapshot.Result.StableByteLength);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            selected.Snapshot.Result.Metadata,
+            selectedMetadata,
             UsageInputs(selected.Snapshot.Result),
             new CanonicalSourceInput(
                 source.FilePath,
@@ -1963,6 +2080,83 @@ public sealed class UsageCollector : IUsageCollector
                 }),
             priorState,
             cancellationToken).ConfigureAwait(false);
+
+    private async Task<bool> RefreshSessionIndexAsync(
+        InventoryYieldTracker? yields,
+        CancellationToken cancellationToken)
+    {
+        SessionIndexParseResult parsed;
+        var isMissing = false;
+        try
+        {
+            _ = File.GetAttributes(_sessionIndexPath);
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            isMissing = true;
+        }
+
+        if (isMissing)
+        {
+            parsed = new SessionIndexParseResult(new Dictionary<string, string>(StringComparer.Ordinal), 0);
+        }
+        else
+        {
+            if (!IsResolvedObservedSessionIndex())
+                throw new IOException("Session index resolves through a reparse point outside collector scope.");
+            var snapshot = await ReadStableSessionIndexSnapshotAsync(yields, cancellationToken).ConfigureAwait(false);
+            parsed = SessionIndexParser.Parse(snapshot);
+        }
+
+        if (parsed.IsAuthoritative)
+        {
+            _sessionIndexTitles.Clear();
+            foreach (var (conversationId, title) in parsed.ThreadTitles)
+                _sessionIndexTitles.Add(conversationId, title);
+        }
+        else
+        {
+            foreach (var (conversationId, title) in parsed.ThreadTitles)
+                _sessionIndexTitles[conversationId] = title;
+            AddDiagnostic(
+                _sessionIndexPath,
+                "session-index-invalid-records",
+                $"Ignored {parsed.InvalidRecords} invalid session index records; existing titles were retained for unresolved entries.",
+                DiagnosticSeverity.Warning);
+        }
+
+        return RequireStore().SynchronizeMainThreadTitles(
+            parsed.ThreadTitles,
+            parsed.IsAuthoritative,
+            NowEpochMs());
+    }
+
+    private async Task<byte[]> ReadStableSessionIndexSnapshotAsync(
+        InventoryYieldTracker? yields,
+        CancellationToken cancellationToken)
+    {
+        var before = GetFileStat(_sessionIndexPath);
+        if (before.Size > 64L * 1024 * 1024)
+            throw new IOException("Session index exceeds the 64 MiB bounded snapshot limit.");
+        var buffer = new byte[checked((int)before.Size)];
+        await using var stream = OpenReadOnlyShared(_sessionIndexPath);
+        if (stream.Length != before.Size) throw new IOException("Session index changed before reading a stable snapshot.");
+        await ReadStreamCooperativelyAsync(stream, buffer, yields, cancellationToken).ConfigureAwait(false);
+        var after = GetFileStat(_sessionIndexPath);
+        if (before != after || stream.Length != before.Size)
+            throw new IOException("Session index changed while reading a stable snapshot.");
+        return buffer;
+    }
+
+    private RolloutMetadata ApplyThreadPickerMetadata(RolloutMetadata metadata)
+    {
+        if (metadata.ThreadType != ThreadType.Main || metadata.IsRealtimeVoice)
+            return metadata;
+        var title = _sessionIndexTitles.TryGetValue(metadata.ConversationId, out var indexedTitle)
+            ? indexedTitle
+            : string.Empty;
+        return metadata with { ThreadTitle = title };
+    }
 
     private async Task<string> CooperativeSha256Async(
         byte[] buffer,
@@ -2236,6 +2430,19 @@ public sealed class UsageCollector : IUsageCollector
         }
     }
 
+    private void CompleteRecentMainThreadsQuery(QueryRecentMainThreadsCommand query)
+    {
+        try
+        {
+            EnsureStarted();
+            query.Completion.TrySetResult(RequireStore().QueryRecentMainThreads(query.MaximumCount));
+        }
+        catch (Exception error)
+        {
+            query.Completion.TrySetException(error);
+        }
+    }
+
     private async ValueTask AwaitWhileServingInteractiveAsync(
         ValueTask operation,
         CancellationToken cancellationToken)
@@ -2276,6 +2483,12 @@ public sealed class UsageCollector : IUsageCollector
                     break;
                 case QueryCommand query:
                     CompleteQuery(query);
+                    break;
+                case QueryRecentMainThreadsCommand query when query.CancellationToken.IsCancellationRequested:
+                    query.Completion.TrySetCanceled(query.CancellationToken);
+                    break;
+                case QueryRecentMainThreadsCommand query:
+                    CompleteRecentMainThreadsQuery(query);
                     break;
                 case HeartbeatCommand:
                     Heartbeat();
@@ -2426,6 +2639,23 @@ public sealed class UsageCollector : IUsageCollector
         return _observationRoots.Any(root => IsWithin(fullPath, root));
     }
 
+    private bool IsLexicallyObservedSessionIndex(string filePath) =>
+        PathsEqual(Path.GetFullPath(filePath), _sessionIndexPath);
+
+    private bool IsResolvedObservedSessionIndex()
+    {
+        try
+        {
+            if ((File.GetAttributes(_options.CodexHome) & FileAttributes.ReparsePoint) != 0) return false;
+            if (!File.Exists(_sessionIndexPath)) return true;
+            return (File.GetAttributes(_sessionIndexPath) & FileAttributes.ReparsePoint) == 0;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            return false;
+        }
+    }
+
     private bool IsResolvedObservedRollout(string filePath)
     {
         if (!IsLexicallyObservedRollout(filePath)) return false;
@@ -2562,6 +2792,10 @@ public sealed class UsageCollector : IUsageCollector
         && left.ParentThreadId == right.ParentThreadId && left.ThreadType == right.ThreadType
         && left.AgentRole == right.AgentRole && left.AgentPath == right.AgentPath
         && left.AgentNickname == right.AgentNickname;
+
+    private static bool SameThreadPickerMetadata(RolloutMetadata? left, RolloutMetadata right) =>
+        left is not null && left.ThreadTitle == right.ThreadTitle
+        && left.LastActivityEpochMs == right.LastActivityEpochMs;
 
     private static void RejectInternalDamage(string filePath, RolloutChunkParseResult result)
     {
@@ -2721,6 +2955,14 @@ public sealed class UsageCollector : IUsageCollector
     private sealed record QueryCommand(
         UsageEventQuery Query,
         TaskCompletionSource<IReadOnlyList<StoredUsageEvent>> Completion,
+        CancellationToken CancellationToken) : CollectorCommand
+    {
+        public override void CancelCompletion() => Completion.TrySetCanceled();
+    }
+
+    private sealed record QueryRecentMainThreadsCommand(
+        int MaximumCount,
+        TaskCompletionSource<IReadOnlyList<MainThreadOption>> Completion,
         CancellationToken CancellationToken) : CollectorCommand
     {
         public override void CancelCompletion() => Completion.TrySetCanceled();

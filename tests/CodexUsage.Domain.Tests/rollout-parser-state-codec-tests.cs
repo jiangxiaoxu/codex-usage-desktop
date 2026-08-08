@@ -12,7 +12,7 @@ public sealed class RolloutParserStateCodecTests
         var state = new RolloutParserState(
             true,
             new RolloutMetadata("conversation", "rollout", "parent", ThreadType.Subagent,
-                "worker", "/root/worker", "worker-a", false),
+                "worker", "/root/worker", "worker-a", false, "Codex", "", 42),
             ImmutableDictionary.CreateRange(StringComparer.Ordinal,
             [
                 new KeyValuePair<string, string>("turn-b", "gpt-5.6-terra"),

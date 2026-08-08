@@ -30,7 +30,7 @@
                         <Setter Target="TimeValueColumn.Width" Value="96" />
                         <Setter Target="ModelLabelColumn.Width" Value="Auto" />
                         <Setter Target="AgentLabelColumn.Width" Value="Auto" />
-                        <Setter Target="SearchLabelColumn.Width" Value="Auto" />
+                        <Setter Target="ThreadLabelColumn.Width" Value="Auto" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Medium">
@@ -42,7 +42,7 @@
                         <Setter Target="TimeValueColumn.Width" Value="108" />
                         <Setter Target="ModelLabelColumn.Width" Value="112" />
                         <Setter Target="AgentLabelColumn.Width" Value="112" />
-                        <Setter Target="SearchLabelColumn.Width" Value="112" />
+                        <Setter Target="ThreadLabelColumn.Width" Value="112" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Wide">
@@ -54,7 +54,7 @@
                         <Setter Target="TimeValueColumn.Width" Value="120" />
                         <Setter Target="ModelLabelColumn.Width" Value="148" />
                         <Setter Target="AgentLabelColumn.Width" Value="148" />
-                        <Setter Target="SearchLabelColumn.Width" Value="148" />
+                        <Setter Target="ThreadLabelColumn.Width" Value="148" />
                     </VisualState.Setters>
                 </VisualState>
             </VisualStateGroup>
@@ -221,26 +221,39 @@
 
         <Grid Grid.Row="6" Padding="0,6" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="SearchLabelColumn" Width="148" />
+                <ColumnDefinition x:Name="ThreadLabelColumn" Width="148" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="路径检索" />
-            <TextBox
+            <TextBlock MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="主线程" />
+            <ComboBox
                 Grid.Column="1"
                 MinHeight="36"
-                AutomationProperties.Name="线程检索"
+                AutomationProperties.Name="主线程 ID"
                 Background="{StaticResource InputSurfaceBrush}"
                 BorderBrush="{StaticResource ControlBorderBrush}"
                 CornerRadius="3"
-                PlaceholderText="输入 agent path / nickname / rollout ID"
-                Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-            <Button Grid.Column="2" Click="OnResetFilters">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <SymbolIcon Symbol="Refresh" />
-                    <TextBlock Text="恢复全部筛选" />
-                </StackPanel>
-            </Button>
+                DisplayMemberPath="DisplayLabel"
+                IsEditable="True"
+                ItemsSource="{Binding MainThreadOptions}"
+                PlaceholderText="选择或输入完整主线程 ID"
+                SelectedValue="{Binding SelectedMainThreadId, Mode=TwoWay}"
+                SelectedValuePath="ConversationId"
+                Text="{Binding MainThreadInputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                <Button AutomationProperties.Name="清空主线程筛选" Click="OnClearMainThreadFilter">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <SymbolIcon Symbol="Clear" />
+                        <TextBlock Text="清空" />
+                    </StackPanel>
+                </Button>
+                <Button Click="OnResetFilters">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <SymbolIcon Symbol="Refresh" />
+                        <TextBlock Text="恢复全部筛选" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
         </Grid>
     </Grid>
 </UserControl>

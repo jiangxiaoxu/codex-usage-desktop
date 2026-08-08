@@ -11,20 +11,20 @@ public sealed class UsageStoreTests
 {
     private static readonly RolloutMetadata Metadata = new(
         "conversation-1", "rollout-1", string.Empty, ThreadType.Main,
-        "main", "/root", string.Empty, false);
+        "main", "/root", string.Empty, false, "Codex", string.Empty, 0);
 
     [Fact]
-    public void EmptyDatabaseMigratesToExactSchemaV4AndRequiredPragmas()
+    public void EmptyDatabaseMigratesToExactSchemaV6AndRequiredPragmas()
     {
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(4, store.CurrentSchemaVersion);
+            Assert.Equal(6, store.CurrentSchemaVersion);
         }
 
         using var connection = Open(databasePath);
-        Assert.Equal(4L, ScalarLong(connection, "PRAGMA user_version"));
+        Assert.Equal(6L, ScalarLong(connection, "PRAGMA user_version"));
         Assert.Equal(1L, ScalarLong(connection, "PRAGMA foreign_keys"));
         Assert.Equal("wal", ScalarString(connection, "PRAGMA journal_mode"));
         Assert.Equal(
@@ -43,6 +43,9 @@ public sealed class UsageStoreTests
                 ORDER BY name
                 """));
         Assert.Contains("is_realtime_voice", ReadStrings(connection, "SELECT name FROM pragma_table_info('rollouts')"));
+        Assert.Contains("thread_title", ReadStrings(connection, "SELECT name FROM pragma_table_info('rollouts')"));
+        Assert.Contains("last_activity_epoch_ms", ReadStrings(connection, "SELECT name FROM pragma_table_info('rollouts')"));
+        Assert.Contains("project_name", ReadStrings(connection, "SELECT name FROM pragma_table_info('rollouts')"));
         Assert.Equal(
             [
                 "collector_diagnostics_run_idx",
@@ -89,7 +92,7 @@ public sealed class UsageStoreTests
 
         using var store = new UsageStore(databasePath);
 
-        Assert.Equal(4, store.CurrentSchemaVersion);
+        Assert.Equal(6, store.CurrentSchemaVersion);
         Assert.False(store.GetRolloutMetadata("rollout-1")!.IsRealtimeVoice);
     }
 
@@ -99,7 +102,9 @@ public sealed class UsageStoreTests
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
-            Assert.Equal(4, store.CurrentSchemaVersion);
+        {
+            Assert.Equal(6, store.CurrentSchemaVersion);
+        }
         using (var connection = Open(databasePath))
         using (var command = connection.CreateCommand())
         {
@@ -112,10 +117,35 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(4, migrated.CurrentSchemaVersion);
+        Assert.Equal(6, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("safe_null_padding_records",
             ReadStrings(verified, "SELECT name FROM pragma_table_info('rollout_checkpoints')"));
+    }
+
+    [Fact]
+    public void SchemaV5MigrationAddsProjectNameWithCodexFallback()
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using (var store = new UsageStore(databasePath))
+        {
+            store.AppendEvents(Metadata, [], 1);
+        }
+        using (var connection = Open(databasePath))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                ALTER TABLE rollouts DROP COLUMN project_name;
+                PRAGMA user_version = 5;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        using var migrated = new UsageStore(databasePath);
+
+        Assert.Equal(6, migrated.CurrentSchemaVersion);
+        Assert.Equal("Codex", migrated.GetRolloutMetadata("rollout-1")!.ProjectName);
     }
 
     [Fact]
@@ -593,17 +623,183 @@ public sealed class UsageStoreTests
     }
 
     [Fact]
-    public void QueryUsesHalfOpenEpochIntervalAndAllFilters()
+    public void QueryUsesHalfOpenEpochIntervalAndExactMainThreadFilter()
     {
         using var temporary = new TemporaryDirectory();
         using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
-        store.AppendEvents(Metadata, [Event(0, 1_000), Event(1, 2_000), Event(2, 3_000)], 3_000);
+        const string mainConversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        var main = Metadata with { ConversationId = mainConversationId };
+        store.AppendEvents(main, [Event(0, 1_000), Event(1, 2_000), Event(2, 3_000)], 3_000);
+
+        var childMetadata = new RolloutMetadata(
+            "019fe0d7-dd65-7412-8fa0-ea96334569dd", "child-rollout", main.ConversationId, ThreadType.Subagent,
+            "worker", "/root/worker", "worker-a", false, "Codex", string.Empty, 2_500);
+        store.AppendEvents(childMetadata, [Event(0, 2_500)], 3_000);
+        var nestedChildMetadata = new RolloutMetadata(
+            "019fe0d7-dd66-7412-8fa0-ea96334569dd", "nested-child-rollout", childMetadata.ConversationId, ThreadType.Subagent,
+            "worker", "/root/worker/nested", "worker-b", false, "Codex", string.Empty, 2_600);
+        store.AppendEvents(nestedChildMetadata, [Event(0, 2_600)], 3_000);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = "other-conversation",
+            RolloutId = "other-rollout",
+        }, [Event(3, 2_500)], 3_000);
 
         var events = store.QueryEvents(new UsageEventQuery(
-            1_000, 3_000, ["gpt-5.6-sol"], ["main"], [ThreadType.Main], "rollout-1"));
+            1_000, 3_000, ["gpt-5.6-sol"], ["main", "worker"],
+            [ThreadType.Main, ThreadType.Subagent], main.ConversationId));
 
-        Assert.Equal([1_000L, 2_000L], events.Select(item => item.TimestampEpochMs));
+        Assert.Equal([1_000L, 2_000L, 2_500L, 2_600L], events.Select(item => item.TimestampEpochMs));
         Assert.Equal(DateTimeOffset.Parse("1970-01-01T00:00:01Z"), events[0].TimestampUtc);
+        Assert.Empty(store.QueryEvents(new UsageEventQuery(
+            0, 4_000, MainThreadConversationId: childMetadata.ConversationId)));
+        Assert.Throws<ArgumentException>(() => store.QueryEvents(new UsageEventQuery(
+            0, 4_000, MainThreadConversationId: "unknown-main-thread")));
+    }
+
+    [Fact]
+    public void QueryRecentMainThreadsUsesChildActivityOrdersDescendingAndLimitsResults()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
+        const string mainA = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string mainB = "019fe0d7-dd65-7412-8fa0-ea96334569dd";
+        const string mainC = "019fe0d7-dd66-7412-8fa0-ea96334569dd";
+        var parsedMain = RolloutParser.Parse("""
+            {"timestamp":"1970-01-01T00:00:00.100Z","type":"session_meta","payload":{"session_id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","id":"rollout-a","thread_source":"user"}}
+            {"timestamp":"1970-01-01T00:00:00.200Z","type":"event_msg","payload":{"type":"user_message","message":"Alpha"}}
+            {"timestamp":"1970-01-01T00:00:00.600Z","type":"response_item","payload":{"type":"message","content":"latest response"}}
+            """ + "\n", "fallback");
+        store.AppendEvents(parsedMain.Metadata, [], 600);
+        store.AppendEvents(new RolloutMetadata(
+            "019fe0d7-dd67-7412-8fa0-ea96334569dd", "rollout-child-a", mainA, ThreadType.Subagent,
+            "worker", "/root/worker", "worker-a", false, "Codex", string.Empty, 500), [], 500);
+        store.AppendEvents(new RolloutMetadata(
+            "019fe0d7-dd68-7412-8fa0-ea96334569dd", "rollout-nested-child-a", "019fe0d7-dd67-7412-8fa0-ea96334569dd", ThreadType.Subagent,
+            "worker", "/root/worker/nested", "worker-b", false, "Codex", string.Empty, 550), [], 550);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = mainB,
+            RolloutId = "rollout-b",
+            ThreadTitle = "Beta",
+            LastActivityEpochMs = 400,
+        }, [], 400);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = mainC,
+            RolloutId = "rollout-c",
+            ThreadTitle = "Gamma",
+            LastActivityEpochMs = 450,
+        }, [], 450);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = "voice",
+            RolloutId = "voice-rollout",
+            IsRealtimeVoice = true,
+            ThreadTitle = "Voice",
+            LastActivityEpochMs = 999,
+        }, [], 999);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = "07-24T13",
+            RolloutId = "legacy-rollout",
+            ThreadTitle = "Legacy",
+            LastActivityEpochMs = 1_000,
+        }, [], 1_000);
+        store.SynchronizeMainThreadTitles(new Dictionary<string, string>
+        {
+            [mainA] = "Alpha",
+            [mainB] = "Beta",
+            [mainC] = "Gamma",
+        }, clearMissingTitles: true, 1_000);
+
+        var threads = store.QueryRecentMainThreads(2);
+
+        Assert.Equal([mainA, mainC], threads.Select(value => value.ConversationId));
+        Assert.Equal("Alpha", threads[0].Title);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(600), threads[0].LastActivityUtc);
+    }
+
+    [Fact]
+    public void SynchronizeMainThreadTitlesOverridesExistingTitlesAndClearsMissingTitles()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
+        const string firstId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string secondId = "019fe0d7-dd65-7412-8fa0-ea96334569dd";
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = firstId,
+            RolloutId = "first-rollout",
+            ThreadTitle = "Stale title",
+        }, [], 1_000);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = secondId,
+            RolloutId = "second-rollout",
+            ThreadTitle = "Missing title",
+        }, [], 1_000);
+
+        Assert.True(store.SynchronizeMainThreadTitles(
+            new Dictionary<string, string> { [firstId] = "Official title" },
+            clearMissingTitles: true,
+            2_000));
+
+        Assert.Equal("Official title", store.GetRolloutMetadata("first-rollout")!.ThreadTitle);
+        Assert.Empty(store.GetRolloutMetadata("second-rollout")!.ThreadTitle);
+    }
+
+    [Fact]
+    public void RecentMainThreadUsesLatestRootProjectAndIgnoresChildProject()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = conversationId,
+            RolloutId = "older-root",
+            ProjectName = "fallback-project",
+            LastActivityEpochMs = 100,
+        }, [], 100);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = conversationId,
+            RolloutId = "newer-root",
+            ProjectName = "latest-root-project",
+            LastActivityEpochMs = 200,
+        }, [], 200);
+        store.AppendEvents(new RolloutMetadata(
+            "019fe0d7-dd65-7412-8fa0-ea96334569dd", "child-rollout", conversationId, ThreadType.Subagent,
+            "worker", "/root/worker", "worker-a", false, "child-project", string.Empty, 300), [], 300);
+
+        var thread = Assert.Single(store.QueryRecentMainThreads(20));
+
+        Assert.Equal("latest-root-project", thread.ProjectName);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(300), thread.LastActivityUtc);
+    }
+
+    [Fact]
+    public void QueryRecentMainThreadsReturnsTwentyMostRecentlyActiveThreads()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
+        var expected = new List<string>();
+        for (var index = 0; index < 21; index++)
+        {
+            var conversationId = $"019fe0d7-{0xdd00 + index:x4}-7412-8fa0-ea96334569dd";
+            store.AppendEvents(Metadata with
+            {
+                ConversationId = conversationId,
+                RolloutId = $"rollout-{index}",
+                LastActivityEpochMs = index,
+            }, [], index);
+            if (index > 0) expected.Add(conversationId);
+        }
+
+        var threads = store.QueryRecentMainThreads(20);
+
+        Assert.Equal(expected.AsEnumerable().Reverse(), threads.Select(value => value.ConversationId));
     }
 
     private static UsageEventInput Event(long ordinal, long timestamp, string? signature = null) => new(

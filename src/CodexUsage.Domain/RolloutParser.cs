@@ -219,11 +219,18 @@ public static partial class RolloutParser
                 }
                 var eventType = GetNonEmptyString(root, "type");
                 var hasPayload = TryGetObject(root, "payload", out var payload);
+                RecordActivity(root);
 
                 if (eventType == "session_meta" && !_hasMetadata && hasPayload)
                 {
                     _hasMetadata = true;
-                    _metadata = MetadataFrom(payload, _metadata.RolloutId);
+                    _metadata = MetadataFrom(payload, _metadata.RolloutId) with
+                    {
+                        ThreadTitle = _metadata.ThreadTitle,
+                        LastActivityEpochMs = Math.Max(
+                            _metadata.LastActivityEpochMs,
+                            ActivityEpochMilliseconds(root)),
+                    };
                     if (_metadata.IsRealtimeVoice)
                     {
                         _candidates.Clear();
@@ -300,6 +307,11 @@ public static partial class RolloutParser
         private void ProcessEventMessage(JsonElement root, JsonElement payload)
         {
             var payloadType = GetNonEmptyString(payload, "type");
+            if (payloadType == "user_message")
+            {
+                return;
+            }
+
             if (payloadType == "thread_settings_applied")
             {
                 if (TryGetObject(payload, "thread_settings", out var settings) && GetNonEmptyString(settings, "model") is { } model)
@@ -329,6 +341,13 @@ public static partial class RolloutParser
 
             if (payloadType == "token_count" && _forkReplay.Status == ForkReplayStatus.Inactive)
                 ProcessTokenCount(root, payload);
+        }
+
+        private void RecordActivity(JsonElement root)
+        {
+            var activity = ActivityEpochMilliseconds(root);
+            if (activity > _metadata.LastActivityEpochMs)
+                _metadata = _metadata with { LastActivityEpochMs = activity };
         }
 
         private void ProcessTaskStarted(JsonElement payload)
@@ -663,8 +682,26 @@ public static partial class RolloutParser
             threadType == ThreadType.Main ? "main" : Field("agent_role", "agent_role", "unknown"),
             threadType == ThreadType.Main ? "/root" : Field("agent_path", "agent_path", "/root"),
             Field("agent_nickname", "agent_nickname", string.Empty),
-            threadSource == "realtime_voice");
+            threadSource == "realtime_voice",
+            ProjectNameFromCwd(Top("cwd")),
+            string.Empty,
+            0);
     }
+
+    private static string ProjectNameFromCwd(string? cwd)
+    {
+        if (string.IsNullOrWhiteSpace(cwd)) return "Codex";
+        var trimmed = cwd.Trim().TrimEnd('\\', '/');
+        if (trimmed.Length == 0) return "Codex";
+        var separator = Math.Max(trimmed.LastIndexOf('\\'), trimmed.LastIndexOf('/'));
+        var projectName = separator < 0 ? trimmed : trimmed[(separator + 1)..];
+        return string.IsNullOrWhiteSpace(projectName) ? "Codex" : projectName;
+    }
+
+    private static long ActivityEpochMilliseconds(JsonElement root) =>
+        GetNonEmptyString(root, "timestamp") is { } timestamp && TryTimestamp(timestamp, out var parsed)
+            ? parsed.ToUnixTimeMilliseconds()
+            : 0;
 
     private static RolloutForkReplayState ForkReplayFrom(JsonElement payload, RolloutMetadata metadata, JsonElement root)
     {

@@ -9,7 +9,7 @@ public sealed record DashboardQueryRequest(
     DateTimeOffset EndUtc,
     ImmutableArray<string>? Models = null,
     ImmutableArray<SubjectFilter>? Subjects = null,
-    string PathQuery = "");
+    string? MainThreadConversationId = null);
 
 public sealed record PlatformFeatureResult(
     bool IsAvailable,
@@ -132,6 +132,7 @@ public sealed record DashboardApplicationStatus(
 public sealed record DashboardSnapshot(
     CollectorStatus Collector,
     QueryResult Result,
+    IReadOnlyList<MainThreadOption> RecentMainThreads,
     ProcessEfficiencyModeResult EfficiencyMode);
 
 public interface IProcessEfficiencyMode

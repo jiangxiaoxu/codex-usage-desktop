@@ -14,7 +14,9 @@ public sealed class RolloutParserTests
             Line("session_meta", new { session_id = "conversation-a", id = "rollout-a", thread_source = "user" }),
             Line("turn_context", new { turn_id = "turn-a", model = "gpt-main" }),
             Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])), "fallback");
-        Assert.Equal(new("conversation-a", "rollout-a", "", ThreadType.Main, "main", "/root", "", false), main.Metadata);
+        Assert.Equal(new(
+            "conversation-a", "rollout-a", "", ThreadType.Main, "main", "/root", "", false, "Codex", "",
+            DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds()), main.Metadata);
         Assert.Equal("gpt-main", Assert.Single(main.Events).Model);
 
         var child = RolloutParser.Parse(Jsonl(Line("session_meta", new
@@ -23,7 +25,9 @@ public sealed class RolloutParserTests
             id = "child",
             source = new { subagent = new { thread_spawn = new { parent_thread_id = "parent", agent_role = "worker", agent_path = "/root/worker", agent_nickname = "worker-a" } } },
         })), "fallback");
-        Assert.Equal(new("parent", "child", "parent", ThreadType.Subagent, "worker", "/root/worker", "worker-a", false), child.Metadata);
+        Assert.Equal(new(
+            "parent", "child", "parent", ThreadType.Subagent, "worker", "/root/worker", "worker-a", false, "Codex", "",
+            DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds()), child.Metadata);
     }
 
     [Fact]
@@ -57,6 +61,34 @@ public sealed class RolloutParserTests
         Assert.Equal("unknown", Assert.Single(initial.Events).Model);
         Assert.Equal("gpt-a", Assert.Single(enriched.Events).Model);
         Assert.Equal(initial.Events[0].DeterministicSignature, enriched.Events[0].DeterministicSignature);
+    }
+
+    [Fact]
+    public void DoesNotTreatUserMessagesAsThreadTitlesAndTracksLatestAcceptedActivity()
+    {
+        var result = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new { session_id = "conversation", id = "rollout", thread_source = "user" }, "2026-07-15T01:00:00Z"),
+            Line("event_msg", new { type = "user_message", message = "  first\n  request  " }, "2026-07-15T01:01:00Z"),
+            Line("event_msg", new { type = "user_message", message = "later request" }, "2026-07-15T01:02:00Z"),
+            Line("response_item", new { type = "message", content = "later response" }, "2026-07-15T01:03:00Z")), "fallback");
+
+        Assert.Empty(result.Metadata.ThreadTitle);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-15T01:03:00Z").ToUnixTimeMilliseconds(), result.Metadata.LastActivityEpochMs);
+    }
+
+    [Fact]
+    public void SessionMetadataCwdProvidesProjectNameFallback()
+    {
+        var result = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new
+            {
+                session_id = "conversation",
+                id = "rollout",
+                thread_source = "user",
+                cwd = @"E:\\Project\\codex-usage-desktop\\",
+            })), "fallback");
+
+        Assert.Equal("codex-usage-desktop", result.Metadata.ProjectName);
     }
 
     [Fact]

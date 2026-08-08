@@ -6,7 +6,7 @@ namespace CodexUsage.Domain;
 
 public static class RolloutParserStateCodec
 {
-    public const int FormatRevision = 1;
+    public const int FormatRevision = 2;
 
     public static string Serialize(RolloutParserState state)
     {
@@ -124,6 +124,10 @@ public static class RolloutParserStateCodec
         RequireText(state.Metadata.AgentRole, nameof(state.Metadata.AgentRole));
         RequireText(state.Metadata.AgentPath, nameof(state.Metadata.AgentPath));
         RequireNotNull(state.Metadata.AgentNickname, nameof(state.Metadata.AgentNickname));
+        RequireText(state.Metadata.ProjectName, nameof(state.Metadata.ProjectName));
+        RequireNotNull(state.Metadata.ThreadTitle, nameof(state.Metadata.ThreadTitle));
+        if (state.Metadata.LastActivityEpochMs < 0)
+            throw new ArgumentOutOfRangeException(nameof(state), "Last activity cannot be negative.");
         RequireNotNull(state.CurrentTurnId, nameof(state.CurrentTurnId));
         RequireText(state.CurrentModel, nameof(state.CurrentModel));
         if (state.NextTokenEventOrdinal < 0)

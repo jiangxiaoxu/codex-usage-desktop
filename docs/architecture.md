@@ -36,7 +36,7 @@ UI 不直接打开 rollout 或 SQLite.耗时任务不占用 UI thread;Applicatio
 
 窗口失焦后的 Efficiency Mode / process priority 调整仍 deferred.当前 architecture 不把 focus-aware scheduling transition 作为已完成 contract.
 
-应用以 unpackaged、self-contained 的 win-x64 payload 发布,由 NSIS 提供全用户 setup、旧 Electron 0.2.6 原位升级、Program Files ownership、快捷方式、自启动迁移和卸载.安装器直接覆盖程序,不创建 LocalAppData ledger 备份;旧 Electron uninstaller 可能删除旧 ledger,而 WinUI 卸载 manifest 默认不删除应用数据.SHA-256-only GitHub Release metadata check 在启动后和每 6 小时运行;应用内 launch 需要用户确认并在 Process.Start 前复验下载文件和 metadata generation.NSIS 负责结束当前 process,且不能替代 Authenticode signing.
+应用以 unpackaged、self-contained 的 win-x64 payload 发布,由 NSIS 提供全用户 setup、Program Files ownership、快捷方式、自启动和卸载.安装器在替换当前 WinUI payload 前结束当前 process,而 WinUI 卸载 manifest 默认不删除应用数据.SHA-256-only GitHub Release metadata check 在启动后和每 6 小时运行;应用内 launch 需要用户确认并在 Process.Start 前复验下载文件和 metadata generation.NSIS 负责结束当前 process.
 
 ## Collection actor
 
@@ -84,4 +84,4 @@ data directory 与 Program Files install location 解耦,并且不得 resolve �
 
 ## Presentation contract
 
-最终 Figma Page 2 layout 为 node `90:2`,responsive contract 为 `90:329`.窗口最小值为 `720 x 640 DIP`;Wide 为 `>=1200`,Medium 为 `800-1199`,Compact 为 `<800`.时间、model、执行主体和路径搜索四个顶层筛选各占一行,Compact 时间控件拆为两行.model 顺序为 Sol、Terra、Luna、Others.页面只有一个纵向 scroll owner,各 table 仅在宽度不足时拥有独立横向 scroll owner.
+窗口最小值为 `900 x 720 DIP`;Wide 为 `>=1280`,Medium 为 `1000-1279`,Compact 为 `<1000`.两张明细表在 `>=1440` 时并排显示.时间、model、执行主体和主线程四个顶层筛选各占一行.主线程使用可编辑下拉,最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.可手动输入完整 UUIDv7 session ID,并可清空以取消筛选.匹配以精确的主线程 `ConversationId` 为根,归集全部子代理 event.model 顺序为 Sol、Terra、Luna、codex-auto-review、Others.页面只有一个纵向 scroll owner,各 table 仅在宽度不足时拥有独立横向 scroll owner.

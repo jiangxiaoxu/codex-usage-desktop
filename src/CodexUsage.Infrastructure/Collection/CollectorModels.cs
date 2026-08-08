@@ -94,4 +94,8 @@ public interface IUsageCollector : IAsyncDisposable
     ValueTask<IReadOnlyList<StoredUsageEvent>> QueryEventsAsync(
         UsageEventQuery query,
         CancellationToken cancellationToken = default);
+
+    ValueTask<IReadOnlyList<MainThreadOption>> QueryRecentMainThreadsAsync(
+        int maximumCount,
+        CancellationToken cancellationToken = default);
 }

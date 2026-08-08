@@ -127,7 +127,11 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         DashboardQueryRequest request,
         CancellationToken cancellationToken)
     {
-        var storedEvents = await QueryStoredEventsAsync(request, cancellationToken).ConfigureAwait(false);
+        var storedEventsTask = QueryStoredEventsAsync(request, cancellationToken).AsTask();
+        var recentMainThreadsTask = _collector.QueryRecentMainThreadsAsync(20, cancellationToken).AsTask();
+        await Task.WhenAll(storedEventsTask, recentMainThreadsTask).ConfigureAwait(false);
+        var storedEvents = await storedEventsTask.ConfigureAwait(false);
+        var recentMainThreads = await recentMainThreadsTask.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
         var status = await _collector.GetStatusAsync(cancellationToken).ConfigureAwait(false);
@@ -138,7 +142,7 @@ public sealed class DashboardApplicationService : IUsageDashboardService
                 ToScanDiagnostics(status.Diagnostics),
                 ToFilterSpec(request)),
             cancellationToken).ConfigureAwait(false);
-        return new DashboardSnapshot(status, result, GetEfficiencyResult());
+        return new DashboardSnapshot(status, result, recentMainThreads, GetEfficiencyResult());
     }
 
     private ValueTask<IReadOnlyList<StoredUsageEvent>> QueryStoredEventsAsync(
@@ -147,15 +151,15 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         _collector.QueryEventsAsync(
             new UsageEventQuery(
                 request.StartUtc.ToUnixTimeMilliseconds(),
-                request.EndUtc.ToUnixTimeMilliseconds()),
+                request.EndUtc.ToUnixTimeMilliseconds(),
+                MainThreadConversationId: request.MainThreadConversationId),
             cancellationToken);
 
     private static FilterSpec ToFilterSpec(DashboardQueryRequest request) => new(
         request.StartUtc,
         request.EndUtc,
         request.Models,
-        request.Subjects,
-        request.PathQuery);
+        request.Subjects);
 
     private async Task<ProcessEfficiencyModeResult> ApplyRequestedExecutionModeAsync()
     {
@@ -300,7 +304,11 @@ public sealed class DashboardApplicationService : IUsageDashboardService
             throw new ArgumentOutOfRangeException(nameof(request), "EndUtc must be later than StartUtc.");
         }
 
-        ArgumentNullException.ThrowIfNull(request.PathQuery);
+        if (request.MainThreadConversationId is { } mainThreadConversationId
+            && !ConversationId.IsUuidV7(mainThreadConversationId))
+        {
+            throw new ArgumentException("Main thread conversation ID must be UUIDv7.", nameof(request));
+        }
     }
 
     private void EnsureStarted()

@@ -19,16 +19,15 @@ Unicode true
   !error "APP_ICON_FILE is required"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.9"
+  !define PRODUCT_VERSION "0.3.13"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.9.0"
+  !define PRODUCT_FILE_VERSION "0.3.13.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
 !define PRODUCT_PUBLISHER "jiangxiaoxu"
 !define PRODUCT_EXE "Codex Usage Desktop.exe"
-!define LEGACY_EXE "Codex Usage Desktop.exe"
 !define UNINSTALL_EXE "Uninstall Codex Usage Desktop.exe"
 !define UNINSTALL_ID "84c6521f-e257-5d83-93e2-0f5e984c4280"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_ID}"
@@ -111,8 +110,6 @@ LangString ProcessCheckFailed ${LANG_SIMPCHINESE} "无法可靠关闭或确认 C
 LangString ProcessCheckFailed ${LANG_ENGLISH} "Codex Usage Desktop could not be closed or verified as stopped. Setup was aborted."
 LangString RemoveFailed ${LANG_SIMPCHINESE} "无法删除已知的旧程序文件。安装已中止，用户数据未删除。"
 LangString RemoveFailed ${LANG_ENGLISH} "Known old application files could not be removed. Setup was aborted without deleting user data."
-LangString LegacyUninstallFailed ${LANG_SIMPCHINESE} "旧 Electron 版本卸载失败。安装已中止，且不会继续覆盖程序文件。"
-LangString LegacyUninstallFailed ${LANG_ENGLISH} "The legacy Electron version could not be uninstalled. Setup was aborted without replacing application files."
 LangString DeployFailed ${LANG_SIMPCHINESE} "无法替换程序文件。安装已中止。"
 LangString DeployFailed ${LANG_ENGLISH} "Application files could not be replaced. Setup was aborted."
 LangString RegistrationFailed ${LANG_SIMPCHINESE} "无法写入安装注册信息。安装已中止。"
@@ -130,13 +127,11 @@ Var InstalledVersion
 Var AppRunning
 Var StartupCheckbox
 Var StartupRequested
-Var LegacyStartupDetected
 Var ExistingStartupRun
-Var OldDisplayVersion
-Var OldInstallLocation
-Var OldDisplayIcon
+Var ExistingDisplayVersion
+Var ExistingInstallLocation
+Var ExistingDisplayIcon
 Var CurrentAdminOptIn
-Var LegacyInstallDetected
 Var HadDesktopShortcut
 Var HadStartMenuShortcut
 
@@ -146,10 +141,8 @@ Function .onInit
   ; New installations opt in by default. Existing installations are reset to
   ; their persisted choice after the startup registration is inspected below.
   StrCpy $StartupRequested "1"
-  StrCpy $LegacyStartupDetected "0"
   StrCpy $ExistingStartupRun ""
   StrCpy $CurrentAdminOptIn ""
-  StrCpy $LegacyInstallDetected "0"
   StrCpy $HadDesktopShortcut "0"
   StrCpy $HadStartMenuShortcut "0"
   ${GetParameters} $0
@@ -180,28 +173,19 @@ Function .onInit
     StrCpy $HadStartMenuShortcut "1"
   ${EndIf}
   SetShellVarContext current
-  ${If} ${FileExists} "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\${PRODUCT_NAME}.lnk"
-    StrCpy $LegacyStartupDetected "1"
-    StrCpy $StartupRequested "1"
-  ${EndIf}
   ReadRegStr $ExistingStartupRun HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
   ${If} $ExistingStartupRun != ""
     StrCpy $StartupRequested "1"
   ${EndIf}
   SetShellVarContext all
 
-  ReadRegStr $OldDisplayVersion HKLM "${UNINSTALL_KEY}" "DisplayVersion"
-  ReadRegStr $OldInstallLocation HKLM "${UNINSTALL_KEY}" "InstallLocation"
-  ReadRegStr $OldDisplayIcon HKLM "${UNINSTALL_KEY}" "DisplayIcon"
-  StrCpy $InstalledVersion $OldDisplayVersion
+  ReadRegStr $ExistingDisplayVersion HKLM "${UNINSTALL_KEY}" "DisplayVersion"
+  ReadRegStr $ExistingInstallLocation HKLM "${UNINSTALL_KEY}" "InstallLocation"
+  ReadRegStr $ExistingDisplayIcon HKLM "${UNINSTALL_KEY}" "DisplayIcon"
+  StrCpy $InstalledVersion $ExistingDisplayVersion
   ${If} $InstalledVersion != ""
-  ${AndIf} $LegacyStartupDetected == "0"
   ${AndIf} $ExistingStartupRun == ""
     StrCpy $StartupRequested "0"
-  ${EndIf}
-  StrCpy $0 $InstalledVersion 4
-  ${If} $0 == "0.2."
-    StrCpy $LegacyInstallDetected "1"
   ${EndIf}
 
   ${If} $InstalledVersion != ""
@@ -219,18 +203,15 @@ Function .onInit
     ${EndIf}
   ${EndIf}
 
-  ${If} $OldInstallLocation != ""
-    StrCpy $INSTDIR $OldInstallLocation
+  ${If} $ExistingInstallLocation != ""
+    StrCpy $INSTDIR $ExistingInstallLocation
   ${Else}
-    ${If} $OldDisplayIcon != ""
-      ${GetParent} "$OldDisplayIcon" $1
-      ${If} ${FileExists} "$1\${LEGACY_EXE}"
+    ${If} $ExistingDisplayIcon != ""
+      ${GetParent} "$ExistingDisplayIcon" $1
+      ${If} ${FileExists} "$1\${PRODUCT_EXE}"
         StrCpy $INSTDIR $1
       ${EndIf}
     ${EndIf}
-  ${EndIf}
-  ${If} ${FileExists} "$INSTDIR\resources\app.asar"
-    StrCpy $LegacyInstallDetected "1"
   ${EndIf}
 FunctionEnd
 
@@ -412,9 +393,6 @@ Function ValidateInstallDirectory
 
   ${GetFileName} "$INSTDIR" $1
   StrCmp "$1" "${PRODUCT_NAME}" valid
-  ${If} ${FileExists} "$INSTDIR\${LEGACY_EXE}"
-    Goto valid
-  ${EndIf}
   ${If} ${FileExists} "$INSTDIR\${PRODUCT_EXE}"
     Goto valid
   ${EndIf}
@@ -426,56 +404,10 @@ Function ValidateInstallDirectory
   valid:
 FunctionEnd
 
-Function UninstallLegacyElectron
-  ${If} $LegacyInstallDetected != "1"
-    Return
-  ${EndIf}
-  IfFileExists "$INSTDIR\${UNINSTALL_EXE}" 0 legacy_uninstall_failed
-  InitPluginsDir
-  ClearErrors
-  CopyFiles /SILENT "$INSTDIR\${UNINSTALL_EXE}" "$PLUGINSDIR\${UNINSTALL_EXE}"
-  IfErrors legacy_uninstall_failed
-  IfFileExists "$PLUGINSDIR\${UNINSTALL_EXE}" 0 legacy_uninstall_failed
-  DetailPrint "Removing the legacy Electron installation."
-  nsExec::ExecToStack '"$PLUGINSDIR\${UNINSTALL_EXE}" /S /allusers _?=$INSTDIR'
-  Pop $0
-  Pop $1
-  ${If} $0 != "0"
-    Goto legacy_uninstall_failed
-  ${EndIf}
-  Return
-
-  legacy_uninstall_failed:
-    MessageBox MB_ICONSTOP "$(LegacyUninstallFailed)" /SD IDOK
-    SetErrorLevel 21
-    Quit
-FunctionEnd
-
 Function RemoveInstalledPayload
   ; Remove only known application payload. User data is stored under LocalAppData.
   ClearErrors
   !include "${UNINSTALL_FILES_INCLUDE}"
-
-  ; Electron 0.2.x payload whitelist for the breaking WinUI replacement.
-  Delete "$INSTDIR\chrome_100_percent.pak"
-  Delete "$INSTDIR\chrome_200_percent.pak"
-  Delete "$INSTDIR\d3dcompiler_47.dll"
-  Delete "$INSTDIR\ffmpeg.dll"
-  Delete "$INSTDIR\icudtl.dat"
-  Delete "$INSTDIR\libEGL.dll"
-  Delete "$INSTDIR\libGLESv2.dll"
-  Delete "$INSTDIR\LICENSE.electron.txt"
-  Delete "$INSTDIR\LICENSES.chromium.html"
-  Delete "$INSTDIR\resources.pak"
-  Delete "$INSTDIR\snapshot_blob.bin"
-  Delete "$INSTDIR\v8_context_snapshot.bin"
-  Delete "$INSTDIR\version"
-  Delete "$INSTDIR\vk_swiftshader.dll"
-  Delete "$INSTDIR\vk_swiftshader_icd.json"
-  Delete "$INSTDIR\vulkan-1.dll"
-  RMDir /r "$INSTDIR\locales"
-  RMDir /r "$INSTDIR\resources"
-  RMDir /r "$INSTDIR\swiftshader"
   Delete "$INSTDIR\${UNINSTALL_EXE}"
   IfErrors remove_failed
   Return
@@ -558,8 +490,6 @@ Section "$(SectionProgram)" SEC_PROGRAM
   SetShellVarContext all
   Call ValidateInstallDirectory
   Call EnsureAppClosed
-  Call UninstallLegacyElectron
-  SetShellVarContext all
   Call RemoveInstalledPayload
   Call DeployPayload
   Call RegisterActivatedPayload
@@ -599,11 +529,6 @@ Function ApplySelectedShellState
   ${EndIf}
 
   SetShellVarContext current
-  ${If} $LegacyStartupDetected == "1"
-    ClearErrors
-    Delete "$APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\${PRODUCT_NAME}.lnk"
-    IfErrors shell_state_failed
-  ${EndIf}
   ${If} $StartupRequested == "1"
     ClearErrors
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}" '$\"$INSTDIR\${PRODUCT_EXE}$\" --startup'

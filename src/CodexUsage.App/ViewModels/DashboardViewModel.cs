@@ -36,7 +36,9 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private double _rangeHours = 12;
     private double _rangeScalePosition = DashboardTimeRangeScale.HoursToPosition(12);
     private DashboardCustomRange? _customRange;
-    private string _searchText = string.Empty;
+    private string? _selectedMainThreadId;
+    private string _mainThreadInputText = string.Empty;
+    private readonly ObservableCollection<MainThreadFilterOption> _mainThreadOptions = [];
     private string _healthStatusText = "正在启动";
     private string _lastReconciliationText = "—";
     private string _sourceFilesText = "0";
@@ -96,6 +98,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<DiagnosticRow> Diagnostics => _presentation.Diagnostics;
     public ObservableCollection<ModelFilterOption> ModelOptions => _presentation.ModelOptions;
     public ObservableCollection<SubjectFilterOption> AgentOptions => _presentation.AgentOptions;
+    public ObservableCollection<MainThreadFilterOption> MainThreadOptions => _mainThreadOptions;
 
     public bool IsStartupEnabled
     {
@@ -183,12 +186,30 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     public DateTimeOffset? CustomEndDateSgt => _customRange?.EndDateSgt;
 
-    public string SearchText
+    public string? SelectedMainThreadId
     {
-        get => _searchText;
+        get => _selectedMainThreadId;
         set
         {
-            if (SetProperty(ref _searchText, value)) ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+            var normalized = ConversationId.IsUuidV7(value?.Trim()) ? value!.Trim().ToLowerInvariant() : null;
+            if (SetProperty(ref _selectedMainThreadId, normalized))
+                ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+        }
+    }
+
+    public string MainThreadInputText
+    {
+        get => _mainThreadInputText;
+        set
+        {
+            var normalized = value ?? string.Empty;
+            if (!SetProperty(ref _mainThreadInputText, normalized)) return;
+            var selected = MainThreadOptions.FirstOrDefault(option => string.Equals(
+                option.DisplayLabel,
+                normalized,
+                StringComparison.Ordinal));
+            SelectedMainThreadId = selected?.ConversationId
+                ?? (ConversationId.IsUuidV7(normalized) ? normalized : null);
         }
     }
 
@@ -380,10 +401,16 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     {
         ClearCustomRange();
         ApplyProgrammaticRangeHours(12);
-        SearchText = string.Empty;
+        ClearMainThreadFilterCore();
         SelectAllModels();
         SelectAllAgents();
         ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+    }
+
+    public void ClearMainThreadFilter()
+    {
+        ClearMainThreadFilterCore();
+        ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter, TimeSpan.Zero);
     }
 
     public void SelectAllModels()
@@ -503,7 +530,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void ScheduleQuery(DashboardSnapshotApplyPurpose purpose)
+    private void ScheduleQuery(DashboardSnapshotApplyPurpose purpose, TimeSpan? delay = null)
     {
         if (!_initialized || Volatile.Read(ref _disposed) != 0) return;
         _filterDebounce?.Cancel();
@@ -511,18 +538,19 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var debounce = new CancellationTokenSource();
         _filterDebounce = debounce;
         var request = CreateRequest();
-        _ = QueryAfterDelayAsync(request, purpose, debounce.Token);
+        _ = QueryAfterDelayAsync(request, purpose, delay ?? FilterDebounce, debounce.Token);
     }
 
     private async Task QueryAfterDelayAsync(
         DashboardQueryRequest request,
         DashboardSnapshotApplyPurpose purpose,
+        TimeSpan delay,
         CancellationToken cancellationToken)
     {
         var ownsQuery = false;
         try
         {
-            await Task.Delay(FilterDebounce, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             if (Interlocked.CompareExchange(ref _queryInFlight, 1, 0) != 0)
             {
                 Volatile.Write(ref _pendingQueryPurpose, (int)purpose);
@@ -561,7 +589,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         ImmutableArray<SubjectFilter>? subjects = AgentOptions.Count == 0 || AgentOptions.All(value => value.IsSelected)
             ? null
             : AgentOptions.Where(value => value.IsSelected).Select(value => value.Subject).ToImmutableArray();
-        return new(start, end, models, subjects, SearchText);
+        return new(start, end, models, subjects, SelectedMainThreadId);
     }
 
     private void ApplySnapshot(
@@ -569,6 +597,11 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         DashboardSnapshotApplyPurpose purpose)
     {
         ApplyStatus(snapshot.Collector, synchronizeDiagnostics: false);
+        DashboardCollectionReconciler.Synchronize(
+            MainThreadOptions,
+            snapshot.RecentMainThreads.Select(value => new MainThreadFilterOption(value)).ToArray(),
+            static value => value.ConversationId,
+            static (current, incoming) => current.UpdateFrom(incoming));
         var summary = snapshot.Result.Summary;
         var totalCost = summary.Cost.Total;
         var input = new DashboardPresentationInput(
@@ -867,6 +900,12 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomStartDateSgt)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomEndDateSgt)));
         return true;
+    }
+
+    private void ClearMainThreadFilterCore()
+    {
+        SetProperty(ref _mainThreadInputText, string.Empty, nameof(MainThreadInputText));
+        SetProperty(ref _selectedMainThreadId, null, nameof(SelectedMainThreadId));
     }
 
     private void ApplyProgrammaticRangeHours(double value)

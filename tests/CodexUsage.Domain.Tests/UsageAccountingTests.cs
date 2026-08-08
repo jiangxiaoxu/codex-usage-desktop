@@ -11,7 +11,7 @@ public sealed class UsageAccountingTests
         "gpt-5.6-sol", 1_000_000, 800_000, 100_000, 70_000);
 
     private static readonly FilterSpec Filter = new(
-        DateTimeOffset.Parse("2026-07-15T00:00:00.000Z"), DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"), null, null, "");
+        DateTimeOffset.Parse("2026-07-15T00:00:00.000Z"), DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"), null, null);
 
     [Fact]
     public void ReasoningOutputIsSubsetAndRatesNeverApplyLongContextPremium()

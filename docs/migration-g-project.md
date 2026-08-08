@@ -98,7 +98,7 @@ Git status、branch 和 revision 必须与 source 记录一致.差异意味着 c
 1. original app 完全退出后只启动 target app.
 2. 执行 [testing.md](testing.md) 中的 native smoke,真实 Codex source 保持 read-only.
 3. 确认 dashboard 显示预期 ledger path,且路径不在 `%USERPROFILE%\.codex` 下.
-4. target 的 build、startup、tray、query、export 和 NSIS setup smoke 全部成功前保留 original tree.若验证从 Electron 0.2.6 升级,使用已备份 ledger 的 disposable install,确认 WinUI 3 原位替换、自启动迁移及 LocalAppData ledger 连续.
+4. target 的 build、startup、tray、query、export 和 NSIS setup smoke 全部成功前保留 original tree.使用 disposable install 确认当前 WinUI payload replacement、自启动和 LocalAppData ledger 连续.
 5. rollback window 结束后,source tree 删除必须由用户单独明确决定,copy/migration script 不执行删除.
 
 rollback 时退出 target,恢复 original workspace 或其 verified copy,并指向 matching ledger.不要修改 `%USERPROFILE%\.codex` 作为 rollback 手段.

@@ -6,7 +6,7 @@ namespace CodexUsage.Infrastructure;
 
 public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 6;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -419,7 +419,8 @@ public sealed class UsageStore : IDisposable
         AssertOpen();
         using var command = CreateCommand(null, """
             SELECT rollout_id, conversation_id, parent_thread_id, thread_type,
-                   agent_role, agent_path, agent_nickname, is_realtime_voice
+                   agent_role, agent_path, agent_nickname, is_realtime_voice,
+                   project_name, thread_title, last_activity_epoch_ms
             FROM rollouts WHERE rollout_id = $rolloutId
             """, ("$rolloutId", rolloutId));
         using var reader = command.ExecuteReader();
@@ -427,7 +428,8 @@ public sealed class UsageStore : IDisposable
             ? new RolloutMetadata(
                 reader.GetString(1), reader.GetString(0), reader.GetString(2),
                 ParseThreadType(reader.GetString(3)), reader.GetString(4),
-                reader.GetString(5), reader.GetString(6), ReadBoolean(reader, 7))
+                reader.GetString(5), reader.GetString(6), ReadBoolean(reader, 7),
+                reader.GetString(8), reader.GetString(9), reader.GetInt64(10))
             : null;
     }
 
@@ -558,6 +560,11 @@ public sealed class UsageStore : IDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(filter.EndEpochMs), "EndEpochMs cannot precede StartEpochMs.");
         }
+        if (filter.MainThreadConversationId is { } requestedMainThreadConversationId
+            && !ConversationId.IsUuidV7(requestedMainThreadConversationId))
+        {
+            throw new ArgumentException("Main thread conversation ID must be UUIDv7.", nameof(filter));
+        }
 
         AssertOpen();
         var conditions = new List<string> { "e.timestamp_epoch_ms >= $start", "e.timestamp_epoch_ms < $end" };
@@ -578,11 +585,25 @@ public sealed class UsageStore : IDisposable
                 "thread");
         }
 
-        var pathQuery = filter.PathQuery?.Trim() ?? string.Empty;
-        if (pathQuery.Length > 0)
+        if (filter.MainThreadConversationId is { Length: > 0 } mainThreadConversationId)
         {
-            conditions.Add("instr(lower(r.agent_path || ' ' || r.agent_nickname || ' ' || r.rollout_id || ' ' || r.conversation_id), lower($pathQuery)) > 0");
-            parameters.Add(("$pathQuery", pathQuery));
+            conditions.Add("""
+                r.rollout_id IN (
+                    WITH RECURSIVE thread_rollouts(rollout_id, conversation_id) AS (
+                        SELECT rollout_id, conversation_id
+                        FROM rollouts
+                        WHERE conversation_id = $mainThreadConversationId
+                          AND thread_type = 'main'
+                        UNION
+                        SELECT child.rollout_id, child.conversation_id
+                        FROM rollouts AS child
+                        JOIN thread_rollouts AS parent
+                          ON child.parent_thread_id = parent.conversation_id
+                    )
+                    SELECT rollout_id FROM thread_rollouts
+                )
+                """);
+            parameters.Add(("$mainThreadConversationId", mainThreadConversationId));
         }
 
         using var command = CreateCommand(null, $"""
@@ -611,6 +632,117 @@ public sealed class UsageStore : IDisposable
         }
 
         return result;
+    }
+
+    public IReadOnlyList<MainThreadOption> QueryRecentMainThreads(int maximumCount)
+    {
+        if (maximumCount <= 0) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+
+        AssertOpen();
+        using var command = CreateCommand(null, """
+            WITH RECURSIVE ranked_main_rollouts AS (
+                SELECT conversation_id, project_name, thread_title, last_activity_epoch_ms,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY conversation_id
+                           ORDER BY last_activity_epoch_ms DESC, rollout_id DESC) AS rank
+                FROM rollouts
+                WHERE thread_type = 'main'
+                  AND is_realtime_voice = 0
+            ),
+            main_threads AS (
+                SELECT conversation_id, project_name, thread_title
+                FROM ranked_main_rollouts
+                WHERE rank = 1
+            ),
+            thread_rollouts(root_conversation_id, rollout_id, conversation_id) AS (
+                SELECT main.conversation_id, root.rollout_id, root.conversation_id
+                FROM main_threads AS main
+                JOIN rollouts AS root
+                  ON root.conversation_id = main.conversation_id
+                 AND root.thread_type = 'main'
+                UNION
+                SELECT parent.root_conversation_id, child.rollout_id, child.conversation_id
+                FROM thread_rollouts AS parent
+                JOIN rollouts AS child
+                  ON child.parent_thread_id = parent.conversation_id
+            )
+            SELECT main.conversation_id,
+                   main.project_name,
+                   main.thread_title,
+                   MAX(related.last_activity_epoch_ms) AS last_activity_epoch_ms
+            FROM main_threads AS main
+            JOIN thread_rollouts AS thread
+              ON thread.root_conversation_id = main.conversation_id
+            JOIN rollouts AS related
+              ON related.rollout_id = thread.rollout_id
+            GROUP BY main.conversation_id, main.project_name, main.thread_title
+            ORDER BY last_activity_epoch_ms DESC, main.conversation_id DESC
+            """);
+        using var reader = command.ExecuteReader();
+        var result = new List<MainThreadOption>();
+        while (reader.Read() && result.Count < maximumCount)
+        {
+            var conversationId = reader.GetString(0);
+            if (ConversationId.IsUuidV7(conversationId))
+            {
+                result.Add(new MainThreadOption(
+                    conversationId,
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3))));
+            }
+        }
+
+        return result;
+    }
+
+    public bool SynchronizeMainThreadTitles(
+        IReadOnlyDictionary<string, string> titles,
+        bool clearMissingTitles,
+        long observedAtEpochMs)
+    {
+        ArgumentNullException.ThrowIfNull(titles);
+        RequireNonNegative(observedAtEpochMs, nameof(observedAtEpochMs));
+        foreach (var (conversationId, title) in titles)
+        {
+            if (!ConversationId.IsUuidV7(conversationId))
+                throw new ArgumentException("Main thread conversation ID must be UUIDv7.", nameof(titles));
+            if (string.IsNullOrWhiteSpace(title))
+                throw new ArgumentException("Main thread title cannot be blank.", nameof(titles));
+        }
+
+        AssertOpen();
+        return WriteTransaction(transaction =>
+        {
+            var changed = false;
+            if (clearMissingTitles)
+            {
+                changed |= ExecuteNonQuery(transaction, """
+                    UPDATE rollouts
+                    SET thread_title = '', updated_at_epoch_ms = $observedAt
+                    WHERE thread_type = 'main'
+                      AND is_realtime_voice = 0
+                      AND thread_title <> ''
+                    """, ("$observedAt", observedAtEpochMs)) > 0;
+            }
+
+            foreach (var (conversationId, title) in titles)
+            {
+                changed |= ExecuteNonQuery(transaction, """
+                    UPDATE rollouts
+                    SET thread_title = $threadTitle, updated_at_epoch_ms = $observedAt
+                    WHERE conversation_id = $conversationId
+                      AND thread_type = 'main'
+                      AND is_realtime_voice = 0
+                      AND thread_title <> $threadTitle
+                    """,
+                    ("$conversationId", conversationId),
+                    ("$threadTitle", title),
+                    ("$observedAt", observedAtEpochMs)) > 0;
+            }
+
+            return changed;
+        });
     }
 
     public void BeginCollectorRun(CollectorRunStartInput input)
@@ -800,6 +932,9 @@ public sealed class UsageStore : IDisposable
                         agent_path TEXT NOT NULL,
                         agent_nickname TEXT NOT NULL,
                         is_realtime_voice INTEGER NOT NULL CHECK (is_realtime_voice IN (0, 1)),
+                        project_name TEXT NOT NULL,
+                        thread_title TEXT NOT NULL,
+                        last_activity_epoch_ms INTEGER NOT NULL CHECK (last_activity_epoch_ms >= 0),
                         canonical_source_path TEXT,
                         created_at_epoch_ms INTEGER NOT NULL CHECK (created_at_epoch_ms >= 0),
                         updated_at_epoch_ms INTEGER NOT NULL CHECK (updated_at_epoch_ms >= 0)
@@ -922,6 +1057,31 @@ public sealed class UsageStore : IDisposable
                     """);
             }
 
+            if (currentVersion < 5 && !HasRolloutColumn(transaction, "thread_title"))
+            {
+                ExecuteNonQuery(transaction, """
+                    ALTER TABLE rollouts
+                    ADD COLUMN thread_title TEXT NOT NULL DEFAULT '';
+                    """);
+            }
+
+            if (currentVersion < 5 && !HasRolloutColumn(transaction, "last_activity_epoch_ms"))
+            {
+                ExecuteNonQuery(transaction, """
+                    ALTER TABLE rollouts
+                    ADD COLUMN last_activity_epoch_ms INTEGER NOT NULL DEFAULT 0
+                    CHECK (last_activity_epoch_ms >= 0);
+                    """);
+            }
+
+            if (currentVersion < 6 && !HasRolloutColumn(transaction, "project_name"))
+            {
+                ExecuteNonQuery(transaction, """
+                    ALTER TABLE rollouts
+                    ADD COLUMN project_name TEXT NOT NULL DEFAULT 'Codex';
+                    """);
+            }
+
             ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
             return 0;
         });
@@ -1002,9 +1162,11 @@ public sealed class UsageStore : IDisposable
             INSERT INTO rollouts (
                 rollout_id, conversation_id, parent_thread_id, thread_type,
                 agent_role, agent_path, agent_nickname, is_realtime_voice, canonical_source_path,
+                project_name, thread_title, last_activity_epoch_ms,
                 created_at_epoch_ms, updated_at_epoch_ms
             ) VALUES ($rolloutId, $conversationId, $parentThreadId, $threadType,
-                      $agentRole, $agentPath, $agentNickname, $isRealtimeVoice, NULL, $observedAt, $observedAt)
+                      $agentRole, $agentPath, $agentNickname, $isRealtimeVoice, NULL,
+                      $projectName, $threadTitle, $lastActivityEpochMs, $observedAt, $observedAt)
             ON CONFLICT(rollout_id) DO UPDATE SET
                 conversation_id = excluded.conversation_id,
                 parent_thread_id = excluded.parent_thread_id,
@@ -1013,12 +1175,17 @@ public sealed class UsageStore : IDisposable
                 agent_path = excluded.agent_path,
                 agent_nickname = excluded.agent_nickname,
                 is_realtime_voice = excluded.is_realtime_voice,
+                project_name = excluded.project_name,
+                thread_title = excluded.thread_title,
+                last_activity_epoch_ms = MAX(rollouts.last_activity_epoch_ms, excluded.last_activity_epoch_ms),
                 updated_at_epoch_ms = excluded.updated_at_epoch_ms
             """,
             ("$rolloutId", metadata.RolloutId), ("$conversationId", metadata.ConversationId),
             ("$parentThreadId", metadata.ParentThreadId), ("$threadType", ThreadTypeToDb(metadata.ThreadType)),
             ("$agentRole", metadata.AgentRole), ("$agentPath", metadata.AgentPath),
             ("$agentNickname", metadata.AgentNickname), ("$isRealtimeVoice", metadata.IsRealtimeVoice ? 1 : 0),
+            ("$projectName", metadata.ProjectName), ("$threadTitle", metadata.ThreadTitle),
+            ("$lastActivityEpochMs", metadata.LastActivityEpochMs),
             ("$observedAt", observedAtEpochMs));
     }
 
@@ -1365,6 +1532,12 @@ public sealed class UsageStore : IDisposable
             "SELECT EXISTS(SELECT 1 FROM source_files WHERE file_path = $filePath)",
             ("$filePath", filePath)) == 1;
 
+    private bool HasRolloutColumn(SqliteTransaction transaction, string columnName) =>
+        ExecuteScalarLong(
+            transaction,
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('rollouts') WHERE name = $columnName)",
+            ("$columnName", columnName)) == 1;
+
     private static void AddListFilter(
         ICollection<string> conditions,
         ICollection<(string Name, object? Value)> parameters,
@@ -1418,6 +1591,9 @@ public sealed class UsageStore : IDisposable
         RequireText(metadata.AgentRole, nameof(metadata.AgentRole));
         ArgumentNullException.ThrowIfNull(metadata.AgentPath);
         ArgumentNullException.ThrowIfNull(metadata.AgentNickname);
+        RequireText(metadata.ProjectName, nameof(metadata.ProjectName));
+        ArgumentNullException.ThrowIfNull(metadata.ThreadTitle);
+        RequireNonNegative(metadata.LastActivityEpochMs, nameof(metadata.LastActivityEpochMs));
     }
 
     private static void ValidateEvents(IReadOnlyList<UsageEventInput> events)

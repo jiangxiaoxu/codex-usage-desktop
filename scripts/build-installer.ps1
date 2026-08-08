@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.9',
+    [string]$Version = '0.3.13',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -122,16 +122,6 @@ function Find-MakeNsis {
     )) {
         if ([System.IO.File]::Exists($candidate)) {
             return $candidate
-        }
-    }
-
-    $electronBuilderCache = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache'
-    if ([System.IO.Directory]::Exists($electronBuilderCache)) {
-        $cached = Get-ChildItem -LiteralPath $electronBuilderCache -Filter 'makensis.exe' -File -Recurse -ErrorAction SilentlyContinue |
-            Sort-Object FullName |
-            Select-Object -First 1
-        if ($null -ne $cached) {
-            return $cached.FullName
         }
     }
 
@@ -439,12 +429,10 @@ function Assert-InstallerSafety {
     $source = [System.IO.File]::ReadAllText($Path)
     foreach ($required in @(
         'Call EnsureAppClosed',
-        'Call UninstallLegacyElectron',
         'Call RemoveInstalledPayload',
         'Call DeployPayload',
         'taskkill.exe',
         'taskkill.exe" /F /IM "${PRODUCT_EXE}"',
-        '/S /allusers',
         '!include "${UNINSTALL_FILES_INCLUDE}"',
         '!ifndef PAYLOAD_ARCHIVE',
         '!ifndef PAYLOAD_EXTRACTOR',
@@ -472,14 +460,13 @@ function Assert-InstallerSafety {
     $coreEnd = $source.IndexOf('SectionEnd', $coreStart, [System.StringComparison]::Ordinal)
     $core = $source.Substring($coreStart, $coreEnd - $coreStart)
     $replacementOrderPattern = [System.Text.RegularExpressions.Regex]::new(
-        'Call EnsureAppClosed\s+Call UninstallLegacyElectron\s+SetShellVarContext all\s+Call RemoveInstalledPayload',
+        'Call EnsureAppClosed\s+Call RemoveInstalledPayload\s+Call DeployPayload',
         [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
     if (-not $replacementOrderPattern.IsMatch($core)) {
-        throw 'Installer must close the application and remove the legacy payload before replacing program files.'
+        throw 'Installer must close the application and remove the current payload before replacing program files.'
     }
     $orderedCalls = @(
         'Call EnsureAppClosed',
-        'Call UninstallLegacyElectron',
         'Call RemoveInstalledPayload',
         'Call DeployPayload'
     )
@@ -493,7 +480,6 @@ function Assert-InstallerSafety {
     }
     foreach ($forbidden in @(
         'Function BackupLedger',
-        'Function RestoreLedgerAfterLegacyUninstall',
         'preinstall-${PRODUCT_VERSION}',
         'usage ledger backup',
         'MUI_FINISHPAGE_RUN_NOTCHECKED',
@@ -525,28 +511,6 @@ function Assert-InstallerSafety {
             throw "Installer payload deployment is invalid at: $step"
         }
         $previousIndex = $index
-    }
-    $legacyStart = $source.IndexOf('Function UninstallLegacyElectron', [System.StringComparison]::Ordinal)
-    $legacyEnd = $source.IndexOf('FunctionEnd', $legacyStart, [System.StringComparison]::Ordinal)
-    $legacyUninstall = $source.Substring($legacyStart, $legacyEnd - $legacyStart)
-    $legacyUninstallSteps = @(
-        'InitPluginsDir',
-        'CopyFiles /SILENT "$INSTDIR\${UNINSTALL_EXE}" "$PLUGINSDIR\${UNINSTALL_EXE}"',
-        'IfErrors legacy_uninstall_failed',
-        'nsExec::ExecToStack ''"$PLUGINSDIR\${UNINSTALL_EXE}" /S /allusers _?=$INSTDIR'''
-    )
-    $previousIndex = -1
-    foreach ($step in $legacyUninstallSteps) {
-        $index = $legacyUninstall.IndexOf($step, [System.StringComparison]::Ordinal)
-        if ($index -le $previousIndex) {
-            throw "Legacy Electron uninstall synchronization is invalid at: $step"
-        }
-        $previousIndex = $index
-    }
-    if ($legacyUninstall.IndexOf(
-        'nsExec::ExecToStack ''"$INSTDIR\${UNINSTALL_EXE}"',
-        [System.StringComparison]::Ordinal) -ge 0) {
-        throw 'Legacy Electron uninstaller must run from PLUGINSDIR.'
     }
     foreach ($forbidden in @(
         'StagingDir',

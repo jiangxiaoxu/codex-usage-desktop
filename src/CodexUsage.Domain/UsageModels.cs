@@ -41,8 +41,7 @@ public sealed record FilterSpec(
     DateTimeOffset StartUtc,
     DateTimeOffset EndUtc,
     ImmutableArray<string>? Models,
-    ImmutableArray<SubjectFilter>? Subjects,
-    string PathQuery);
+    ImmutableArray<SubjectFilter>? Subjects);
 
 public sealed record CostBreakdown(
     decimal UncachedInput,

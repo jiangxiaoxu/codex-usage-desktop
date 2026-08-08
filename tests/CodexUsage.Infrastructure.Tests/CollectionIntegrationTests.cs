@@ -12,6 +12,90 @@ namespace CodexUsage.Infrastructure.Tests;
 public sealed class CollectionIntegrationTests
 {
     [Fact]
+    public void SessionIndexParserUsesLatestValidUpdatedAtRecordAndRejectsInvalidRecords()
+    {
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        var result = SessionIndexParser.Parse(Encoding.UTF8.GetBytes("""
+            {"id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","thread_name":"Earlier title","updated_at":"2026-08-08T10:00:00Z"}
+            {"id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","thread_name":"Latest title","updated_at":"2026-08-08T10:01:00Z"}
+            {"id":"not-a-conversation","thread_name":"Invalid ID","updated_at":"2026-08-08T10:02:00Z"}
+            {"id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","thread_name":"","updated_at":"2026-08-08T10:03:00Z"}
+            {"id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","thread_name":"Invalid timestamp","updated_at":"not-a-timestamp"}
+            """));
+
+        Assert.Equal("Latest title", Assert.Single(result.ThreadTitles).Value);
+        Assert.True(result.ThreadTitles.ContainsKey(conversationId));
+        Assert.Equal(3, result.InvalidRecords);
+        Assert.False(result.IsAuthoritative);
+    }
+
+    [Fact]
+    public async Task MainSessionMetadataCwdProjectIgnoresStateDatabase()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        using (var connection = OpenDatabase(Path.Combine(codexHome, "state_5.sqlite")))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT);
+                INSERT INTO threads (id, cwd) VALUES
+                    ('019fe0d7-dd64-7412-8fa0-ea96334569dd', 'C:/Projects/incorrect-state-project');
+                """;
+            command.ExecuteNonQuery();
+        }
+        WriteRollout(Path.Combine(codexHome, "sessions", "rollout-project.jsonl"), string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                session_id = conversationId,
+                id = conversationId,
+                thread_source = "user",
+                cwd = "C:/Projects/fallback-project",
+            }),
+            Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]),
+        ]) + "\n");
+        await using var collector = CreateCollector(codexHome, temporary.Path);
+
+        await StartAndWaitForInventoryAsync(collector);
+
+        Assert.Equal("fallback-project", Assert.Single(
+            await collector.QueryRecentMainThreadsAsync(10)).ProjectName);
+    }
+
+    [Fact]
+    public async Task SessionIndexRefreshOverridesExistingMainThreadTitleAndWatcherRefreshesIt()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-session-index.jsonl");
+        WriteRollout(rolloutPath, Rollout(conversationId, Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])));
+        WriteSessionIndex(codexHome, conversationId, "First official title", "2026-08-08T10:00:00Z");
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            EnableWatchers = false,
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        });
+        await StartAndWaitForInventoryAsync(collector);
+
+        var initial = Assert.Single(await collector.QueryRecentMainThreadsAsync(10));
+        Assert.Equal("First official title", initial.Title);
+
+        WriteSessionIndex(codexHome, conversationId, "Updated official title", "2026-08-08T10:01:00Z");
+        collector.EnqueueSessionIndexObservationForTest();
+        var updated = await WaitForSessionIndexTitleAsync(collector, "Updated official title");
+
+        Assert.Equal(conversationId, updated.ConversationId);
+    }
+
+    [Fact]
     public async Task InitialInventoryParsesAndQueriesUsage()
     {
         using var temporary = new TemporaryDirectory();
@@ -1278,18 +1362,30 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
-    public async Task ParserRevisionRebuildsExistingCanonicalFromObservedSource()
+    public async Task ParserRevisionRebuildsExistingCanonicalAndOverwritesProjectFromMainSessionMetadataCwd()
     {
         using var temporary = new TemporaryDirectory();
         var codexHome = CreateCodexHome(temporary.Path);
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
         var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-test-one.jsonl");
-        WriteRollout(rolloutPath, Rollout("rollout-one", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])));
+        WriteRollout(rolloutPath, string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                session_id = conversationId,
+                id = "rollout-one",
+                thread_source = "user",
+                cwd = "C:/Projects/codex-usage-desktop",
+            }),
+            Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]),
+        ]) + "\n");
         var file = new FileInfo(rolloutPath);
         using (var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome)))
         {
             var metadata = new RolloutMetadata(
-                "rollout-one", "rollout-one", "", ThreadType.Main, "main", "/root", "", false);
+                conversationId, "rollout-one", "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0);
             var source = new CandidateSourceInput(
                 rolloutPath, file.Length, new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
                 file.Length, "old-prefix", PrefixStatus.Matches, CanonicalStatus.Canonical, true, 1, null);
@@ -1310,6 +1406,8 @@ public sealed class CollectionIntegrationTests
 
         Assert.Equal("gpt-5.6-sol", usage.Model);
         Assert.Equal(10, usage.InputTokens);
+        Assert.Equal("codex-usage-desktop", Assert.Single(
+            await collector.QueryRecentMainThreadsAsync(20)).ProjectName);
     }
 
     [Fact]
@@ -1357,7 +1455,7 @@ public sealed class CollectionIntegrationTests
                 1,
                 null);
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-                new RolloutMetadata(legacyId, legacyId, "", ThreadType.Main, "main", "/root", "", false),
+                new RolloutMetadata(legacyId, legacyId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0),
                 [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
                     "gpt-5.6-sol", 1, 0, 1, 0, "legacy")],
                 source,
@@ -1400,9 +1498,9 @@ public sealed class CollectionIntegrationTests
             Assert.Equal(CanonicalStatus.Canonical, source.CanonicalStatus);
             var checkpoint = Assert.Single(verified.ListRolloutCheckpoints());
             Assert.Equal(actualId, checkpoint.RolloutId);
-            Assert.Equal(11, checkpoint.ParserRevision);
+            Assert.Equal(15, checkpoint.ParserRevision);
             Assert.Equal(1, checkpoint.SafeNullPaddingRecords);
-            Assert.Equal("11", verified.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal("15", verified.GetCollectorState("rollout_parser_revision"));
         }
 
         await using var restarted = CreateCollector(codexHome, temporary.Path);
@@ -1438,7 +1536,7 @@ public sealed class CollectionIntegrationTests
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Null(store.GetRolloutMetadata(legacyId));
         Assert.NotNull(store.GetRolloutMetadata(actualId));
-        Assert.Equal("11", store.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("15", store.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -1490,7 +1588,7 @@ public sealed class CollectionIntegrationTests
         {
             var staleMetadata = new RolloutMetadata(
                 "legacy-conversation", "rollout-attribution", "", ThreadType.Main,
-                "legacy-main", "/legacy", "legacy", false);
+                "legacy-main", "/legacy", "legacy", false, "Codex", "", 0);
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
                 staleMetadata,
                 [new UsageEventInput(
@@ -1932,6 +2030,20 @@ public sealed class CollectionIntegrationTests
         throw new TimeoutException($"Collector did not enter {expected} within the test deadline.");
     }
 
+    private static async Task<MainThreadOption> WaitForSessionIndexTitleAsync(
+        UsageCollector collector,
+        string expectedTitle)
+    {
+        var expires = Stopwatch.StartNew();
+        while (expires.Elapsed < TimeSpan.FromSeconds(2))
+        {
+            var options = await collector.QueryRecentMainThreadsAsync(10);
+            if (options.FirstOrDefault() is { } option && option.Title == expectedTitle) return option;
+            await Task.Delay(10);
+        }
+        throw new TimeoutException("Session index title was not refreshed within the test deadline.");
+    }
+
     private static void SeedLedger(
         string databasePath,
         string codexHome,
@@ -1941,7 +2053,7 @@ public sealed class CollectionIntegrationTests
     {
         var file = new FileInfo(rolloutPath);
         using var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
-        var metadata = new RolloutMetadata(rolloutId, rolloutId, "", ThreadType.Main, "main", "/root", "", false);
+        var metadata = new RolloutMetadata(rolloutId, rolloutId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             metadata,
             [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
@@ -1970,7 +2082,7 @@ public sealed class CollectionIntegrationTests
         var file = new FileInfo(rolloutPath);
         using var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            new RolloutMetadata(legacyId, legacyId, "", ThreadType.Main, "main", "/root", "", false),
+            new RolloutMetadata(legacyId, legacyId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0),
             [new UsageEventInput(0, 1, "gpt-5.6-sol", 1, 0, 1, 0, "seed-legacy-conflict")],
             new CanonicalSourceInput(
                 rolloutPath, file.Length, new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
@@ -1994,6 +2106,15 @@ public sealed class CollectionIntegrationTests
     }
 
     private static void WriteRollout(string filePath, string content) => File.WriteAllText(filePath, content);
+
+    private static void WriteSessionIndex(
+        string codexHome,
+        string conversationId,
+        string title,
+        string updatedAt) =>
+        File.WriteAllText(
+            Path.Combine(codexHome, "session_index.jsonl"),
+            JsonSerializer.Serialize(new { id = conversationId, thread_name = title, updated_at = updatedAt }) + "\n");
 
     private static SqliteConnection OpenDatabase(string databasePath)
     {

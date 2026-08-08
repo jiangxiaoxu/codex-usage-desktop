@@ -194,6 +194,26 @@ public sealed class SubjectFilterOption(SubjectFilter subject, bool isSelected =
     private void OnSelectionGlyphChanged() => RaisePropertyChanged(nameof(SelectionGlyph));
 }
 
+public sealed class MainThreadFilterOption(MainThreadOption option) : DashboardPresentationItem
+{
+    private string _projectName = option.ProjectName;
+    private string _title = option.Title;
+    private DateTimeOffset _lastActivityUtc = option.LastActivityUtc;
+
+    public string ConversationId { get; } = option.ConversationId;
+    public string ProjectName => _projectName;
+    public string Title => _title;
+    public DateTimeOffset LastActivityUtc => _lastActivityUtc;
+    public string DisplayLabel => $"{ProjectName} - {ConversationId[..Math.Min(ConversationId.Length, 8)]} - {(Title.Length > 0 ? Title : "未命名线程")}";
+
+    public void UpdateFrom(MainThreadFilterOption source)
+    {
+        if (SetValue(ref _projectName, source.ProjectName)) RaisePropertyChanged(nameof(DisplayLabel));
+        if (SetValue(ref _title, source.Title)) RaisePropertyChanged(nameof(DisplayLabel));
+        SetValue(ref _lastActivityUtc, source.LastActivityUtc);
+    }
+}
+
 public sealed record DashboardPresentationInput(
     IReadOnlyList<MetricCard> Metrics,
     IReadOnlyList<CostSlice> CostSlices,

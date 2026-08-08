@@ -21,6 +21,14 @@ public sealed partial class AuditFilterContent : UserControl
         }
     }
 
+    private void OnClearMainThreadFilter(object sender, RoutedEventArgs args)
+    {
+        if (DataContext is DashboardViewModel viewModel)
+        {
+            viewModel.ClearMainThreadFilter();
+        }
+    }
+
     private void OnSelectAllModels(object sender, RoutedEventArgs args)
     {
         if (DataContext is DashboardViewModel viewModel)

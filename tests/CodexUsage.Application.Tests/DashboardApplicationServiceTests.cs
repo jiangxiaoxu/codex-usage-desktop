@@ -137,6 +137,25 @@ public sealed class DashboardApplicationServiceTests
     }
 
     [Fact]
+    public async Task QueryPassesExactMainThreadIdAndReturnsRecentThreadOptions()
+    {
+        var collector = new FakeCollector([]);
+        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]));
+        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
+        const string threadId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+
+        await service.StartAsync(new DashboardQueryRequest(end.AddHours(-1), end));
+        var snapshot = await service.QueryAsync(new DashboardQueryRequest(
+            end.AddHours(-1), end, MainThreadConversationId: threadId));
+
+        Assert.Equal(threadId, collector.LastQuery!.MainThreadConversationId);
+        Assert.Equal(20, collector.LastRecentMainThreadMaximumCount);
+        var option = Assert.Single(snapshot.RecentMainThreads);
+        Assert.Equal("conversation", option.ConversationId);
+        Assert.Equal("测试线程", option.Title);
+    }
+
+    [Fact]
     public async Task ChangedCollectorUsageRevisionRaisesUsageChanged()
     {
         var collector = new FakeCollector([]);
@@ -336,6 +355,10 @@ public sealed class DashboardApplicationServiceTests
 
         public int QueryCount { get; private set; }
 
+        public UsageEventQuery? LastQuery { get; private set; }
+
+        public int? LastRecentMainThreadMaximumCount { get; private set; }
+
         public int DisposeCount { get; private set; }
 
         public ValueTask<CollectorStatus> StartAsync(CancellationToken cancellationToken = default)
@@ -364,6 +387,7 @@ public sealed class DashboardApplicationServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             QueryCount++;
+            LastQuery = query;
             IReadOnlyList<StoredUsageEvent> events =
             [
                 new(
@@ -385,6 +409,22 @@ public sealed class DashboardApplicationServiceTests
                     "signature"),
             ];
             return ValueTask.FromResult(events);
+        }
+
+        public ValueTask<IReadOnlyList<MainThreadOption>> QueryRecentMainThreadsAsync(
+            int maximumCount,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastRecentMainThreadMaximumCount = maximumCount;
+            return ValueTask.FromResult<IReadOnlyList<MainThreadOption>>(
+            [
+                new MainThreadOption(
+                    "conversation",
+                    "Codex",
+                    "测试线程",
+                    DateTimeOffset.Parse("2026-07-30T03:30:00Z")),
+            ]);
         }
 
         public ValueTask DisposeAsync()

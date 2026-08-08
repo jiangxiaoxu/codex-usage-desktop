@@ -1,13 +1,13 @@
-# WinUI 3 migration handoff
+# WinUI 3 handoff
 
 ## Resume target
 
-Continue the breaking migration from Electron to unpackaged, self-contained WinUI 3. The immediate acceptance target is to build and install the latest native version, then verify that an existing ledger is shown immediately while full reconciliation continues in the background.
+Continue the unpackaged, self-contained WinUI 3 application. The immediate acceptance target is to build and install the latest native version, then verify that an existing ledger is shown immediately while full reconciliation continues in the background.
 
 Repository state at handoff:
 
 - Branch: `main`.
-- Electron, Node, renderer, and legacy Python production paths have been removed.
+- The production runtime is .NET 8 / WinUI 3.
 - Runtime solution: `CodexUsageDesktop.sln`, containing App, Application, Domain, Infrastructure, and test projects.
 - Delivery: x64 all-users NSIS setup containing a self-contained unpackaged WinUI 3 publish.
 - Local changes were intentionally committed for transfer before final installed-machine validation.
@@ -16,15 +16,15 @@ Repository state at handoff:
 
 - Native WinUI 3 dashboard target is the confirmed Figma Page 2 product candidate. Page 1 is unrelated and was not modified.
 - Final layout node: `90:2`. Responsive contract node: `90:329`.
-- Minimum window is `720 x 640 DIP`. Wide is `>=1200`,Medium is `800-1199`,and Compact is `<800`.
-- The four top-level filters each occupy one row. Compact splits the time control into two rows. The page owns the only vertical scroll; each table owns horizontal scrolling only. Model order is Sol,Terra,Luna,Others.
+- Minimum window is `900 x 720 DIP`. Wide is `>=1280`,Medium is `1000-1279`,and Compact is `<1000`; detail tables are side by side at `>=1440`.
+- The four top-level filters each occupy one row: time,model,subject and main thread. The main-thread editable dropdown shows at most 20 recent choices by activity as `project name - ID prefix - title`; the project name is the main session `session_meta.cwd` directory name and the title is the authoritative `thread_name` in `session_index.jsonl`. Manual input accepts a complete UUIDv7 session ID,uses an exact main `ConversationId` as its root,and includes every descendant-agent event. The page owns the only vertical scroll; each table owns horizontal scrolling only. Model order is Sol,Terra,Luna,codex-auto-review,Others.
 - AppInstance single instance, tray residency, hidden `--startup`, HKCU Run startup, ledger mutex, bounded shutdown and DPI handling.
 - Focus-aware Efficiency Mode and process-priority work is deferred and must not be treated as implemented acceptance scope.
-- The legacy multi-size product icon is embedded in the EXE and reused by AppWindow/taskbar, tray, setup, uninstaller, shortcuts, and Apps & features.
+- The multi-size product icon is embedded in the EXE and reused by AppWindow/taskbar, tray, setup, uninstaller, shortcuts, and Apps & features.
 - Collector retains strict read-only access to `%USERPROFILE%\.codex\sessions`, `archived_sessions`, and `agents`.
 - Safe source-conflict recovery writes only the application ledger. It accepts only stable metadata-exact candidates with `Equal` or `Extension` semantics,selects deterministically,and retains the last valid ledger with internal degraded diagnostics and background retry for unsafe candidates. Source conflict is not displayed in the GUI.
 - Ledger remains under `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`.
-- Installer performs direct break-replace migration, terminates old processes without prompting, invokes the legacy Electron uninstaller when detected, and installs into Program Files without creating a ledger backup. The legacy uninstaller may remove the old LocalAppData ledger.
+- Installer terminates the current application before replacing the WinUI payload and installs into Program Files. It does not delete the LocalAppData ledger.
 - Installer builds require PowerShell Core 7.4 or later through `pwsh`.
 - Publish validation requires the application PRI/XBF resources, and `--smoke-test` initializes the real WinUI composition against temporary data.
 
@@ -82,15 +82,13 @@ Then perform installed validation:
 
 - Independent review of the no-throttle revision completed without an actionable finding.
 - The final installer build, installed smoke test, and real-ledger validation completed. Existing totals appeared at inventory `0/3327`, remained queryable during reconciliation, and updated when background processing completed.
-- The first real Electron replacement exposed an NSIS uninstaller child-process race. The installer now copies the legacy uninstaller to `$PLUGINSDIR` and invokes it with final `_?=$INSTDIR`; an independent review and a repeated real upgrade confirmed the fix.
-- The historical installed payload matched all 520 published files, the ledger was preserved in that validation, and no new matching Application Error, Windows Error Reporting, or .NET Runtime crash event was recorded. That validation predates the current direct-upgrade/no-backup policy.
+- The historical installed payload matched all 520 published files, the ledger was preserved in that validation, and no new matching Application Error, Windows Error Reporting, or .NET Runtime crash event was recorded.
 - Focus-aware Efficiency Mode and process-priority behavior remains deferred.
 - A single synchronous SQLite query or write is not internally preemptible, although full inventory no longer blocks the actor for hours.
-- The setup and binaries are unsigned. Authenticode signing and a stable release identity remain required before public distribution.
-- The SHA-256-only release check fetches fixed GitHub Release metadata at startup and every 6 hours. It never downloads or starts setup without separate user actions. Authenticode signing remains required before public distribution.
+- The SHA-256-only release check fetches fixed GitHub Release metadata at startup and every 6 hours. It never downloads or starts setup without separate user actions.
 
 ## Safety boundaries
 
 - Never write, rename, lock, repair, truncate, or delete anything under the observed `.codex` source directories.
-- Do not point an upgrade test at valuable ledger data: the current direct-upgrade path invokes the legacy uninstaller without a ledger backup, and that uninstaller may remove the old LocalAppData ledger.
+- Do not point installer smoke tests at valuable ledger data; use a disposable installation and confirm that the LocalAppData ledger remains unchanged.
 - Do not stage build output, `node_modules`, local databases, logs, or `task-memory`.

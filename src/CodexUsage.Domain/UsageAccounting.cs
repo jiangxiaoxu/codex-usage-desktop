@@ -86,9 +86,7 @@ public static class UsageAccounting
         var role = NormalizedAgentRole(usageEvent.ThreadType, usageEvent.AgentRole);
         if (filter.Subjects is { } subjects && !subjects.Any(subject => subject.ThreadType == usageEvent.ThreadType && subject.AgentRole == role))
             return false;
-        var query = filter.PathQuery.Trim();
-        return query.Length == 0 || string.Join(' ', usageEvent.AgentPath, usageEvent.AgentNickname, usageEvent.RolloutId, usageEvent.ConversationId)
-            .Contains(query, StringComparison.CurrentCultureIgnoreCase);
+        return true;
     }
 
     public static QueryResult Query(IEnumerable<UsageEvent> events, ScanDiagnostics diagnostics, FilterSpec filter)

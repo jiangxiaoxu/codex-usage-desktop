@@ -161,7 +161,7 @@ public sealed partial class MainWindow : Window
             var version = typeof(MainWindow).Assembly.GetName().Version;
             return version is { Major: >= 0, Minor: >= 0, Build: >= 0 }
                 ? $"{version.Major}.{version.Minor}.{version.Build}"
-                : "0.3.9";
+                : "0.3.13";
         }
     }
 
@@ -466,8 +466,8 @@ public sealed partial class MainWindow : Window
             var confirmation = new ContentDialog
             {
                 XamlRoot = WindowRoot.XamlRoot,
-                Title = "运行未签名安装器",
-                Content = "安装器未进行 Authenticode 签名,Windows 可能显示 Unknown Publisher 或 SmartScreen。继续后,NSIS 安装器会结束当前 Codex Usage Desktop process 和 collector 以完成升级。",
+                Title = "运行安装器",
+                Content = "继续后,NSIS 安装器会结束当前 Codex Usage Desktop process 和 collector 以完成升级。",
                 PrimaryButtonText = "运行安装器",
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Close,

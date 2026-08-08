@@ -10,7 +10,16 @@ public sealed record RolloutMetadata(
     string AgentRole,
     string AgentPath,
     string AgentNickname,
-    bool IsRealtimeVoice);
+    bool IsRealtimeVoice,
+    string ProjectName,
+    string ThreadTitle,
+    long LastActivityEpochMs);
+
+public sealed record MainThreadOption(
+    string ConversationId,
+    string ProjectName,
+    string Title,
+    DateTimeOffset LastActivityUtc);
 
 public sealed record ParsedRolloutUsageEvent(
     string ConversationId,

@@ -55,6 +55,6 @@ This application treats every observed rollout as Codex subscription usage. Inpu
 
 ## Time, filters and percentages
 
-The WinUI view model converts Singapore local control values to UTC and queries the half-open range `[startUtc, endUtc)`. Model and subject facets are calculated over all events in that time range before the current model/subject selection, so one filter does not make the other filter's choices disappear. Agent path search is applied after model and subject matching.
+The WinUI view model converts Singapore local control values to UTC and queries the half-open range `[startUtc, endUtc)`. Model and subject facets are calculated over all events in that time range before the current model/subject selection, so one filter does not make the other filter's choices disappear. The main-thread filter accepts a complete session ID, uses an exact main `ConversationId` as its root, and includes every descendant-agent event.
 
 Displayed USD values are formatted to one decimal place. A displayed price share is `group.cost.total / selected.summary.cost.total`; it is a cost share, not a token share. When the selected total cost is zero, a meaningful positive price share is not available.

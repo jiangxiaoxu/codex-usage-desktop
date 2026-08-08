@@ -194,7 +194,7 @@
                     </CommandBar.Content>
                     <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新" />
                     <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnDownloadUpdateRequested" Icon="Download" IsEnabled="{Binding CanDownloadUpdate}" Label="{Binding DownloadUpdateLabel}" Visibility="{Binding CanDownloadUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="未签名安装器会先复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="运行安装器前会复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </CommandBar>
 
                 <CommandBar
@@ -239,7 +239,7 @@
                     </CommandBar.Content>
                     <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnCheckUpdateRequested" Icon="Refresh" IsEnabled="{Binding CanCheckUpdates}" Label="检查更新" />
                     <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnDownloadUpdateRequested" Icon="Download" IsEnabled="{Binding CanDownloadUpdate}" Label="{Binding DownloadUpdateLabel}" Visibility="{Binding CanDownloadUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="未签名安装器会先复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <AppBarButton Height="40" FontFamily="{StaticResource ContentControlThemeFontFamily}" FontSize="14" Click="OnRunUpdateRequested" Icon="OpenFile" IsEnabled="{Binding CanRunDownloadedUpdate}" Label="{Binding RunUpdateLabel}" ToolTipService.ToolTip="运行安装器前会复验 SHA-256; 确认后 NSIS 会结束当前应用和 collector process" Visibility="{Binding CanRunDownloadedUpdate, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </CommandBar>
             </Grid>
         </Border>

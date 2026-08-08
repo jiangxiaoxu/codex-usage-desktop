@@ -4,6 +4,11 @@ All notable changes are documented in this file. Versions use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-08-08
+
+- Replaced path search with an exact main-thread filter that accepts a complete UUIDv7 session ID,includes all descendant-agent usage,and has a dedicated clear action.
+- Added a recent-main-thread dropdown with up to 20 choices ordered by activity.The labels use `project name - ID prefix - title`,where the project name comes from the main session `session_meta.cwd` directory name and the title comes from the authoritative `thread_name` in `session_index.jsonl`.
+
 ## [0.3.9] - 2026-08-06
 
 - Unified the command bar's font, font size, and vertical alignment.

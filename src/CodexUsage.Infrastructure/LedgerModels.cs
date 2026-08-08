@@ -204,7 +204,7 @@ public sealed record UsageEventQuery(
     IReadOnlyList<string>? Models = null,
     IReadOnlyList<string>? AgentRoles = null,
     IReadOnlyList<ThreadType>? ThreadTypes = null,
-    string? PathQuery = null);
+    string? MainThreadConversationId = null);
 
 public sealed record CollectorDiagnosticInput(
     string? RunId,
