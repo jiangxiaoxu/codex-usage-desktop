@@ -372,6 +372,7 @@ public sealed class DashboardPresentationTests
         Assert.Equal("reasoning-second", model.ReasoningOutput);
         Assert.Equal("model-cost-second", model.Cost);
         Assert.Equal("model-share-second", model.Share);
+        Assert.Equal("subject-count-second", subject.ThreadCount);
         Assert.Equal("subject-total-second", subject.TotalTokens);
         Assert.Equal("subject-uncached-second", subject.UncachedInput);
         Assert.Equal("subject-cached-second", subject.CachedInput);
@@ -782,14 +783,14 @@ public sealed class DashboardPresentationTests
     {
         var sorted = DashboardSubjectOrdering.SortByDescendingCost(
         [
-            SubjectRow(17.6m, "subagent", "scoped_worker"),
-            SubjectRow(61.2m, "main", "root"),
-            SubjectRow(17.7m, "subagent", "worker"),
+            SubjectRow(17.6m, ThreadType.Subagent, "scoped_worker"),
+            SubjectRow(61.2m, ThreadType.Main, "root"),
+            SubjectRow(17.7m, ThreadType.Subagent, "worker"),
         ]);
 
         Assert.Equal(
             ["root", "worker", "scoped_worker"],
-            sorted.Select(row => row.Key[1]).ToArray());
+            sorted.Select(row => row.AgentRole).ToArray());
     }
 
     [Fact]
@@ -797,20 +798,20 @@ public sealed class DashboardPresentationTests
     {
         var sorted = DashboardSubjectOrdering.SortByDescendingCost(
         [
-            SubjectRow(5m, "subagent", "simple_worker"),
-            SubjectRow(5m, "subagent", "zeta"),
-            SubjectRow(5m, "subagent", "reviewer"),
-            SubjectRow(5m, "subagent", "unknown"),
-            SubjectRow(5m, "subagent", "scoped_worker"),
-            SubjectRow(5m, "main", "root"),
-            SubjectRow(5m, "subagent", "worker"),
-            SubjectRow(5m, "subagent", "alpha"),
-            SubjectRow(5m, "other", "omega"),
+            SubjectRow(5m, ThreadType.Subagent, "simple_worker"),
+            SubjectRow(5m, ThreadType.Subagent, "zeta"),
+            SubjectRow(5m, ThreadType.Subagent, "reviewer"),
+            SubjectRow(5m, ThreadType.Subagent, "unknown"),
+            SubjectRow(5m, ThreadType.Subagent, "scoped_worker"),
+            SubjectRow(5m, ThreadType.Main, "root"),
+            SubjectRow(5m, ThreadType.Subagent, "worker"),
+            SubjectRow(5m, ThreadType.Subagent, "alpha"),
+            SubjectRow(5m, ThreadType.Unknown, "omega"),
         ]);
 
         Assert.Equal(
-            ["root", "worker", "reviewer", "scoped_worker", "simple_worker", "unknown", "omega", "alpha", "zeta"],
-            sorted.Select(row => row.Key[1]).ToArray());
+            ["root", "worker", "reviewer", "scoped_worker", "simple_worker", "unknown", "alpha", "zeta", "omega"],
+            sorted.Select(row => row.AgentRole).ToArray());
     }
 
     [Theory]
@@ -935,14 +936,14 @@ public sealed class DashboardPresentationTests
         };
         var subjects = new List<SubjectUsageRow>
         {
-            new("主线程", "root", $"subject-total-{marker}", $"subject-uncached-{marker}", $"subject-cached-{marker}", $"subject-output-{marker}", $"subject-reasoning-{marker}", $"subject-cost-{marker}", $"subject-share-{marker}"),
+            new("主线程", "root", $"subject-count-{marker}", $"subject-total-{marker}", $"subject-uncached-{marker}", $"subject-cached-{marker}", $"subject-output-{marker}", $"subject-reasoning-{marker}", $"subject-cost-{marker}", $"subject-share-{marker}"),
         };
         var modelOptions = new List<ModelFilterOption> { new("gpt-5.6-sol") };
         var agentOptions = new List<SubjectFilterOption> { new(root) };
         if (includeAdditionalFacet)
         {
             models.Add(new("gpt-5.6-terra", "total-terra", "uncached-terra", "cached-terra", "output-terra", "reasoning-terra", "model-cost-terra", "model-share-terra"));
-            subjects.Add(new("子代理", "worker", "subject-total-worker", "subject-uncached-worker", "subject-cached-worker", "subject-output-worker", "subject-reasoning-worker", "subject-cost-worker", "subject-share-worker"));
+            subjects.Add(new("子代理", "worker", "subject-count-worker", "subject-total-worker", "subject-uncached-worker", "subject-cached-worker", "subject-output-worker", "subject-reasoning-worker", "subject-cost-worker", "subject-share-worker"));
             modelOptions.Add(new("gpt-5.6-terra"));
             agentOptions.Add(new(worker));
         }
@@ -994,8 +995,10 @@ public sealed class DashboardPresentationTests
             new[] { "Models", "Subjects", "ModelOptions", "AgentOptions" }));
     }
 
-    private static GroupRow SubjectRow(decimal totalCost, string threadType, string role) => new(
-        ImmutableArray.Create(threadType, role),
+    private static RoleUsageRow SubjectRow(decimal totalCost, ThreadType threadType, string role) => new(
+        threadType,
+        role,
+        ThreadCount: 0,
         new UsageSummary(
             Calls: 0,
             InputTokens: 0,

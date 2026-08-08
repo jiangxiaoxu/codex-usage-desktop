@@ -628,7 +628,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 .ToArray(),
             DashboardSubjectOrdering.SortByDescendingCost(snapshot.Result.ByRole)
                 .Select(row => new SubjectUsageRow(
-                    SubjectTypeLabel(row.Key[0]), row.Key[1], FormatTokens(row.Summary.CanonicalTotalTokens),
+                    SubjectTypeLabel(UsageAccounting.ThreadTypeText(row.ThreadType)), row.AgentRole,
+                    row.ThreadCount.ToString("N0", CultureInfo.CurrentCulture), FormatTokens(row.Summary.CanonicalTotalTokens),
                     FormatTokens(row.Summary.UncachedInputTokens), FormatTokens(row.Summary.CachedInputTokens),
                     FormatTokens(row.Summary.OutputTokens), FormatTokens(row.Summary.ReasoningOutputTokens),
                     FormatCost(row.Summary.Cost.Total), FormatPercentage(row.Summary.Cost.Total, totalCost)))

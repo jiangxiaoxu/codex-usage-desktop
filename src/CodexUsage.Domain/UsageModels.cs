@@ -68,13 +68,14 @@ public sealed record UsageSummary(
     CostBreakdown Cost);
 
 public sealed record GroupRow(ImmutableArray<string> Key, UsageSummary Summary);
+public sealed record RoleUsageRow(ThreadType ThreadType, string AgentRole, int ThreadCount, UsageSummary Summary);
 public sealed record ModelFacetOption(string Model, long CanonicalTotalTokens, decimal TotalCost);
 public sealed record SubjectFacetOption(SubjectFilter Subject, long CanonicalTotalTokens, decimal TotalCost);
 public sealed record QueryFacets(ImmutableArray<ModelFacetOption> Models, ImmutableArray<SubjectFacetOption> Subjects);
 public sealed record QueryResult(
     UsageSummary Summary,
     ImmutableArray<GroupRow> ByModel,
-    ImmutableArray<GroupRow> ByRole,
+    ImmutableArray<RoleUsageRow> ByRole,
     ImmutableArray<GroupRow> ByAgent,
     QueryFacets Facets,
     ScanDiagnostics Diagnostics);

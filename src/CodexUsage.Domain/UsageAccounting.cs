@@ -96,7 +96,7 @@ public static class UsageAccounting
         return new(
             Summarize(selected),
             Group(selected, value => [ModelCategory(value.Model)]),
-            Group(selected, value => [ThreadTypeText(value.ThreadType), NormalizedAgentRole(value.ThreadType, value.AgentRole)]),
+            GroupRoles(selected),
             Group(selected, value => [ThreadTypeText(value.ThreadType), NormalizedAgentRole(value.ThreadType, value.AgentRole), value.AgentPath, ModelCategory(value.Model)]),
             BuildFacets(dateScoped),
             diagnostics);
@@ -118,6 +118,18 @@ public static class UsageAccounting
         events.GroupBy(value => string.Join("\u001f", keySelector(value)), StringComparer.Ordinal)
             .Select(group => new GroupRow(keySelector(group.First()).ToImmutableArray(), Summarize(group)))
             .OrderByDescending(value => value.Summary.Cost.Total).ToImmutableArray();
+
+    private static ImmutableArray<RoleUsageRow> GroupRoles(IEnumerable<UsageEvent> events) =>
+        events.GroupBy(value => new SubjectFilter(value.ThreadType, NormalizedAgentRole(value.ThreadType, value.AgentRole)))
+            .Select(group => new RoleUsageRow(
+                group.Key.ThreadType,
+                group.Key.AgentRole,
+                group.Key.ThreadType == ThreadType.Main
+                    ? group.Select(value => value.ConversationId).Distinct(StringComparer.Ordinal).Count()
+                    : group.Select(value => value.RolloutId).Distinct(StringComparer.Ordinal).Count(),
+                Summarize(group)))
+            .OrderByDescending(value => value.Summary.Cost.Total)
+            .ToImmutableArray();
 
     private static bool TryTimestamp(string value, out DateTimeOffset timestamp) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out timestamp);

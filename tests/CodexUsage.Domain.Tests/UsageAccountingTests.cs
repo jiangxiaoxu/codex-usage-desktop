@@ -114,6 +114,34 @@ public sealed class UsageAccountingTests
     }
 
     [Fact]
+    public void RoleRowsCountDistinctSelectedThreadIdentifiers()
+    {
+        var events = new[]
+        {
+            Event with { ConversationId = "main-conversation", RolloutId = "main-rollout-1" },
+            Event with { ConversationId = "main-conversation", RolloutId = "main-rollout-2" },
+            Event with { ConversationId = "filtered-main", RolloutId = "main-rollout-3", Model = "gpt-5.6-terra" },
+            Event with { ConversationId = "parent", RolloutId = "child-a", ThreadType = ThreadType.Subagent, AgentRole = "worker" },
+            Event with { ConversationId = "parent", RolloutId = "child-a", ThreadType = ThreadType.Subagent, AgentRole = "worker" },
+            Event with { ConversationId = "parent", RolloutId = "child-b", ThreadType = ThreadType.Subagent, AgentRole = "worker" },
+            Event with { ConversationId = "parent", RolloutId = "unknown-child", ThreadType = ThreadType.Unknown, AgentRole = "unknown" },
+            Event with { ConversationId = "parent", RolloutId = "unknown-child", ThreadType = ThreadType.Unknown, AgentRole = "unknown" },
+        };
+
+        var result = UsageAccounting.Query(events, ScanDiagnostics.Empty, Filter with { Models = ["gpt-5.6-sol"] });
+        var main = Assert.Single(result.ByRole.Where(row => row.ThreadType == ThreadType.Main));
+        var worker = Assert.Single(result.ByRole.Where(row => row.ThreadType == ThreadType.Subagent && row.AgentRole == "worker"));
+        var unknown = Assert.Single(result.ByRole.Where(row => row.ThreadType == ThreadType.Unknown));
+
+        Assert.Equal(1, main.ThreadCount);
+        Assert.Equal(2, main.Summary.Calls);
+        Assert.Equal(2, worker.ThreadCount);
+        Assert.Equal(3, worker.Summary.Calls);
+        Assert.Equal(1, unknown.ThreadCount);
+        Assert.Equal(2, unknown.Summary.Calls);
+    }
+
+    [Fact]
     public void FacetsUseOnlyDateRangeAndIgnoreActiveSelections()
     {
         var events = new[]

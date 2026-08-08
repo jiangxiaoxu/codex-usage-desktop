@@ -538,7 +538,7 @@
                         SizeChanged="OnStickyTableSizeChanged">
                         <StackPanel Spacing="10">
                             <TextBlock Margin="12,0" Style="{StaticResource SectionTitleStyle}" Text="按线程类型和角色" />
-                            <Grid ColumnDefinitions="280,*" RowDefinitions="Auto,Auto,Auto">
+                            <Grid ColumnDefinitions="360,*" RowDefinitions="Auto,Auto,Auto">
                                 <Grid
                                     x:Name="RoleTableHeader"
                                     Grid.Row="0"
@@ -548,15 +548,16 @@
                                     <Grid.RenderTransform>
                                         <TranslateTransform x:Name="RoleTableHeaderTransform" />
                                     </Grid.RenderTransform>
-                                    <Grid ColumnDefinitions="280,*">
+                                    <Grid ColumnDefinitions="360,*">
                                         <Border
                                             Grid.Column="0"
                                             Background="{StaticResource TableHeaderBrush}"
                                             BorderBrush="{StaticResource TableDividerBrush}"
                                             BorderThickness="0,1,1,1">
-                                            <Grid Padding="12,7" ColumnDefinitions=".8*,1.2*" Loaded="OnTableCellLoaded">
+                                            <Grid Padding="12,7" ColumnDefinitions=".75*,1.15*,.5*" Loaded="OnTableCellLoaded">
                                                 <TextBlock Foreground="{StaticResource PrimaryTextBrush}" Style="{StaticResource TableHeaderTextStyle}" Text="线程类型" TextWrapping="Wrap" />
                                                 <TextBlock Grid.Column="1" Foreground="{StaticResource PrimaryTextBrush}" Style="{StaticResource TableHeaderTextStyle}" Text="具体角色" TextWrapping="Wrap" />
+                                                <TextBlock Grid.Column="2" Foreground="{StaticResource PrimaryTextBrush}" Style="{StaticResource TableHeaderTextStyle}" Text="线程数" TextWrapping="Wrap" />
                                             </Grid>
                                         </Border>
                                         <ScrollViewer
@@ -589,7 +590,7 @@
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,1,1">
-                                                <Grid Padding="12,7" ColumnDefinitions=".8*,1.2*" Loaded="OnTableCellLoaded">
+                                                <Grid Padding="12,7" ColumnDefinitions=".75*,1.15*,.5*" Loaded="OnTableCellLoaded">
                                                     <TextBlock
                                                         AutomationProperties.Name="{Binding ThreadType}"
                                                         FontWeight="SemiBold"
@@ -605,6 +606,11 @@
                                                         Text="{Binding Role}"
                                                         TextWrapping="Wrap"
                                                         ToolTipService.ToolTip="{Binding Role}" />
+                                                    <TextBlock
+                                                        Grid.Column="2"
+                                                        AutomationProperties.Name="{Binding ThreadCount}"
+                                                        Style="{StaticResource TableCellTextStyle}"
+                                                        Text="{Binding ThreadCount}" />
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>

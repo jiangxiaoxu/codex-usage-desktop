@@ -2,7 +2,9 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
-## [Unreleased]
+## [0.3.14] - 2026-08-08
+
+- Added a dedicated thread-count column to the "By thread type and role" table. Main threads are counted by unique `ConversationId`; subagents and unknown threads are counted by unique `RolloutId`, all within the active filters.
 
 ## [0.3.13] - 2026-08-08
 

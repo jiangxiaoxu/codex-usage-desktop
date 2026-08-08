@@ -90,6 +90,7 @@ public sealed class ModelUsageRow(
 public sealed class SubjectUsageRow(
     string threadType,
     string role,
+    string threadCount,
     string totalTokens,
     string uncachedInput,
     string cachedInput,
@@ -98,6 +99,7 @@ public sealed class SubjectUsageRow(
     string cost,
     string share) : DashboardPresentationItem
 {
+    private string _threadCount = threadCount;
     private string _totalTokens = totalTokens;
     private string _uncachedInput = uncachedInput;
     private string _cachedInput = cachedInput;
@@ -108,6 +110,7 @@ public sealed class SubjectUsageRow(
 
     public string ThreadType { get; } = threadType;
     public string Role { get; } = role;
+    public string ThreadCount { get => _threadCount; private set => SetValue(ref _threadCount, value); }
     public string TotalTokens { get => _totalTokens; private set => SetValue(ref _totalTokens, value); }
     public string UncachedInput { get => _uncachedInput; private set => SetValue(ref _uncachedInput, value); }
     public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
@@ -118,6 +121,7 @@ public sealed class SubjectUsageRow(
 
     public void UpdateFrom(SubjectUsageRow source)
     {
+        ThreadCount = source.ThreadCount;
         TotalTokens = source.TotalTokens;
         UncachedInput = source.UncachedInput;
         CachedInput = source.CachedInput;

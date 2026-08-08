@@ -278,17 +278,15 @@ public readonly record struct DashboardModelCostPresentation(string Cost, string
 
 public static class DashboardSubjectOrdering
 {
-    public static ImmutableArray<GroupRow> SortByDescendingCost(IEnumerable<GroupRow> rows)
+    public static ImmutableArray<RoleUsageRow> SortByDescendingCost(IEnumerable<RoleUsageRow> rows)
     {
         ArgumentNullException.ThrowIfNull(rows);
 
         return rows
-            .Select(row => CreateEntry(row))
-            .OrderByDescending(entry => entry.Row.Summary.Cost.Total)
-            .ThenBy(entry => SemanticOrder(entry.ThreadType, entry.Role))
-            .ThenBy(entry => entry.ThreadType, StringComparer.Ordinal)
-            .ThenBy(entry => entry.Role, StringComparer.Ordinal)
-            .Select(entry => entry.Row)
+            .OrderByDescending(row => row.Summary.Cost.Total)
+            .ThenBy(row => SemanticOrder(UsageAccounting.ThreadTypeText(row.ThreadType), row.AgentRole))
+            .ThenBy(row => UsageAccounting.ThreadTypeText(row.ThreadType), StringComparer.Ordinal)
+            .ThenBy(row => row.AgentRole, StringComparer.Ordinal)
             .ToImmutableArray();
     }
 
@@ -305,16 +303,6 @@ public static class DashboardSubjectOrdering
         ("subagent", "unknown") => 8,
         _ => 9,
     };
-
-    private static SubjectSortEntry CreateEntry(GroupRow row)
-    {
-        if (row.Key.Length != 2)
-            throw new ArgumentException("Subject rows must contain thread type and role keys.", nameof(row));
-
-        return new(row, row.Key[0], row.Key[1]);
-    }
-
-    private readonly record struct SubjectSortEntry(GroupRow Row, string ThreadType, string Role);
 }
 
 public static class DashboardAccessibilityLayout
