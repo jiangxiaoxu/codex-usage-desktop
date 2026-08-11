@@ -11,6 +11,11 @@ internal sealed class ShellTrayIcon : IDisposable
     private const uint WmNull = 0x0000;
     private const uint WmGetMinMaxInfo = 0x0024;
     private const uint WmContextMenu = 0x007B;
+    private const uint WmNcLButtonDown = 0x00A1;
+    private const uint WmNcRButtonDown = 0x00A4;
+    private const uint WmNcMButtonDown = 0x00A7;
+    private const uint WmNcXButtonDown = 0x00AB;
+    private const uint WmNcPointerDown = 0x0242;
     private const uint WmLButtonUp = 0x0202;
     private const uint WmLButtonDoubleClick = 0x0203;
     private const uint WmRButtonUp = 0x0205;
@@ -116,6 +121,8 @@ internal sealed class ShellTrayIcon : IDisposable
         }
     }
 
+    internal event Action? NonClientPointerPressed;
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -193,6 +200,15 @@ internal sealed class ShellTrayIcon : IDisposable
             return result;
         }
 
+        if (message is WmNcLButtonDown
+            or WmNcRButtonDown
+            or WmNcMButtonDown
+            or WmNcXButtonDown
+            or WmNcPointerDown)
+        {
+            NotifyNonClientPointerPressed();
+        }
+
         if (message == TrayCallbackMessage)
         {
             var notification = unchecked((uint)lParam.ToInt64());
@@ -210,6 +226,24 @@ internal sealed class ShellTrayIcon : IDisposable
         }
 
         return CallWindowProc(_previousWindowProcedure, window, message, wParam, lParam);
+    }
+
+    private void NotifyNonClientPointerPressed()
+    {
+        var subscribers = NonClientPointerPressed;
+        if (subscribers is null) return;
+
+        foreach (Action subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                subscriber();
+            }
+            catch (Exception error)
+            {
+                Debug.WriteLine($"Non-client pointer subscriber failed: {error}");
+            }
+        }
     }
 
     private void ApplyMinimumTrackSize(IntPtr window, IntPtr minMaxInfoPointer)

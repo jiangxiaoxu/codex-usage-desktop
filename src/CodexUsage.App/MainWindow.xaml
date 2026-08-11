@@ -248,8 +248,10 @@
             x:Name="BodyRoot"
             Grid.Row="2"
             Margin="28,0"
+            AutomationProperties.Name="内容区域"
             HorizontalScrollBarVisibility="Disabled"
             HorizontalScrollMode="Disabled"
+            IsTabStop="True"
             VerticalScrollBarVisibility="Auto"
             VerticalScrollMode="Auto"
             ViewChanged="OnBodyRootViewChanged">
@@ -257,7 +259,7 @@
                 <Border
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,0,0,1">
-                    <controls:AuditFilterContent />
+                    <controls:AuditFilterContent x:Name="AuditFilters" />
                 </Border>
 
                 <Border

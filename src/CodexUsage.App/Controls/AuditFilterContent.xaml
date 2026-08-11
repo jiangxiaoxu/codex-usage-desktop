@@ -220,27 +220,50 @@
         <Rectangle Grid.Row="5" Fill="{StaticResource TableDividerBrush}" />
 
         <Grid Grid.Row="6" Padding="0,6" ColumnSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="ThreadLabelColumn" Width="148" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="主线程" />
-            <ComboBox
+            <TextBlock Grid.RowSpan="2" MinWidth="112" Style="{StaticResource FilterLabelStyle}" Text="主线程" />
+            <Grid Grid.Column="1">
+                <AutoSuggestBox
+                    x:Name="MainThreadSuggestions"
+                    MinHeight="36"
+                    AutomationProperties.HelpText="{Binding MainThreadInputValidationMessage}"
+                    AutomationProperties.Name="主线程 ID"
+                    Background="{StaticResource InputSurfaceBrush}"
+                    BorderBrush="{StaticResource ControlBorderBrush}"
+                    CornerRadius="3"
+                    DisplayMemberPath="DisplayLabel"
+                    GotFocus="OnMainThreadSuggestionsGotFocus"
+                    ItemsSource="{Binding MainThreadOptions}"
+                    PlaceholderText="选择或输入完整主线程 ID"
+                    SuggestionChosen="OnMainThreadSuggestionChosen"
+                    Text="{Binding MainThreadInputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    TextMemberPath="DisplayLabel"
+                    UpdateTextOnSelect="True" />
+                <Border
+                    BorderBrush="{StaticResource DangerBrush}"
+                    BorderThickness="1"
+                    CornerRadius="3"
+                    IsHitTestVisible="False"
+                    Visibility="{Binding HasMainThreadInputError, Converter={StaticResource BooleanToVisibilityConverter}}" />
+            </Grid>
+            <TextBlock
+                Grid.Row="1"
                 Grid.Column="1"
-                MinHeight="36"
-                AutomationProperties.Name="主线程 ID"
-                Background="{StaticResource InputSurfaceBrush}"
-                BorderBrush="{StaticResource ControlBorderBrush}"
-                CornerRadius="3"
-                DisplayMemberPath="DisplayLabel"
-                IsEditable="True"
-                ItemsSource="{Binding MainThreadOptions}"
-                PlaceholderText="选择或输入完整主线程 ID"
-                SelectedValue="{Binding SelectedMainThreadId, Mode=TwoWay}"
-                SelectedValuePath="ConversationId"
-                Text="{Binding MainThreadInputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                Margin="0,4,0,0"
+                AutomationProperties.LiveSetting="Assertive"
+                Foreground="{StaticResource DangerBrush}"
+                Text="{Binding MainThreadInputValidationMessage}"
+                TextWrapping="Wrap"
+                Visibility="{Binding HasMainThreadInputError, Converter={StaticResource BooleanToVisibilityConverter}}" />
+            <StackPanel Grid.RowSpan="2" Grid.Column="2" Orientation="Horizontal" Spacing="8">
                 <Button AutomationProperties.Name="清空主线程筛选" Click="OnClearMainThreadFilter">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <SymbolIcon Symbol="Clear" />

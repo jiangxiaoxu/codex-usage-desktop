@@ -95,6 +95,10 @@ public sealed partial class MainWindow : Window
         StartupDiagnostics.Write("Dashboard view model constructed");
         WindowRoot.DataContext = ViewModel;
         Closed += OnWindowClosed;
+        WindowRoot.AddHandler(
+            UIElement.PointerPressedEvent,
+            new PointerEventHandler(OnWindowRootPointerPressed),
+            handledEventsToo: true);
         BodyRoot.AddHandler(
             UIElement.PointerPressedEvent,
             new PointerEventHandler(OnBodyRootPointerPressed),
@@ -147,6 +151,7 @@ public sealed partial class MainWindow : Window
             _requestApplicationExit,
             MinimumEffectiveWidth,
             MinimumEffectiveHeight);
+        _trayIcon.NonClientPointerPressed += OnNonClientPointerPressed;
         _uiSettings.TextScaleFactorChanged += OnTextScaleFactorChanged;
         Volatile.Write(ref _textScaleMonitoringActive, 1);
         StartupDiagnostics.Write("MainWindow constructor completed");
@@ -161,7 +166,7 @@ public sealed partial class MainWindow : Window
             var version = typeof(MainWindow).Assembly.GetName().Version;
             return version is { Major: >= 0, Minor: >= 0, Build: >= 0 }
                 ? $"{version.Major}.{version.Minor}.{version.Build}"
-                : "0.3.14";
+                : "0.3.15";
         }
     }
 
@@ -236,6 +241,7 @@ public sealed partial class MainWindow : Window
         _allowClose = true;
         ApplyViewportRefreshTransition(_viewportRefreshLifecycle.Cancel());
         StopTextScaleMonitoring();
+        _trayIcon.NonClientPointerPressed -= OnNonClientPointerPressed;
         _trayIcon.Dispose();
         Close();
     }
@@ -310,6 +316,37 @@ public sealed partial class MainWindow : Window
 
     private void OnBodyRootPointerPressed(object sender, PointerRoutedEventArgs args) =>
         ApplyViewportRefreshTransition(_viewportRefreshLifecycle.RecordUserInteraction());
+
+    private void OnWindowRootPointerPressed(object sender, PointerRoutedEventArgs args)
+    {
+        if (AuditFilters.IsMainThreadSuggestionVisualSource(args.OriginalSource)) return;
+
+        CloseMainThreadSuggestionsAndMoveFocusIfNeeded();
+    }
+
+    private void OnNonClientPointerPressed()
+    {
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            if (Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _shuttingDown) != 0) return;
+
+            CloseMainThreadSuggestionsAndMoveFocusIfNeeded();
+        });
+    }
+
+    private void CloseMainThreadSuggestionsAndMoveFocusIfNeeded()
+    {
+        AuditFilters.CloseMainThreadSuggestions();
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            var focusedElement = FocusManager.GetFocusedElement(WindowRoot.XamlRoot);
+            if (AuditFilters.IsMainThreadSuggestionFocusedElement(focusedElement)
+                && !BodyRoot.Focus(FocusState.Pointer))
+            {
+                Debug.WriteLine("Unable to move focus from main-thread input to the content region.");
+            }
+        });
+    }
 
     private void OnBodyRootPointerWheelChanged(object sender, PointerRoutedEventArgs args) =>
         ApplyViewportRefreshTransition(_viewportRefreshLifecycle.RecordUserInteraction());

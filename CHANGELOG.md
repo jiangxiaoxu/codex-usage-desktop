@@ -2,6 +2,13 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.15] - 2026-08-11
+
+- Stabilized main-thread filtering across refreshes and rapid query changes; recent choices retain full `ConversationId` identity.
+- Added visible invalid UUIDv7 validation and normalization to the main-thread input without silently clearing the applied filter.
+- Expanded visible main-thread ID prefixes to 12 characters so recent threads remain distinguishable.
+- Made pointer presses outside the main-thread input immediately close suggestions and move focus away, including custom title-bar input.
+
 ## [0.3.14] - 2026-08-08
 
 - Added a dedicated thread-count column to the "By thread type and role" table. Main threads are counted by unique `ConversationId`; subagents and unknown threads are counted by unique `RolloutId`, all within the active filters.

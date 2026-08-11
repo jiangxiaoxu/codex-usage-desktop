@@ -767,7 +767,7 @@ public sealed class DashboardPresentationTests
     }
 
     [Fact]
-    public void MainThreadFilterOptionUsesIdPrefixAndTitle()
+    public void MainThreadFilterOptionUsesTwelveCharacterIdPrefixAndTitle()
     {
         var option = new MainThreadFilterOption(new MainThreadOption(
             "019fe0d7-dd64-7412-8fa0-ea96334569dd",
@@ -775,7 +775,7 @@ public sealed class DashboardPresentationTests
             "实现主线程筛选",
             DateTimeOffset.Parse("2026-08-08T11:00:00Z")));
 
-        Assert.Equal("codex-usage-desktop - 019fe0d7 - 实现主线程筛选", option.DisplayLabel);
+        Assert.Equal("codex-usage-desktop - 019fe0d7-dd6 - 实现主线程筛选", option.DisplayLabel);
     }
 
     [Fact]

@@ -29,6 +29,50 @@ public sealed partial class AuditFilterContent : UserControl
         }
     }
 
+    private void OnMainThreadSuggestionChosen(
+        AutoSuggestBox sender,
+        AutoSuggestBoxSuggestionChosenEventArgs args)
+    {
+        if (DataContext is not DashboardViewModel viewModel
+            || args.SelectedItem is not MainThreadFilterOption option)
+        {
+            return;
+        }
+
+        viewModel.SelectMainThreadOption(option);
+    }
+
+    private void OnMainThreadSuggestionsGotFocus(object sender, RoutedEventArgs args)
+    {
+        if (sender is AutoSuggestBox suggestionBox
+            && DataContext is DashboardViewModel { MainThreadOptions.Count: > 0 })
+        {
+            suggestionBox.IsSuggestionListOpen = true;
+        }
+    }
+
+    internal bool IsMainThreadSuggestionVisualSource(object? source) =>
+        source is DependencyObject element
+        && IsWithinMainThreadSuggestionsVisualTree(element);
+
+    internal void CloseMainThreadSuggestions() => MainThreadSuggestions.IsSuggestionListOpen = false;
+
+    internal bool IsMainThreadSuggestionFocusedElement(object? focusedElement) =>
+        focusedElement is DependencyObject element
+        && IsWithinMainThreadSuggestionsVisualTree(element);
+
+    private bool IsWithinMainThreadSuggestionsVisualTree(DependencyObject element)
+    {
+        for (DependencyObject? current = element;
+             current is not null;
+             current = VisualTreeHelper.GetParent(current))
+        {
+            if (ReferenceEquals(current, MainThreadSuggestions)) return true;
+        }
+
+        return false;
+    }
+
     private void OnSelectAllModels(object sender, RoutedEventArgs args)
     {
         if (DataContext is DashboardViewModel viewModel)

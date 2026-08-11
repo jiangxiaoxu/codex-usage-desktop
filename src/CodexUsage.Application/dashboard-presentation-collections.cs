@@ -200,6 +200,8 @@ public sealed class SubjectFilterOption(SubjectFilter subject, bool isSelected =
 
 public sealed class MainThreadFilterOption(MainThreadOption option) : DashboardPresentationItem
 {
+    private const int DisplayConversationIdPrefixLength = 12;
+
     private string _projectName = option.ProjectName;
     private string _title = option.Title;
     private DateTimeOffset _lastActivityUtc = option.LastActivityUtc;
@@ -208,7 +210,7 @@ public sealed class MainThreadFilterOption(MainThreadOption option) : DashboardP
     public string ProjectName => _projectName;
     public string Title => _title;
     public DateTimeOffset LastActivityUtc => _lastActivityUtc;
-    public string DisplayLabel => $"{ProjectName} - {ConversationId[..Math.Min(ConversationId.Length, 8)]} - {(Title.Length > 0 ? Title : "未命名线程")}";
+    public string DisplayLabel => $"{ProjectName} - {ConversationId[..Math.Min(ConversationId.Length, DisplayConversationIdPrefixLength)]} - {(Title.Length > 0 ? Title : "未命名线程")}";
 
     public void UpdateFrom(MainThreadFilterOption source)
     {

@@ -265,6 +265,90 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
+    public async Task ArchivedAndDeletedMainSourceRetainsExactHistoricalThreadFilterAndRecentOption()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        const string mainConversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string childConversationId = "019fe0d7-dd65-7412-8fa0-ea96334569dd";
+        var activePath = Path.Combine(codexHome, "sessions", "rollout-main.jsonl");
+        var archivePath = Path.Combine(codexHome, "archived_sessions", "rollout-main.jsonl");
+        var childPath = Path.Combine(codexHome, "sessions", "rollout-child.jsonl");
+        WriteRollout(activePath, string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                session_id = mainConversationId,
+                id = "main-rollout",
+                thread_source = "user",
+                cwd = "C:/Projects/thread-history",
+            }),
+            Line("turn_context", new { turn_id = "main-turn", model = "gpt-5.6-sol" }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]),
+        ]) + "\n");
+        WriteRollout(childPath, string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                session_id = childConversationId,
+                id = "child-rollout",
+                thread_source = "subagent",
+                source = new
+                {
+                    subagent = new
+                    {
+                        thread_spawn = new
+                        {
+                            parent_thread_id = mainConversationId,
+                            agent_role = "worker",
+                            agent_path = "/root/worker",
+                            agent_nickname = "worker-a",
+                        },
+                    },
+                },
+            }),
+            Line("turn_context", new { turn_id = "child-turn", model = "gpt-5.6-sol" }),
+            Token([5, 1, 2, 1, 7], [5, 1, 2, 1, 7], "2026-07-15T01:03:03.004Z"),
+        ]) + "\n");
+        var threadQuery = new UsageEventQuery(0, 4_102_444_800_000, MainThreadConversationId: mainConversationId);
+
+        await using var collector = CreateCollector(codexHome, temporary.Path);
+        await StartAndWaitForInventoryAsync(collector);
+        Assert.Collection(
+            await collector.QueryEventsAsync(threadQuery),
+            value =>
+            {
+                Assert.Equal("main-rollout", value.RolloutId);
+                Assert.Equal(ThreadType.Main, value.ThreadType);
+            },
+            value =>
+            {
+                Assert.Equal("child-rollout", value.RolloutId);
+                Assert.Equal(ThreadType.Subagent, value.ThreadType);
+            });
+
+        File.Move(activePath, archivePath);
+        var archived = await collector.RefreshAsync();
+        var archivedEvents = await collector.QueryEventsAsync(threadQuery);
+
+        Assert.False(archived.UsageChanged);
+        Assert.Equal(["main-rollout", "child-rollout"], archivedEvents.Select(value => value.RolloutId));
+        Assert.Equal(15, archivedEvents.Sum(value => value.InputTokens));
+        Assert.Contains(await collector.QueryRecentMainThreadsAsync(20),
+            value => value.ConversationId == mainConversationId);
+
+        File.Delete(archivePath);
+        var deleted = await collector.RefreshAsync();
+        var deletedEvents = await collector.QueryEventsAsync(threadQuery);
+
+        Assert.False(deleted.UsageChanged);
+        Assert.Equal(["main-rollout", "child-rollout"], deletedEvents.Select(value => value.RolloutId));
+        Assert.Equal(15, deletedEvents.Sum(value => value.InputTokens));
+        Assert.Contains(await collector.QueryRecentMainThreadsAsync(20),
+            value => value.ConversationId == mainConversationId);
+    }
+
+    [Fact]
     public async Task RealtimeVoiceSessionsAreDistinctUnbilledInventoryWithoutUsageEvents()
     {
         using var temporary = new TemporaryDirectory();
