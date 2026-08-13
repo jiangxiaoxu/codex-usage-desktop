@@ -2,6 +2,13 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.16] - 2026-08-13
+
+- Replaced the dashboard's wide detail tables with compact model and execution-subject cost-composition cards.
+- Added a standalone overall cost-composition row with persistent four-category percentages.
+- Showed compact composition percentages for model and execution-subject rows on whole-bar hover or keyboard focus, including an indented subagent hierarchy and synthetic subagent total.
+- Made the card layout responsive at 1000 DIP available dashboard width and removed the voice-conversation presentation row.
+
 ## [0.3.15] - 2026-08-11
 
 - Stabilized main-thread filtering across refreshes and rapid query changes; recent choices retain full `ConversationId` identity.

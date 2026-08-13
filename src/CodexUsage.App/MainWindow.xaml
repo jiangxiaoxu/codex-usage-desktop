@@ -8,6 +8,9 @@
     mc:Ignorable="d">
 
     <Grid x:Name="WindowRoot" Background="{StaticResource AppBackgroundBrush}">
+        <Grid.Resources>
+            <controls:SubjectTreeChildConverter x:Key="SubjectTreeChildConverter" />
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="36" />
             <RowDefinition Height="Auto" />
@@ -59,30 +62,6 @@
                         <Setter Target="BodyStack.Spacing" Value="20" />
                         <Setter Target="WideMetrics.Visibility" Value="Visible" />
                         <Setter Target="CompactMetrics.Visibility" Value="Collapsed" />
-                    </VisualState.Setters>
-                </VisualState>
-            </VisualStateGroup>
-            <VisualStateGroup x:Name="TableLayoutStates">
-                <VisualState x:Name="StackedTables">
-                    <VisualState.StateTriggers>
-                        <AdaptiveTrigger MinWindowWidth="0" />
-                    </VisualState.StateTriggers>
-                    <VisualState.Setters>
-                        <Setter Target="TableFirstColumn.Width" Value="*" />
-                        <Setter Target="TableSecondColumn.Width" Value="0" />
-                        <Setter Target="RoleTable.(Grid.Row)" Value="1" />
-                        <Setter Target="RoleTable.(Grid.Column)" Value="0" />
-                    </VisualState.Setters>
-                </VisualState>
-                <VisualState x:Name="SideBySideTables">
-                    <VisualState.StateTriggers>
-                        <AdaptiveTrigger MinWindowWidth="1440" />
-                    </VisualState.StateTriggers>
-                    <VisualState.Setters>
-                        <Setter Target="TableFirstColumn.Width" Value="*" />
-                        <Setter Target="TableSecondColumn.Width" Value="*" />
-                        <Setter Target="RoleTable.(Grid.Row)" Value="0" />
-                        <Setter Target="RoleTable.(Grid.Column)" Value="1" />
                     </VisualState.Setters>
                 </VisualState>
             </VisualStateGroup>
@@ -254,41 +233,12 @@
             IsTabStop="True"
             VerticalScrollBarVisibility="Auto"
             VerticalScrollMode="Auto"
-            ViewChanged="OnBodyRootViewChanged">
+            >
             <StackPanel x:Name="BodyStack" Padding="0,8,16,28" Spacing="20">
                 <Border
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,0,0,1">
                     <controls:AuditFilterContent x:Name="AuditFilters" />
-                </Border>
-
-                <Border
-                    Padding="14,10"
-                    Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource TableDividerBrush}"
-                    BorderThickness="0,1">
-                    <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
-                        <FontIcon
-                            VerticalAlignment="Center"
-                            FontSize="12"
-                            Foreground="{StaticResource PrimaryBrush}"
-                            Glyph="&#xE8D4;" />
-                        <TextBlock
-                            Grid.Column="1"
-                            VerticalAlignment="Center"
-                            FontSize="13"
-                            FontWeight="SemiBold"
-                            Foreground="{StaticResource PrimaryTextBrush}"
-                            Text="语音会话" />
-                        <TextBlock
-                            Grid.Column="2"
-                            VerticalAlignment="Center"
-                            FontSize="12"
-                            Foreground="{StaticResource SecondaryTextBrush}">
-                            <Run Text="{Binding RealtimeVoiceSessionsText}" />
-                            <Run Text=" · 无 token 明细 / 未计费" />
-                        </TextBlock>
-                    </Grid>
                 </Border>
 
                 <Border
@@ -363,295 +313,153 @@
                 </Border>
 
                 <Border
-                    Padding="14,12"
+                    Padding="14,10"
+                    Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1">
-                    <StackPanel Spacing="8">
+                    <StackPanel Spacing="4">
                         <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
                         <controls:CostCompositionBar
-                            Height="10"
-                            Background="{StaticResource ProgressTrackBrush}"
+                            DetailsAlwaysVisible="True"
+                            VisualHeight="10"
                             Items="{Binding CostSlices}" />
-                        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="16">
-                            <Grid Column="0" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
-                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostUncachedBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
-                                    <Run Text="无缓存输入 " />
-                                    <Run Text="{Binding CostSlices[0].Detail}" />
-                                </TextBlock>
-                            </Grid>
-                            <Grid Grid.Column="1" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
-                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostCachedBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
-                                    <Run Text="缓存输入 " />
-                                    <Run Text="{Binding CostSlices[1].Detail}" />
-                                </TextBlock>
-                            </Grid>
-                            <Grid Grid.Column="2" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
-                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostReasoningBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
-                                    <Run Text="思考输出 " />
-                                    <Run Text="{Binding CostSlices[2].Detail}" />
-                                </TextBlock>
-                            </Grid>
-                            <Grid Grid.Column="3" MinWidth="0" ColumnDefinitions="12,*" ColumnSpacing="10">
-                                <Rectangle Width="12" Height="12" VerticalAlignment="Center" Fill="{StaticResource CostOtherBrush}" />
-                                <TextBlock Grid.Column="1" FontSize="14" FontWeight="Medium" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="WrapWholeWords">
-                                    <Run Text="其他输出 " />
-                                    <Run Text="{Binding CostSlices[3].Detail}" />
-                                </TextBlock>
-                            </Grid>
-                        </Grid>
                     </StackPanel>
                 </Border>
 
-                <Grid x:Name="TableGrid" ColumnSpacing="12" RowSpacing="16">
+                <controls:ChipWrapPanel
+                    Margin="0,0"
+                    HorizontalSpacing="14"
+                    VerticalSpacing="6">
+                    <TextBlock Style="{StaticResource CaptionStyle}" Text="费用构成（唯一图例）" />
+                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
+                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostUncachedBrush}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[0].Label}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
+                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostCachedBrush}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[1].Label}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
+                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostReasoningBrush}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[2].Label}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
+                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostOtherBrush}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[3].Label}" />
+                    </Grid>
+                </controls:ChipWrapPanel>
+
+                <Grid x:Name="DashboardPanelGrid" ColumnSpacing="12" RowSpacing="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition x:Name="TableFirstColumn" Width="*" />
-                        <ColumnDefinition x:Name="TableSecondColumn" Width="0" />
+                        <ColumnDefinition x:Name="DashboardFirstColumn" Width="*" />
+                        <ColumnDefinition x:Name="DashboardSecondColumn" Width="0" />
                     </Grid.ColumnDefinitions>
 
                     <Border
-                        x:Name="ModelTable"
+                        x:Name="ModelPanel"
                         Grid.Row="0"
                         Grid.Column="0"
-                        Padding="0,10,0,0"
-                        BorderBrush="{StaticResource TableDividerBrush}"
-                        BorderThickness="0,1"
-                        SizeChanged="OnStickyTableSizeChanged">
-                        <StackPanel Spacing="10">
-                            <TextBlock Margin="12,0" Style="{StaticResource SectionTitleStyle}" Text="按模型" />
-                            <Grid ColumnDefinitions="200,*" RowDefinitions="Auto,Auto,Auto">
-                                <Grid
-                                    x:Name="ModelTableHeader"
-                                    Grid.Row="0"
-                                    Grid.ColumnSpan="2"
-                                    Background="{StaticResource TableHeaderBrush}"
-                                    Canvas.ZIndex="10">
-                                    <Grid.RenderTransform>
-                                        <TranslateTransform x:Name="ModelTableHeaderTransform" />
-                                    </Grid.RenderTransform>
-                                    <Grid ColumnDefinitions="200,*">
-                                        <Border
-                                            Grid.Column="0"
-                                            Background="{StaticResource TableHeaderBrush}"
-                                            BorderBrush="{StaticResource TableDividerBrush}"
-                                            BorderThickness="0,1,1,1">
-                                            <TextBlock
-                                                Padding="12,7"
-                                                AutomationProperties.Name="模型"
-                                                Foreground="{StaticResource PrimaryTextBrush}"
-                                                Loaded="OnTableCellLoaded"
-                                                Style="{StaticResource TableHeaderTextStyle}"
-                                                Text="模型"
-                                                TextWrapping="Wrap" />
-                                        </Border>
-                                        <ScrollViewer
-                                            x:Name="ModelHeaderScroll"
-                                            Grid.Column="1"
-                                            HorizontalScrollBarVisibility="Hidden"
-                                            HorizontalScrollMode="Enabled"
-                                            IsHitTestVisible="False"
-                                            VerticalScrollBarVisibility="Disabled"
-                                            VerticalScrollMode="Disabled">
-                                            <Border Background="{StaticResource TableHeaderBrush}" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1">
-                                                <Grid MinWidth="740" Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
-                                                    <TextBlock Style="{StaticResource TableHeaderTextStyle}" Text="总 tokens" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="1" Style="{StaticResource TableHeaderTextStyle}" Text="无缓存输入" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="2" Style="{StaticResource TableHeaderTextStyle}" Text="缓存输入" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="3" Style="{StaticResource TableHeaderTextStyle}" Text="输出" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="4" Style="{StaticResource TableHeaderTextStyle}" Text="思考输出" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderTextStyle}" Text="费用" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderTextStyle}" Text="价格占比" TextWrapping="Wrap" />
+                        Padding="0,6"
+                        Background="{StaticResource SurfaceBrush}"
+                        BorderBrush="{StaticResource CardBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6">
+                        <StackPanel>
+                            <TextBlock Margin="12,0,12,4" Style="{StaticResource SectionTitleStyle}" Text="按模型" />
+                            <ItemsControl HorizontalContentAlignment="Stretch" ItemsSource="{Binding Models}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="12,6" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1,0,0">
+                                            <StackPanel Spacing="2">
+                                                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+                                                    <TextBlock
+                                                        AutomationProperties.Name="{Binding Model}"
+                                                        FontSize="15"
+                                                        FontWeight="SemiBold"
+                                                        Foreground="{StaticResource PrimaryTextBrush}"
+                                                        Text="{Binding Model}"
+                                                        TextTrimming="CharacterEllipsis"
+                                                        ToolTipService.ToolTip="{Binding Model}" />
+                                                    <TextBlock
+                                                        Grid.Column="1"
+                                                        FontSize="15"
+                                                        FontWeight="SemiBold"
+                                                        Foreground="{StaticResource PrimaryTextBrush}"
+                                                        Text="{Binding Cost}" />
+                                                    <TextBlock
+                                                        Grid.Column="2"
+                                                        Foreground="{StaticResource SecondaryTextBrush}"
+                                                        Text="{Binding Share}" />
                                                 </Grid>
-                                            </Border>
-                                        </ScrollViewer>
-                                    </Grid>
-                                </Grid>
-                                <ItemsControl
-                                    Grid.Row="1"
-                                    Grid.Column="0"
-                                    HorizontalContentAlignment="Stretch"
-                                    ItemsSource="{Binding Models}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,1,1">
-                                                <TextBlock
-                                                    Padding="12,7"
-                                                    AutomationProperties.Name="{Binding Model}"
-                                                    FontWeight="SemiBold"
-                                                    Loaded="OnTableCellLoaded"
-                                                    Style="{StaticResource TableCellTextStyle}"
-                                                    Text="{Binding Model}"
-                                                    TextWrapping="Wrap"
-                                                    ToolTipService.ToolTip="{Binding Model}" />
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <ScrollViewer
-                                    x:Name="ModelValuesScroll"
-                                    Grid.Row="1"
-                                    Grid.Column="1"
-                                    HorizontalScrollBarVisibility="Auto"
-                                    HorizontalScrollMode="Enabled"
-                                    HorizontalContentAlignment="Stretch"
-                                    VerticalScrollBarVisibility="Disabled"
-                                    VerticalScrollMode="Disabled"
-                                    ViewChanged="OnModelValuesViewChanged">
-                                    <ItemsControl MinWidth="740" HorizontalContentAlignment="Stretch" ItemsSource="{Binding Models}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,0,1">
-                                                    <Grid Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
-                                                        <TextBlock Style="{StaticResource TableCellTextStyle}" Text="{Binding TotalTokens}" />
-                                                        <TextBlock Grid.Column="1" Style="{StaticResource TableCellTextStyle}" Text="{Binding UncachedInput}" />
-                                                        <TextBlock Grid.Column="2" Style="{StaticResource TableCellTextStyle}" Text="{Binding CachedInput}" />
-                                                        <TextBlock Grid.Column="3" Style="{StaticResource TableCellTextStyle}" Text="{Binding Output}" />
-                                                        <TextBlock Grid.Column="4" Style="{StaticResource TableCellTextStyle}" Text="{Binding ReasoningOutput}" />
-                                                        <TextBlock Grid.Column="5" Style="{StaticResource PriceCellTextStyle}" Text="{Binding Cost}" />
-                                                        <TextBlock Grid.Column="6" Style="{StaticResource TableCellTextStyle}" Text="{Binding Share}" />
-                                                    </Grid>
-                                                </Border>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </ScrollViewer>
-                                <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Margin="12,9" Style="{StaticResource CaptionStyle}">
-                                    <Run Text="共 " />
-                                    <Run Text="{Binding Models.Count}" />
-                                    <Run Text=" 条" />
-                                </TextBlock>
-                            </Grid>
+                                                <controls:CostCompositionBar
+                                                    VisualHeight="10"
+                                                    Items="{Binding CostSlices}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Border>
 
                     <Border
-                        x:Name="RoleTable"
+                        x:Name="SubjectPanel"
                         Grid.Row="1"
                         Grid.Column="0"
-                        Padding="0,10,0,0"
-                        BorderBrush="{StaticResource TableDividerBrush}"
-                        BorderThickness="0,1"
-                        SizeChanged="OnStickyTableSizeChanged">
-                        <StackPanel Spacing="10">
-                            <TextBlock Margin="12,0" Style="{StaticResource SectionTitleStyle}" Text="按线程类型和角色" />
-                            <Grid ColumnDefinitions="360,*" RowDefinitions="Auto,Auto,Auto">
-                                <Grid
-                                    x:Name="RoleTableHeader"
-                                    Grid.Row="0"
-                                    Grid.ColumnSpan="2"
-                                    Background="{StaticResource TableHeaderBrush}"
-                                    Canvas.ZIndex="10">
-                                    <Grid.RenderTransform>
-                                        <TranslateTransform x:Name="RoleTableHeaderTransform" />
-                                    </Grid.RenderTransform>
-                                    <Grid ColumnDefinitions="360,*">
-                                        <Border
-                                            Grid.Column="0"
-                                            Background="{StaticResource TableHeaderBrush}"
-                                            BorderBrush="{StaticResource TableDividerBrush}"
-                                            BorderThickness="0,1,1,1">
-                                            <Grid Padding="12,7" ColumnDefinitions=".75*,1.15*,.5*" Loaded="OnTableCellLoaded">
-                                                <TextBlock Foreground="{StaticResource PrimaryTextBrush}" Style="{StaticResource TableHeaderTextStyle}" Text="线程类型" TextWrapping="Wrap" />
-                                                <TextBlock Grid.Column="1" Foreground="{StaticResource PrimaryTextBrush}" Style="{StaticResource TableHeaderTextStyle}" Text="具体角色" TextWrapping="Wrap" />
-                                                <TextBlock Grid.Column="2" Foreground="{StaticResource PrimaryTextBrush}" Style="{StaticResource TableHeaderTextStyle}" Text="线程数" TextWrapping="Wrap" />
-                                            </Grid>
-                                        </Border>
-                                        <ScrollViewer
-                                            x:Name="RoleHeaderScroll"
-                                            Grid.Column="1"
-                                            HorizontalScrollBarVisibility="Hidden"
-                                            HorizontalScrollMode="Enabled"
-                                            IsHitTestVisible="False"
-                                            VerticalScrollBarVisibility="Disabled"
-                                            VerticalScrollMode="Disabled">
-                                            <Border Background="{StaticResource TableHeaderBrush}" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1">
-                                                <Grid MinWidth="800" Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
-                                                    <TextBlock Style="{StaticResource TableHeaderTextStyle}" Text="总 tokens" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="1" Style="{StaticResource TableHeaderTextStyle}" Text="无缓存输入" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="2" Style="{StaticResource TableHeaderTextStyle}" Text="缓存输入" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="3" Style="{StaticResource TableHeaderTextStyle}" Text="输出" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="4" Style="{StaticResource TableHeaderTextStyle}" Text="思考输出" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderTextStyle}" Text="费用" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderTextStyle}" Text="价格占比" TextWrapping="Wrap" />
-                                                </Grid>
-                                            </Border>
-                                        </ScrollViewer>
-                                    </Grid>
-                                </Grid>
-                                <ItemsControl
-                                    Grid.Row="1"
-                                    Grid.Column="0"
-                                    HorizontalContentAlignment="Stretch"
-                                    ItemsSource="{Binding Subjects}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,1,1">
-                                                <Grid Padding="12,7" ColumnDefinitions=".75*,1.15*,.5*" Loaded="OnTableCellLoaded">
+                        Padding="0,6"
+                        Background="{StaticResource SurfaceBrush}"
+                        BorderBrush="{StaticResource CardBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6">
+                        <StackPanel>
+                            <TextBlock Margin="12,0,12,4" Style="{StaticResource SectionTitleStyle}" Text="按执行主体" />
+                            <ItemsControl HorizontalContentAlignment="Stretch" ItemsSource="{Binding Subjects}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="12,6" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1,0,0">
+                                            <Grid>
+                                                <Border
+                                                    Width="1"
+                                                    Margin="10,1,0,1"
+                                                    HorizontalAlignment="Left"
+                                                    Background="{StaticResource TableDividerBrush}"
+                                                    Visibility="{Binding Converter={StaticResource SubjectTreeChildConverter}, ConverterParameter=guide}" />
+                                                <StackPanel
+                                                    Margin="{Binding Converter={StaticResource SubjectTreeChildConverter}}"
+                                                    Spacing="2">
+                                                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
                                                     <TextBlock
-                                                        AutomationProperties.Name="{Binding ThreadType}"
+                                                        AutomationProperties.Name="{Binding DisplayName}"
+                                                        FontSize="15"
                                                         FontWeight="SemiBold"
-                                                        Style="{StaticResource TableCellTextStyle}"
-                                                        Text="{Binding ThreadType}"
-                                                        TextWrapping="Wrap"
-                                                        ToolTipService.ToolTip="{Binding ThreadType}" />
+                                                        Foreground="{StaticResource PrimaryTextBrush}"
+                                                        Text="{Binding DisplayName}"
+                                                        TextTrimming="CharacterEllipsis"
+                                                        ToolTipService.ToolTip="{Binding DisplayName}" />
                                                     <TextBlock
                                                         Grid.Column="1"
-                                                        AutomationProperties.Name="{Binding Role}"
+                                                        FontSize="15"
                                                         FontWeight="SemiBold"
-                                                        Style="{StaticResource TableCellTextStyle}"
-                                                        Text="{Binding Role}"
-                                                        TextWrapping="Wrap"
-                                                        ToolTipService.ToolTip="{Binding Role}" />
+                                                        Foreground="{StaticResource PrimaryTextBrush}"
+                                                        Text="{Binding Cost}" />
                                                     <TextBlock
                                                         Grid.Column="2"
-                                                        AutomationProperties.Name="{Binding ThreadCount}"
-                                                        Style="{StaticResource TableCellTextStyle}"
-                                                        Text="{Binding ThreadCount}" />
+                                                        Foreground="{StaticResource SecondaryTextBrush}"
+                                                        Text="{Binding Share}" />
                                                 </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <ScrollViewer
-                                    x:Name="RoleValuesScroll"
-                                    Grid.Row="1"
-                                    Grid.Column="1"
-                                    HorizontalScrollBarVisibility="Auto"
-                                    HorizontalScrollMode="Enabled"
-                                    HorizontalContentAlignment="Stretch"
-                                    VerticalScrollBarVisibility="Disabled"
-                                    VerticalScrollMode="Disabled"
-                                    ViewChanged="OnRoleValuesViewChanged">
-                                    <ItemsControl MinWidth="800" HorizontalContentAlignment="Stretch" ItemsSource="{Binding Subjects}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,0,1">
-                                                    <Grid Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
-                                                        <TextBlock Style="{StaticResource TableCellTextStyle}" Text="{Binding TotalTokens}" />
-                                                        <TextBlock Grid.Column="1" Style="{StaticResource TableCellTextStyle}" Text="{Binding UncachedInput}" />
-                                                        <TextBlock Grid.Column="2" Style="{StaticResource TableCellTextStyle}" Text="{Binding CachedInput}" />
-                                                        <TextBlock Grid.Column="3" Style="{StaticResource TableCellTextStyle}" Text="{Binding Output}" />
-                                                        <TextBlock Grid.Column="4" Style="{StaticResource TableCellTextStyle}" Text="{Binding ReasoningOutput}" />
-                                                        <TextBlock Grid.Column="5" Style="{StaticResource PriceCellTextStyle}" Text="{Binding Cost}" />
-                                                        <TextBlock Grid.Column="6" Style="{StaticResource TableCellTextStyle}" Text="{Binding Share}" />
-                                                    </Grid>
-                                                </Border>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </ScrollViewer>
-                                <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Margin="12,9" Style="{StaticResource CaptionStyle}">
-                                    <Run Text="共 " />
-                                    <Run Text="{Binding Subjects.Count}" />
-                                    <Run Text=" 条" />
-                                </TextBlock>
-                            </Grid>
+                                                <controls:CostCompositionBar
+                                                    VisualHeight="10"
+                                                    Items="{Binding CostSlices}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Border>
                 </Grid>

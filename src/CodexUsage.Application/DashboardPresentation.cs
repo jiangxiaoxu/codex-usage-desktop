@@ -265,17 +265,6 @@ public sealed record CoveragePresentation(
         };
 }
 
-public readonly record struct DashboardModelCostPresentation(string Cost, string Share)
-{
-    public static DashboardModelCostPresentation From(decimal cost, decimal totalCost, bool priced)
-    {
-        if (!priced) return new("未定价", "—");
-
-        var share = totalCost > 0 ? $"{cost / totalCost:P1}" : "0.0%";
-        return new($"${cost:N1}", share);
-    }
-}
-
 public static class DashboardSubjectOrdering
 {
     public static ImmutableArray<RoleUsageRow> SortByDescendingCost(IEnumerable<RoleUsageRow> rows)

@@ -11,9 +11,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Media;
 using Windows.System;
-using Windows.UI.ViewManagement;
 using WinRT.Interop;
 
 namespace CodexUsage.App;
@@ -24,8 +22,6 @@ public sealed partial class MainWindow : Window
     private const int MinimumEffectiveHeight = 720;
     private const int InitialEffectiveWidth = 1440;
     private const int InitialEffectiveHeight = 1024;
-    private readonly UISettings _uiSettings = new();
-    private readonly HashSet<FrameworkElement> _scaledTableElements = [];
     private readonly DashboardViewportRefreshLifecycle _viewportRefreshLifecycle = new();
     private readonly AppWindow _appWindow;
     private readonly IntPtr _windowHandle;
@@ -43,7 +39,6 @@ public sealed partial class MainWindow : Window
     private bool _allowClose;
     private int _closed;
     private int _shuttingDown;
-    private int _textScaleMonitoringActive;
 
     internal MainWindow(
         ApplicationPaths paths,
@@ -53,6 +48,8 @@ public sealed partial class MainWindow : Window
         StartupDiagnostics.Write("MainWindow.InitializeComponent starting");
         InitializeComponent();
         StartupDiagnostics.Write("MainWindow.InitializeComponent completed");
+        WindowRoot.Loaded += OnWindowRootLoaded;
+        WindowRoot.SizeChanged += OnWindowRootSizeChanged;
         TitleBarText.Text = $"Codex Usage Desktop v{CurrentReleaseVersion}";
         _requestApplicationExit = requestApplicationExit;
         _enableAutomaticUpdateChecks = enableAutomaticUpdateChecks;
@@ -152,8 +149,6 @@ public sealed partial class MainWindow : Window
             MinimumEffectiveWidth,
             MinimumEffectiveHeight);
         _trayIcon.NonClientPointerPressed += OnNonClientPointerPressed;
-        _uiSettings.TextScaleFactorChanged += OnTextScaleFactorChanged;
-        Volatile.Write(ref _textScaleMonitoringActive, 1);
         StartupDiagnostics.Write("MainWindow constructor completed");
     }
 
@@ -166,7 +161,7 @@ public sealed partial class MainWindow : Window
             var version = typeof(MainWindow).Assembly.GetName().Version;
             return version is { Major: >= 0, Minor: >= 0, Build: >= 0 }
                 ? $"{version.Major}.{version.Minor}.{version.Build}"
-                : "0.3.15";
+                : "0.3.16";
         }
     }
 
@@ -240,7 +235,6 @@ public sealed partial class MainWindow : Window
 
         _allowClose = true;
         ApplyViewportRefreshTransition(_viewportRefreshLifecycle.Cancel());
-        StopTextScaleMonitoring();
         _trayIcon.NonClientPointerPressed -= OnNonClientPointerPressed;
         _trayIcon.Dispose();
         Close();
@@ -261,28 +255,6 @@ public sealed partial class MainWindow : Window
             Debug.WriteLine($"Dashboard initialization failed: {error}");
             StartupDiagnostics.WriteException("Dashboard initialization failed", error);
         }
-    }
-
-    private void OnModelValuesViewChanged(object sender, ScrollViewerViewChangedEventArgs args)
-    {
-        if (sender is ScrollViewer values)
-        {
-            ModelHeaderScroll.ChangeView(values.HorizontalOffset, null, null, disableAnimation: true);
-        }
-    }
-
-    private void OnRoleValuesViewChanged(object sender, ScrollViewerViewChangedEventArgs args)
-    {
-        if (sender is ScrollViewer values)
-        {
-            RoleHeaderScroll.ChangeView(values.HorizontalOffset, null, null, disableAnimation: true);
-        }
-    }
-
-    private void OnBodyRootViewChanged(object sender, ScrollViewerViewChangedEventArgs args)
-    {
-        UpdateStickyHeader(ModelTable, ModelTableHeader, ModelTableHeaderTransform);
-        UpdateStickyHeader(RoleTable, RoleTableHeader, RoleTableHeaderTransform);
     }
 
     private void OnSnapshotApplying(object? sender, DashboardSnapshotApplicationEventArgs args)
@@ -310,8 +282,23 @@ public sealed partial class MainWindow : Window
         if (transition.VerticalOffsetToRestore is not { } targetOffset) return;
 
         BodyRoot.ChangeView(null, targetOffset, null, disableAnimation: true);
-        UpdateStickyHeader(ModelTable, ModelTableHeader, ModelTableHeaderTransform);
-        UpdateStickyHeader(RoleTable, RoleTableHeader, RoleTableHeaderTransform);
+    }
+
+    private void OnWindowRootLoaded(object sender, RoutedEventArgs args) => UpdateDashboardPanelLayout();
+
+    private void OnWindowRootSizeChanged(object sender, SizeChangedEventArgs args) => UpdateDashboardPanelLayout();
+
+    private void UpdateDashboardPanelLayout()
+    {
+        const double SideBySideDashboardThreshold = 1000;
+        var useSideBySideLayout = WindowRoot.ActualWidth >= SideBySideDashboardThreshold;
+
+        DashboardFirstColumn.Width = new GridLength(1, GridUnitType.Star);
+        DashboardSecondColumn.Width = useSideBySideLayout
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        Grid.SetRow(SubjectPanel, useSideBySideLayout ? 0 : 1);
+        Grid.SetColumn(SubjectPanel, useSideBySideLayout ? 1 : 0);
     }
 
     private void OnBodyRootPointerPressed(object sender, PointerRoutedEventArgs args) =>
@@ -363,93 +350,6 @@ public sealed partial class MainWindow : Window
         {
             ApplyViewportRefreshTransition(_viewportRefreshLifecycle.RecordUserInteraction());
         }
-    }
-
-    private void OnTableCellLoaded(object sender, RoutedEventArgs args)
-    {
-        if (sender is FrameworkElement element)
-        {
-            if (_scaledTableElements.Add(element))
-            {
-                element.Unloaded += OnTableCellUnloaded;
-            }
-
-            ApplyCurrentTableRowHeight(element);
-        }
-    }
-
-    private void OnTableCellUnloaded(object sender, RoutedEventArgs args)
-    {
-        if (sender is FrameworkElement element && _scaledTableElements.Remove(element))
-        {
-            element.Unloaded -= OnTableCellUnloaded;
-        }
-    }
-
-    private void OnTextScaleFactorChanged(UISettings sender, object args)
-    {
-        if (Volatile.Read(ref _textScaleMonitoringActive) == 0) return;
-
-        _ = DispatcherQueue.TryEnqueue(RefreshTableLayoutForTextScale);
-    }
-
-    private void RefreshTableLayoutForTextScale()
-    {
-        if (Volatile.Read(ref _textScaleMonitoringActive) == 0) return;
-
-        foreach (var element in _scaledTableElements)
-        {
-            ApplyCurrentTableRowHeight(element);
-        }
-
-        UpdateStickyHeader(ModelTable, ModelTableHeader, ModelTableHeaderTransform);
-        UpdateStickyHeader(RoleTable, RoleTableHeader, RoleTableHeaderTransform);
-    }
-
-    private void ApplyCurrentTableRowHeight(FrameworkElement element)
-    {
-        element.Height = DashboardAccessibilityLayout.TableRowHeight(_uiSettings.TextScaleFactor);
-    }
-
-    private void StopTextScaleMonitoring()
-    {
-        if (Interlocked.Exchange(ref _textScaleMonitoringActive, 0) == 0) return;
-
-        _uiSettings.TextScaleFactorChanged -= OnTextScaleFactorChanged;
-        foreach (var element in _scaledTableElements)
-        {
-            element.Unloaded -= OnTableCellUnloaded;
-        }
-        _scaledTableElements.Clear();
-    }
-
-    private void OnStickyTableSizeChanged(object sender, SizeChangedEventArgs args)
-    {
-        if (ReferenceEquals(sender, ModelTable))
-        {
-            UpdateStickyHeader(ModelTable, ModelTableHeader, ModelTableHeaderTransform);
-        }
-        else if (ReferenceEquals(sender, RoleTable))
-        {
-            UpdateStickyHeader(RoleTable, RoleTableHeader, RoleTableHeaderTransform);
-        }
-    }
-
-    private void UpdateStickyHeader(
-        FrameworkElement table,
-        FrameworkElement header,
-        TranslateTransform transform)
-    {
-        if (table.ActualHeight <= 0 || header.ActualHeight <= 0) return;
-
-        var tableTop = table.TransformToVisual(BodyRoot).TransformPoint(new Windows.Foundation.Point()).Y;
-        var renderedHeaderTop = header.TransformToVisual(BodyRoot).TransformPoint(new Windows.Foundation.Point()).Y;
-        var naturalHeaderTop = renderedHeaderTop - transform.Y;
-        var headerOffsetWithinTable = naturalHeaderTop - tableTop;
-        var maximumTranslation = Math.Max(
-            0,
-            table.ActualHeight - headerOffsetWithinTable - header.ActualHeight);
-        transform.Y = Math.Clamp(-naturalHeaderTop, 0, maximumTranslation);
     }
 
     private async void OnCheckUpdateRequested(object sender, RoutedEventArgs args)
@@ -585,7 +485,6 @@ public sealed partial class MainWindow : Window
     {
         if (_allowClose)
         {
-            StopTextScaleMonitoring();
             return;
         }
 

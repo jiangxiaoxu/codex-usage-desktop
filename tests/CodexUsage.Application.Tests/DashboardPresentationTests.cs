@@ -277,29 +277,157 @@ public sealed class DashboardPresentationTests
     }
 
     [Fact]
-    public void CostCompositionUsesTheFourPricedCategoriesAndPercentageOnlyDetails()
+    public void CostCompositionUsesTheFourPricedCategoriesWithStructuredDetails()
     {
-        var slices = DashboardCostComposition.From(new CostBreakdown(20, 60, 15, 5, 100, Priced: true));
+        var summary = new UsageSummary(
+            Calls: 1,
+            InputTokens: 200,
+            CachedInputTokens: 60,
+            UncachedInputTokens: 140,
+            OutputTokens: 40,
+            ReasoningOutputTokens: 15,
+            OtherOutputTokens: 25,
+            CanonicalTotalTokens: 240,
+            UnpricedTokens: 0,
+            Cost: new CostBreakdown(20, 60, 15, 5, 100, Priced: true));
+
+        var slices = DashboardCostComposition.From(summary, 200, "gpt-5.6-sol");
 
         Assert.Collection(
             slices,
-            slice => AssertSlice(slice, "无缓存输入", 20, "20.0%", "PrimaryBrush"),
-            slice => AssertSlice(slice, "缓存输入", 60, "60.0%", "SuccessBrush"),
-            slice => AssertSlice(slice, "思考输出", 15, "15.0%", "WarningBrush"),
-            slice => AssertSlice(slice, "其他输出", 5, "5.0%", "PurpleBrush"));
+            slice => AssertSlice(slice, DashboardCostCategory.UncachedInput, "gpt-5.6-sol", 20, 10, 140, "PrimaryBrush"),
+            slice => AssertSlice(slice, DashboardCostCategory.CachedInput, "gpt-5.6-sol", 60, 30, 60, "SuccessBrush"),
+            slice => AssertSlice(slice, DashboardCostCategory.ReasoningOutput, "gpt-5.6-sol", 15, 7.5, 15, "WarningBrush"),
+            slice => AssertSlice(slice, DashboardCostCategory.OtherOutput, "gpt-5.6-sol", 5, 2.5, 25, "PurpleBrush"));
+        Assert.Equal("$60.0", slices[1].Cost);
+        Assert.Equal("60.0%", slices[1].EntityShare);
+        Assert.Equal("30.0%", slices[1].OverallShare);
+        Assert.Equal("60", slices[1].Tokens);
+        Assert.Contains("gpt-5.6-sol · 缓存输入", slices[1].ToolTipText, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void CostCompositionRendersZeroTotalWithoutInvalidPercentages()
+    public void CostCompositionRendersPricedZeroWithoutInvalidPercentages()
     {
-        var slices = DashboardCostComposition.From(CostBreakdown.PricedZero);
+        var summary = UsageSummaryFor(CostBreakdown.PricedZero);
+        var slices = DashboardCostComposition.From(summary, 0, "Others");
 
         Assert.Equal(4, slices.Count);
         Assert.All(slices, slice =>
         {
             Assert.Equal(0, slice.Percentage);
-            Assert.Equal("0.0%", slice.Detail);
+            Assert.Equal("$0.0", slice.Cost);
+            Assert.Equal("0.0%", slice.EntityShare);
+            Assert.Equal("0.0%", slice.OverallShare);
+            Assert.Equal(CostPricingStatus.Priced, slice.PricingStatus);
         });
+    }
+
+    [Fact]
+    public void CostCompositionDoesNotInventSharesForUnpricedUsage()
+    {
+        var summary = UsageSummaryFor(
+            CostBreakdown.UnpricedZero,
+            inputTokens: 21_000,
+            cachedInputTokens: 4_000,
+            outputTokens: 300,
+            reasoningOutputTokens: 200,
+            unpricedTokens: 21_300);
+
+        var slices = DashboardCostComposition.From(summary, 706.3m, "codex-auto-review");
+        var presentation = DashboardCostPresentation.From(summary, 706.3m);
+
+        Assert.Equal("未定价", presentation.Cost);
+        Assert.Equal("—", presentation.Share);
+        Assert.Equal(CostPricingStatus.Unpriced, presentation.PricingStatus);
+        Assert.All(slices, slice =>
+        {
+            Assert.Equal(CostPricingStatus.Unpriced, slice.PricingStatus);
+            Assert.False(slice.IsPriced);
+            Assert.Equal(0, slice.Percentage);
+            Assert.Equal("未定价", slice.Cost);
+            Assert.Equal("—", slice.EntityShare);
+            Assert.Equal("—", slice.OverallShare);
+        });
+        Assert.Equal(17_000, slices[0].TokenCount);
+        Assert.Equal(4_000, slices[1].TokenCount);
+        Assert.Equal(200, slices[2].TokenCount);
+        Assert.Equal(100, slices[3].TokenCount);
+    }
+
+    [Fact]
+    public void SubagentAggregateSumsOnlyTheAlreadyAggregatedSubagentRows()
+    {
+        var aggregate = DashboardSubagentAggregation.From(
+        [
+            new RoleUsageRow(
+                ThreadType.Main,
+                "root",
+                ThreadCount: 2,
+                UsageSummaryFor(new CostBreakdown(10, 20, 3, 7, 40, Priced: true), 100, 20, 10, 3)),
+            new RoleUsageRow(
+                ThreadType.Subagent,
+                "worker",
+                ThreadCount: 3,
+                UsageSummaryFor(new CostBreakdown(11, 21, 4, 8, 44, Priced: true), 110, 21, 12, 4)),
+            new RoleUsageRow(
+                ThreadType.Subagent,
+                "reviewer",
+                ThreadCount: 4,
+                UsageSummaryFor(new CostBreakdown(12, 22, 5, 9, 48, Priced: true), 120, 22, 13, 5)),
+        ]);
+
+        Assert.NotNull(aggregate);
+        Assert.Equal(7, aggregate.ThreadCount);
+        Assert.Equal(230, aggregate.Summary.InputTokens);
+        Assert.Equal(43, aggregate.Summary.CachedInputTokens);
+        Assert.Equal(187, aggregate.Summary.UncachedInputTokens);
+        Assert.Equal(25, aggregate.Summary.OutputTokens);
+        Assert.Equal(9, aggregate.Summary.ReasoningOutputTokens);
+        Assert.Equal(16, aggregate.Summary.OtherOutputTokens);
+        Assert.Equal(23, aggregate.Summary.Cost.UncachedInput);
+        Assert.Equal(43, aggregate.Summary.Cost.CachedInput);
+        Assert.Equal(9, aggregate.Summary.Cost.ReasoningOutput);
+        Assert.Equal(17, aggregate.Summary.Cost.OtherOutput);
+        Assert.Equal(92, aggregate.Summary.Cost.Total);
+    }
+
+    [Fact]
+    public void SubagentAggregateIsAbsentWhenNoSubagentRowsAreFiltered()
+    {
+        var aggregate = DashboardSubagentAggregation.From(
+        [
+            SubjectRow(40, ThreadType.Main, "root"),
+            SubjectRow(10, ThreadType.Unknown, "unknown"),
+        ]);
+
+        Assert.Null(aggregate);
+    }
+
+    [Fact]
+    public void SubjectRowsDisambiguateUnknownAndSubagentWorkers()
+    {
+        var rows = new[]
+        {
+            new SubjectUsageRow(
+                SubjectUsageRowKind.Role,
+                "role:Subagent:worker",
+                "子代理",
+                "worker",
+                "$10.0",
+                "10.0%",
+                CreateTestSlices("子代理 · worker", "subagent")),
+            new SubjectUsageRow(
+                SubjectUsageRowKind.Role,
+                "role:Unknown:worker",
+                "unknown",
+                "worker",
+                "$5.0",
+                "5.0%",
+                CreateTestSlices("unknown · worker", "unknown")),
+        };
+
+        Assert.Equal(["worker", "unknown · worker"], rows.Select(row => row.DisplayName));
     }
 
     [Theory]
@@ -364,22 +492,14 @@ public sealed class DashboardPresentationTests
         Assert.Same(agentOption, collections.AgentOptions[0]);
         Assert.Equal("metric-second", metric.Value);
         Assert.Equal(42, cost.Percentage);
-        Assert.Equal("cost-second", cost.Detail);
-        Assert.Equal("total-second", model.TotalTokens);
-        Assert.Equal("uncached-second", model.UncachedInput);
-        Assert.Equal("cached-second", model.CachedInput);
-        Assert.Equal("output-second", model.Output);
-        Assert.Equal("reasoning-second", model.ReasoningOutput);
+        Assert.Equal("cost-second", cost.EntityLabel);
         Assert.Equal("model-cost-second", model.Cost);
         Assert.Equal("model-share-second", model.Share);
-        Assert.Equal("subject-count-second", subject.ThreadCount);
-        Assert.Equal("subject-total-second", subject.TotalTokens);
-        Assert.Equal("subject-uncached-second", subject.UncachedInput);
-        Assert.Equal("subject-cached-second", subject.CachedInput);
-        Assert.Equal("subject-output-second", subject.Output);
-        Assert.Equal("subject-reasoning-second", subject.ReasoningOutput);
+        Assert.Equal(2, model.CostSlices[0].CostAmount);
         Assert.Equal("subject-cost-second", subject.Cost);
         Assert.Equal("subject-share-second", subject.Share);
+        Assert.Equal("主线程 · root", subject.DisplayName);
+        Assert.Equal(2, subject.CostSlices[0].CostAmount);
         Assert.Equal("diagnostic-value-second", diagnostic.Value);
         Assert.Equal("diagnostic-detail-second", diagnostic.Detail);
         Assert.False(modelOption.IsSelected);
@@ -416,6 +536,45 @@ public sealed class DashboardPresentationTests
 
         AssertFacetStructureChanges(changes);
         Assert.True(result.HasStructuralChanges);
+    }
+
+    [Fact]
+    public void PresentationCollectionsKeepAggregateAndRealRoleRowsDistinctAndStable()
+    {
+        var collections = new DashboardPresentationCollections();
+        var first = CreatePresentationInput("first") with
+        {
+            Subjects =
+            [
+                new(SubjectUsageRowKind.SubagentAggregate, "subagent-aggregate", "子代理", "合计", "$10.0", "10.0%", CreateTestSlices("子代理合计", "first")),
+                new(SubjectUsageRowKind.Role, "role:Subagent:aggregate", "子代理", "aggregate", "$5.0", "5.0%", CreateTestSlices("子代理 · aggregate", "first")),
+            ],
+        };
+        collections.Apply(first);
+        var aggregate = collections.Subjects[0];
+        var role = collections.Subjects[1];
+
+        var second = CreatePresentationInput("second") with
+        {
+            Subjects =
+            [
+                new(SubjectUsageRowKind.SubagentAggregate, "subagent-aggregate", "子代理", "合计", "$12.0", "12.0%", CreateTestSlices("子代理合计", "second")),
+                new(SubjectUsageRowKind.Role, "role:Subagent:aggregate", "子代理", "aggregate", "$6.0", "6.0%", CreateTestSlices("子代理 · aggregate", "second")),
+            ],
+        };
+
+        Assert.False(collections.WouldApplyHaveStructuralChanges(second));
+        var result = collections.Apply(second);
+
+        Assert.False(result.HasStructuralChanges);
+        Assert.Same(aggregate, collections.Subjects[0]);
+        Assert.Same(role, collections.Subjects[1]);
+        Assert.Equal(SubjectUsageRowKind.SubagentAggregate, aggregate.Kind);
+        Assert.Equal("子代理合计", aggregate.DisplayName);
+        Assert.Equal(SubjectUsageRowKind.Role, role.Kind);
+        Assert.Equal("aggregate", role.DisplayName);
+        Assert.Equal("$12.0", aggregate.Cost);
+        Assert.Equal("$6.0", role.Cost);
     }
 
     [Fact]
@@ -746,24 +905,33 @@ public sealed class DashboardPresentationTests
     }
 
     [Fact]
-    public void UnpricedModelCostUsesSemanticLabelsInsteadOfZeroPricing()
+    public void PartialPricingRetainsKnownCostAndSignalsTheStatus()
     {
-        var presentation = DashboardModelCostPresentation.From(0, 205.6m, priced: false);
+        var presentation = DashboardCostPresentation.From(
+            UsageSummaryFor(
+                new CostBreakdown(1, 2, 3, 4, 10, Priced: true),
+                unpricedTokens: 20),
+            20);
 
-        Assert.Equal("未定价", presentation.Cost);
-        Assert.Equal("—", presentation.Share);
+        Assert.Equal("$10.0", presentation.Cost);
+        Assert.Equal("50.0%", presentation.Share);
+        Assert.Equal(CostPricingStatus.PartiallyPriced, presentation.PricingStatus);
     }
 
     [Fact]
-    public void PricedAndOthersModelCostsRetainNumericPresentation()
+    public void PricedAndZeroCostPresentationRetainNumericValues()
     {
-        var priced = DashboardModelCostPresentation.From(194.4m, 205.6m, priced: true);
-        var others = DashboardModelCostPresentation.From(0, 205.6m, priced: true);
+        var priced = DashboardCostPresentation.From(
+            UsageSummaryFor(new CostBreakdown(40, 80, 40, 34.4m, 194.4m, Priced: true)),
+            205.6m);
+        var others = DashboardCostPresentation.From(UsageSummaryFor(CostBreakdown.PricedZero), 205.6m);
 
         Assert.Equal("$194.4", priced.Cost);
         Assert.Equal("94.6%", priced.Share);
+        Assert.Equal(CostPricingStatus.Priced, priced.PricingStatus);
         Assert.Equal("$0.0", others.Cost);
         Assert.Equal("0.0%", others.Share);
+        Assert.Equal(CostPricingStatus.Priced, others.PricingStatus);
     }
 
     [Fact]
@@ -932,25 +1100,25 @@ public sealed class DashboardPresentationTests
         var worker = new SubjectFilter(ThreadType.Subagent, "worker");
         var models = new List<ModelUsageRow>
         {
-            new("gpt-5.6-sol", $"total-{marker}", $"uncached-{marker}", $"cached-{marker}", $"output-{marker}", $"reasoning-{marker}", $"model-cost-{marker}", $"model-share-{marker}"),
+            new("gpt-5.6-sol", $"model-cost-{marker}", $"model-share-{marker}", CreateTestSlices("gpt-5.6-sol", marker)),
         };
         var subjects = new List<SubjectUsageRow>
         {
-            new("主线程", "root", $"subject-count-{marker}", $"subject-total-{marker}", $"subject-uncached-{marker}", $"subject-cached-{marker}", $"subject-output-{marker}", $"subject-reasoning-{marker}", $"subject-cost-{marker}", $"subject-share-{marker}"),
+            new(SubjectUsageRowKind.Role, "role:Main:root", "主线程", "root", $"subject-cost-{marker}", $"subject-share-{marker}", CreateTestSlices("主线程 · root", marker)),
         };
         var modelOptions = new List<ModelFilterOption> { new("gpt-5.6-sol") };
         var agentOptions = new List<SubjectFilterOption> { new(root) };
         if (includeAdditionalFacet)
         {
-            models.Add(new("gpt-5.6-terra", "total-terra", "uncached-terra", "cached-terra", "output-terra", "reasoning-terra", "model-cost-terra", "model-share-terra"));
-            subjects.Add(new("子代理", "worker", "subject-count-worker", "subject-total-worker", "subject-uncached-worker", "subject-cached-worker", "subject-output-worker", "subject-reasoning-worker", "subject-cost-worker", "subject-share-worker"));
+            models.Add(new("gpt-5.6-terra", "model-cost-terra", "model-share-terra", CreateTestSlices("gpt-5.6-terra", "terra")));
+            subjects.Add(new(SubjectUsageRowKind.Role, "role:Subagent:worker", "子代理", "worker", "subject-cost-worker", "subject-share-worker", CreateTestSlices("子代理 · worker", "worker")));
             modelOptions.Add(new("gpt-5.6-terra"));
             agentOptions.Add(new(worker));
         }
 
         return new DashboardPresentationInput(
             [new("总 tokens", $"metric-{marker}")],
-            [new("无缓存输入", 42, $"cost-{marker}", "PrimaryBrush")],
+            [new(DashboardCostCategory.UncachedInput, $"cost-{marker}", 1, 42, 12, 10, CostPricingStatus.Priced, "PrimaryBrush")],
             models,
             subjects,
             [new("Collector phase", $"diagnostic-value-{marker}", $"diagnostic-detail-{marker}")],
@@ -971,13 +1139,41 @@ public sealed class DashboardPresentationTests
         collections.AgentOptions.CollectionChanged += (_, args) => changes.Add(args.Action);
     }
 
-    private static void AssertSlice(CostSlice slice, string label, double percentage, string detail, string brushKey)
+    private static void AssertSlice(
+        CostSlice slice,
+        DashboardCostCategory category,
+        string entityLabel,
+        double entityShare,
+        double overallShare,
+        long tokenCount,
+        string brushKey)
     {
-        Assert.Equal(label, slice.Label);
-        Assert.Equal(percentage, slice.Percentage);
-        Assert.Equal(detail, slice.Detail);
+        Assert.Equal(category, slice.Category);
+        Assert.Equal(entityLabel, slice.EntityLabel);
+        Assert.Equal(entityShare, slice.EntitySharePercentage);
+        Assert.Equal(overallShare, slice.OverallSharePercentage);
+        Assert.Equal(tokenCount, slice.TokenCount);
+        Assert.Equal(CostPricingStatus.Priced, slice.PricingStatus);
         Assert.Equal(brushKey, slice.BrushKey);
     }
+
+    private static IReadOnlyList<CostSlice> CreateTestSlices(string entityLabel, string marker) =>
+    [
+        new(
+            DashboardCostCategory.UncachedInput,
+            entityLabel,
+            marker switch
+            {
+                "first" => 1,
+                "second" => 2,
+                _ => 3,
+            },
+            100,
+            100,
+            1,
+            CostPricingStatus.Priced,
+            "PrimaryBrush"),
+    ];
 
     private static void SubscribeToCollectionChanges<TItem>(
         ObservableCollection<TItem> collection,
@@ -1010,6 +1206,24 @@ public sealed class DashboardPresentationTests
             CanonicalTotalTokens: 0,
             UnpricedTokens: 0,
             Cost: new CostBreakdown(0, 0, 0, 0, totalCost, Priced: true)));
+
+    private static UsageSummary UsageSummaryFor(
+        CostBreakdown cost,
+        long inputTokens = 0,
+        long cachedInputTokens = 0,
+        long outputTokens = 0,
+        long reasoningOutputTokens = 0,
+        long unpricedTokens = 0) => new(
+            Calls: 1,
+            InputTokens: inputTokens,
+            CachedInputTokens: cachedInputTokens,
+            UncachedInputTokens: inputTokens - cachedInputTokens,
+            OutputTokens: outputTokens,
+            ReasoningOutputTokens: reasoningOutputTokens,
+            OtherOutputTokens: outputTokens - reasoningOutputTokens,
+            CanonicalTotalTokens: inputTokens + outputTokens,
+            UnpricedTokens: unpricedTokens,
+            Cost: cost);
 
     private sealed class TestDashboardRow(string id, string value)
     {

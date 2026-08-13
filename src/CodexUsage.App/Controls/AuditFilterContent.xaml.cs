@@ -1,6 +1,9 @@
+using System.Collections.Specialized;
+using System.ComponentModel;
 using CodexUsage.App.ViewModels;
 using CodexUsage.Application;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 
@@ -8,9 +11,32 @@ namespace CodexUsage.App.Controls;
 
 public sealed partial class AuditFilterContent : UserControl
 {
+    private const double WideLayoutMinimumWidth = 1280;
+    private readonly List<DashboardPresentationItem> _subscribedFilterOptions = [];
+    private bool _isLoaded;
+    private DashboardViewModel? _subscribedViewModel;
+
     public AuditFilterContent()
     {
         InitializeComponent();
+        Loaded += (_, _) =>
+        {
+            _isLoaded = true;
+            AttachFilterOptionSubscriptions();
+            UpdateLayoutState();
+        };
+        Unloaded += (_, _) =>
+        {
+            _isLoaded = false;
+            DetachFilterOptionSubscriptions();
+        };
+        DataContextChanged += (_, _) =>
+        {
+            DetachFilterOptionSubscriptions();
+            if (_isLoaded) AttachFilterOptionSubscriptions();
+            else UpdateSelectionLabels();
+        };
+        SizeChanged += (_, _) => UpdateLayoutState();
     }
 
     private void OnResetFilters(object sender, RoutedEventArgs args)
@@ -55,7 +81,11 @@ public sealed partial class AuditFilterContent : UserControl
         source is DependencyObject element
         && IsWithinMainThreadSuggestionsVisualTree(element);
 
-    internal void CloseMainThreadSuggestions() => MainThreadSuggestions.IsSuggestionListOpen = false;
+    internal void CloseMainThreadSuggestions()
+    {
+        WideMainThreadSuggestions.IsSuggestionListOpen = false;
+        CompactMainThreadSuggestions.IsSuggestionListOpen = false;
+    }
 
     internal bool IsMainThreadSuggestionFocusedElement(object? focusedElement) =>
         focusedElement is DependencyObject element
@@ -67,7 +97,11 @@ public sealed partial class AuditFilterContent : UserControl
              current is not null;
              current = VisualTreeHelper.GetParent(current))
         {
-            if (ReferenceEquals(current, MainThreadSuggestions)) return true;
+            if (ReferenceEquals(current, WideMainThreadSuggestions)
+                || ReferenceEquals(current, CompactMainThreadSuggestions))
+            {
+                return true;
+            }
         }
 
         return false;
@@ -78,6 +112,7 @@ public sealed partial class AuditFilterContent : UserControl
         if (DataContext is DashboardViewModel viewModel)
         {
             viewModel.SelectAllModels();
+            UpdateSelectionLabels();
         }
     }
 
@@ -86,8 +121,13 @@ public sealed partial class AuditFilterContent : UserControl
         if (DataContext is DashboardViewModel viewModel)
         {
             viewModel.SelectAllAgents();
+            UpdateSelectionLabels();
         }
     }
+
+    private void OnModelOptionInvoked(object sender, RoutedEventArgs args) => UpdateSelectionLabels();
+
+    private void OnAgentOptionInvoked(object sender, RoutedEventArgs args) => UpdateSelectionLabels();
 
     private async void OnOpenCustomDateRange(object sender, RoutedEventArgs args)
     {
@@ -157,5 +197,99 @@ public sealed partial class AuditFilterContent : UserControl
         };
 
         await dialog.ShowAsync();
+    }
+
+    private void AttachFilterOptionSubscriptions()
+    {
+        if (_subscribedViewModel is not null || DataContext is not DashboardViewModel viewModel)
+        {
+            UpdateSelectionLabels();
+            return;
+        }
+
+        _subscribedViewModel = viewModel;
+        viewModel.ModelOptions.CollectionChanged += OnFilterOptionsCollectionChanged;
+        viewModel.AgentOptions.CollectionChanged += OnFilterOptionsCollectionChanged;
+        SubscribeToFilterOptions(viewModel);
+        UpdateSelectionLabels();
+    }
+
+    private void DetachFilterOptionSubscriptions()
+    {
+        if (_subscribedViewModel is not null)
+        {
+            _subscribedViewModel.ModelOptions.CollectionChanged -= OnFilterOptionsCollectionChanged;
+            _subscribedViewModel.AgentOptions.CollectionChanged -= OnFilterOptionsCollectionChanged;
+        }
+
+        foreach (var option in _subscribedFilterOptions)
+        {
+            option.PropertyChanged -= OnFilterOptionPropertyChanged;
+        }
+
+        _subscribedFilterOptions.Clear();
+        _subscribedViewModel = null;
+    }
+
+    private void OnFilterOptionsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
+    {
+        if (_subscribedViewModel is null) return;
+
+        foreach (var option in _subscribedFilterOptions)
+        {
+            option.PropertyChanged -= OnFilterOptionPropertyChanged;
+        }
+
+        _subscribedFilterOptions.Clear();
+        SubscribeToFilterOptions(_subscribedViewModel);
+        UpdateSelectionLabels();
+    }
+
+    private void SubscribeToFilterOptions(DashboardViewModel viewModel)
+    {
+        foreach (var option in viewModel.ModelOptions)
+        {
+            option.PropertyChanged += OnFilterOptionPropertyChanged;
+            _subscribedFilterOptions.Add(option);
+        }
+
+        foreach (var option in viewModel.AgentOptions)
+        {
+            option.PropertyChanged += OnFilterOptionPropertyChanged;
+            _subscribedFilterOptions.Add(option);
+        }
+    }
+
+    private void OnFilterOptionPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(ModelFilterOption.IsSelected))
+        {
+            UpdateSelectionLabels();
+        }
+    }
+
+    private void UpdateSelectionLabels()
+    {
+        var viewModel = _subscribedViewModel ?? DataContext as DashboardViewModel;
+        var selectedModelCount = viewModel?.ModelOptions.Count(option => option.IsSelected) ?? 0;
+        var selectedAgentCount = viewModel?.AgentOptions.Count(option => option.IsSelected) ?? 0;
+        var modelText = $"{selectedModelCount} 已选";
+        var agentText = $"{selectedAgentCount} 已选";
+
+        WideModelSelectionText.Text = modelText;
+        CompactModelSelectionText.Text = modelText;
+        WideAgentSelectionText.Text = agentText;
+        CompactAgentSelectionText.Text = agentText;
+        AutomationProperties.SetName(WideModelSelectionButton, $"模型筛选, {modelText}");
+        AutomationProperties.SetName(CompactModelSelectionButton, $"模型筛选, {modelText}");
+        AutomationProperties.SetName(WideAgentSelectionButton, $"执行主体筛选, {agentText}");
+        AutomationProperties.SetName(CompactAgentSelectionButton, $"执行主体筛选, {agentText}");
+    }
+
+    private void UpdateLayoutState()
+    {
+        var isWide = ActualWidth >= WideLayoutMinimumWidth;
+        WideLayout.Visibility = isWide ? Visibility.Visible : Visibility.Collapsed;
+        CompactLayout.Visibility = isWide ? Visibility.Collapsed : Visibility.Visible;
     }
 }

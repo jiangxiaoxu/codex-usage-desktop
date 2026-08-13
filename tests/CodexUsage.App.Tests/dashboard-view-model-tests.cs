@@ -256,6 +256,104 @@ public sealed class DashboardViewModelTests
             value => Assert.Equal(DirectMainThreadId, value.MainThreadConversationId));
     }
 
+    [Fact]
+    public async Task SnapshotMapsModelAndSubjectCostSlicesAndAddsSubagentAggregate()
+    {
+        var root = Usage(
+            uncachedInputTokens: 200,
+            cachedInputTokens: 800,
+            reasoningOutputTokens: 100,
+            otherOutputTokens: 50,
+            cost: new CostBreakdown(20, 60, 15, 5, 100, Priced: true));
+        var worker = Usage(
+            uncachedInputTokens: 100,
+            cachedInputTokens: 400,
+            reasoningOutputTokens: 50,
+            otherOutputTokens: 50,
+            cost: new CostBreakdown(10, 30, 5, 5, 50, Priced: true));
+        var unknown = Usage(
+            uncachedInputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+            otherOutputTokens: 0,
+            cost: CostBreakdown.PricedZero);
+        var total = Usage(
+            uncachedInputTokens: 300,
+            cachedInputTokens: 1200,
+            reasoningOutputTokens: 150,
+            otherOutputTokens: 100,
+            cost: new CostBreakdown(30, 90, 20, 10, 150, Priced: true));
+        var result = new QueryResult(
+            total,
+            [new GroupRow(["gpt-5.6-sol"], total)],
+            [
+                new RoleUsageRow(ThreadType.Main, "root", 1, root),
+                new RoleUsageRow(ThreadType.Subagent, "worker", 2, worker),
+                new RoleUsageRow(ThreadType.Unknown, "unknown", 1, unknown),
+            ],
+            ImmutableArray<GroupRow>.Empty,
+            new QueryFacets(ImmutableArray<ModelFacetOption>.Empty, ImmutableArray<SubjectFacetOption>.Empty),
+            ScanDiagnostics.Empty);
+        var service = new FakeUsageDashboardService(Snapshot("full", [], result));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        var model = Assert.Single(viewModel.Models);
+        Assert.Equal(("gpt-5.6-sol", "$150.0", "100.0%"), (model.Model, model.Cost, model.Share));
+        Assert.Collection(
+            model.CostSlices,
+            slice => Assert.Equal(("gpt-5.6-sol", "无缓存输入", 30m, 300L), (slice.EntityLabel, slice.Label, slice.CostAmount, slice.TokenCount)),
+            slice => Assert.Equal(("gpt-5.6-sol", "缓存输入", 90m, 1200L), (slice.EntityLabel, slice.Label, slice.CostAmount, slice.TokenCount)),
+            slice => Assert.Equal(("gpt-5.6-sol", "思考输出", 20m, 150L), (slice.EntityLabel, slice.Label, slice.CostAmount, slice.TokenCount)),
+            slice => Assert.Equal(("gpt-5.6-sol", "其他输出", 10m, 100L), (slice.EntityLabel, slice.Label, slice.CostAmount, slice.TokenCount)));
+
+        Assert.Collection(
+            viewModel.Subjects,
+            row =>
+            {
+                Assert.Equal(SubjectUsageRowKind.Role, row.Kind);
+                Assert.Equal(("主线程", "root", "$100.0", "66.7%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal(4, row.CostSlices.Count);
+                Assert.Equal(new decimal[] { 20m, 60m, 15m, 5m }, row.CostSlices.Select(slice => slice.CostAmount));
+                Assert.All(row.CostSlices, slice => Assert.Equal("主线程 · root", slice.EntityLabel));
+            },
+            row =>
+            {
+                Assert.Equal(SubjectUsageRowKind.SubagentAggregate, row.Kind);
+                Assert.Equal(("子代理", "合计", "$50.0", "33.3%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal(new decimal[] { 10m, 30m, 5m, 5m }, row.CostSlices.Select(slice => slice.CostAmount));
+                Assert.All(row.CostSlices, slice => Assert.Equal("子代理合计", slice.EntityLabel));
+            },
+            row =>
+            {
+                Assert.Equal(SubjectUsageRowKind.Role, row.Kind);
+                Assert.Equal(("子代理", "worker", "$50.0", "33.3%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal(new decimal[] { 10m, 30m, 5m, 5m }, row.CostSlices.Select(slice => slice.CostAmount));
+                Assert.All(row.CostSlices, slice => Assert.Equal("子代理 · worker", slice.EntityLabel));
+            },
+            row =>
+            {
+                Assert.Equal(SubjectUsageRowKind.Role, row.Kind);
+                Assert.Equal(("unknown", "unknown", "$0.0", "0.0%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal(4, row.CostSlices.Count);
+            });
+
+        var rootRow = viewModel.Subjects[0];
+        var aggregateRow = viewModel.Subjects[1];
+        var workerRow = viewModel.Subjects[2];
+        var unknownRow = viewModel.Subjects[3];
+        service.EnqueueQuerySnapshot(Snapshot("refreshed", [], result));
+
+        await ApplySnapshotAsync(viewModel, "refreshed", viewModel.ClearMainThreadFilter);
+
+        Assert.Same(model, viewModel.Models[0]);
+        Assert.Same(rootRow, viewModel.Subjects[0]);
+        Assert.Same(aggregateRow, viewModel.Subjects[1]);
+        Assert.Same(workerRow, viewModel.Subjects[2]);
+        Assert.Same(unknownRow, viewModel.Subjects[3]);
+    }
+
     private static DashboardViewModel CreateViewModel(FakeUsageDashboardService service) => new(
         service,
         new InlineUiDispatcher(),
@@ -305,7 +403,10 @@ public sealed class DashboardViewModelTests
         return applied.Task;
     }
 
-    private static DashboardSnapshot Snapshot(string message, IReadOnlyList<MainThreadOption> mainThreads) => new(
+    private static DashboardSnapshot Snapshot(
+        string message,
+        IReadOnlyList<MainThreadOption> mainThreads,
+        QueryResult? result = null) => new(
         new CollectorStatus(
             CollectorPhase.Watching,
             "usage.sqlite",
@@ -322,7 +423,7 @@ public sealed class DashboardViewModelTests
             message,
             new CollectorDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0),
             0),
-        new QueryResult(
+        result ?? new QueryResult(
             new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, CostBreakdown.PricedZero),
             ImmutableArray<GroupRow>.Empty,
             ImmutableArray<RoleUsageRow>.Empty,
@@ -331,6 +432,23 @@ public sealed class DashboardViewModelTests
             ScanDiagnostics.Empty),
         mainThreads,
         new ProcessEfficiencyModeResult(ProcessExecutionMode.Efficiency, false, false, "Not attempted"));
+
+    private static UsageSummary Usage(
+        long uncachedInputTokens,
+        long cachedInputTokens,
+        long reasoningOutputTokens,
+        long otherOutputTokens,
+        CostBreakdown cost) => new(
+            Calls: 1,
+            InputTokens: checked(uncachedInputTokens + cachedInputTokens),
+            CachedInputTokens: cachedInputTokens,
+            UncachedInputTokens: uncachedInputTokens,
+            OutputTokens: checked(reasoningOutputTokens + otherOutputTokens),
+            ReasoningOutputTokens: reasoningOutputTokens,
+            OtherOutputTokens: otherOutputTokens,
+            CanonicalTotalTokens: checked(uncachedInputTokens + cachedInputTokens + reasoningOutputTokens + otherOutputTokens),
+            UnpricedTokens: 0,
+            Cost: cost);
 
     private sealed class InlineUiDispatcher : IUiDispatcher
     {

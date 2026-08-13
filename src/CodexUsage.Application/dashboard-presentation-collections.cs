@@ -31,104 +31,148 @@ public sealed class MetricCard(string label, string value) : DashboardPresentati
     public void UpdateFrom(MetricCard source) => Value = source.Value;
 }
 
-public sealed class CostSlice(string label, double percentage, string detail, string brushKey) : DashboardPresentationItem
+public enum DashboardCostCategory
 {
-    private double _percentage = percentage;
-    private string _detail = detail;
+    UncachedInput,
+    CachedInput,
+    ReasoningOutput,
+    OtherOutput,
+}
 
-    public string Label { get; } = label;
-    public double Percentage { get => _percentage; private set => SetValue(ref _percentage, value); }
-    public string Detail { get => _detail; private set => SetValue(ref _detail, value); }
+public enum CostPricingStatus
+{
+    Priced,
+    PartiallyPriced,
+    Unpriced,
+}
+
+public sealed class CostSlice(
+    DashboardCostCategory category,
+    string entityLabel,
+    decimal costAmount,
+    double entitySharePercentage,
+    double overallSharePercentage,
+    long tokenCount,
+    CostPricingStatus pricingStatus,
+    string brushKey) : DashboardPresentationItem
+{
+    private string _entityLabel = entityLabel;
+    private decimal _costAmount = costAmount;
+    private double _entitySharePercentage = entitySharePercentage;
+    private double _overallSharePercentage = overallSharePercentage;
+    private long _tokenCount = tokenCount;
+    private CostPricingStatus _pricingStatus = pricingStatus;
+
+    public DashboardCostCategory Category { get; } = category;
+    public string Label => DashboardCostCategoryPresentation.Label(Category);
+    public string EntityLabel { get => _entityLabel; private set => SetValue(ref _entityLabel, value); }
+    public decimal CostAmount { get => _costAmount; private set => SetValue(ref _costAmount, value); }
+    public string Cost => DashboardCostCategoryPresentation.FormatCost(CostAmount, PricingStatus);
+    public double EntitySharePercentage { get => _entitySharePercentage; private set => SetValue(ref _entitySharePercentage, value); }
+    public string EntityShare => DashboardCostCategoryPresentation.FormatPercentage(EntitySharePercentage, PricingStatus);
+    public double OverallSharePercentage { get => _overallSharePercentage; private set => SetValue(ref _overallSharePercentage, value); }
+    public string OverallShare => DashboardCostCategoryPresentation.FormatPercentage(OverallSharePercentage, PricingStatus);
+    public long TokenCount { get => _tokenCount; private set => SetValue(ref _tokenCount, value); }
+    public string Tokens => DashboardCostCategoryPresentation.FormatTokens(TokenCount);
+    public CostPricingStatus PricingStatus { get => _pricingStatus; private set => SetValue(ref _pricingStatus, value); }
+    public bool IsPriced => PricingStatus is not CostPricingStatus.Unpriced;
     public string BrushKey { get; } = brushKey;
+    public double Percentage => EntitySharePercentage;
+    public string ToolTipText => $"{EntityLabel} · {Label}\n费用  {Cost}\n占该实体费用  {EntityShare}\n占当前筛选总费用  {OverallShare}\ntokens  {Tokens}";
 
     public void UpdateFrom(CostSlice source)
     {
-        Percentage = source.Percentage;
-        Detail = source.Detail;
+        if (Category != source.Category)
+            throw new ArgumentException("Cost slices can only update from the same category.", nameof(source));
+        if (!string.Equals(BrushKey, source.BrushKey, StringComparison.Ordinal))
+            throw new ArgumentException("Cost slices can only update from the same brush.", nameof(source));
+
+        EntityLabel = source.EntityLabel;
+        CostAmount = source.CostAmount;
+        EntitySharePercentage = source.EntitySharePercentage;
+        OverallSharePercentage = source.OverallSharePercentage;
+        TokenCount = source.TokenCount;
+        PricingStatus = source.PricingStatus;
+        RaisePropertyChanged(nameof(Cost));
+        RaisePropertyChanged(nameof(EntityShare));
+        RaisePropertyChanged(nameof(OverallShare));
+        RaisePropertyChanged(nameof(Tokens));
+        RaisePropertyChanged(nameof(IsPriced));
+        RaisePropertyChanged(nameof(Percentage));
+        RaisePropertyChanged(nameof(ToolTipText));
     }
 }
 
 public sealed class ModelUsageRow(
     string model,
-    string totalTokens,
-    string uncachedInput,
-    string cachedInput,
-    string output,
-    string reasoningOutput,
     string cost,
-    string share) : DashboardPresentationItem
+    string share,
+    IReadOnlyList<CostSlice> costSlices) : DashboardPresentationItem
 {
-    private string _totalTokens = totalTokens;
-    private string _uncachedInput = uncachedInput;
-    private string _cachedInput = cachedInput;
-    private string _output = output;
-    private string _reasoningOutput = reasoningOutput;
     private string _cost = cost;
     private string _share = share;
+    private IReadOnlyList<CostSlice> _costSlices = [.. costSlices];
 
     public string Model { get; } = model;
-    public string TotalTokens { get => _totalTokens; private set => SetValue(ref _totalTokens, value); }
-    public string UncachedInput { get => _uncachedInput; private set => SetValue(ref _uncachedInput, value); }
-    public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
-    public string Output { get => _output; private set => SetValue(ref _output, value); }
-    public string ReasoningOutput { get => _reasoningOutput; private set => SetValue(ref _reasoningOutput, value); }
     public string Cost { get => _cost; private set => SetValue(ref _cost, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
+    public IReadOnlyList<CostSlice> CostSlices { get => _costSlices; private set => SetValue(ref _costSlices, value); }
 
     public void UpdateFrom(ModelUsageRow source)
     {
-        TotalTokens = source.TotalTokens;
-        UncachedInput = source.UncachedInput;
-        CachedInput = source.CachedInput;
-        Output = source.Output;
-        ReasoningOutput = source.ReasoningOutput;
         Cost = source.Cost;
         Share = source.Share;
+        CostSlices = [.. source.CostSlices];
     }
 }
 
+public enum SubjectUsageRowKind
+{
+    Role,
+    SubagentAggregate,
+}
+
 public sealed class SubjectUsageRow(
+    SubjectUsageRowKind kind,
+    string key,
     string threadType,
     string role,
-    string threadCount,
-    string totalTokens,
-    string uncachedInput,
-    string cachedInput,
-    string output,
-    string reasoningOutput,
     string cost,
-    string share) : DashboardPresentationItem
+    string share,
+    IReadOnlyList<CostSlice> costSlices) : DashboardPresentationItem
 {
-    private string _threadCount = threadCount;
-    private string _totalTokens = totalTokens;
-    private string _uncachedInput = uncachedInput;
-    private string _cachedInput = cachedInput;
-    private string _output = output;
-    private string _reasoningOutput = reasoningOutput;
+    private string _threadType = threadType;
+    private string _role = role;
     private string _cost = cost;
     private string _share = share;
+    private IReadOnlyList<CostSlice> _costSlices = [.. costSlices];
 
-    public string ThreadType { get; } = threadType;
-    public string Role { get; } = role;
-    public string ThreadCount { get => _threadCount; private set => SetValue(ref _threadCount, value); }
-    public string TotalTokens { get => _totalTokens; private set => SetValue(ref _totalTokens, value); }
-    public string UncachedInput { get => _uncachedInput; private set => SetValue(ref _uncachedInput, value); }
-    public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
-    public string Output { get => _output; private set => SetValue(ref _output, value); }
-    public string ReasoningOutput { get => _reasoningOutput; private set => SetValue(ref _reasoningOutput, value); }
+    public SubjectUsageRowKind Kind { get; } = kind;
+    public string Key { get; } = key;
+    public string ThreadType { get => _threadType; private set => SetValue(ref _threadType, value); }
+    public string Role { get => _role; private set => SetValue(ref _role, value); }
+    public string DisplayName => Kind switch
+    {
+        SubjectUsageRowKind.SubagentAggregate => "子代理合计",
+        _ when string.Equals(ThreadType, "子代理", StringComparison.Ordinal) => Role,
+        _ => $"{ThreadType} · {Role}",
+    };
     public string Cost { get => _cost; private set => SetValue(ref _cost, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
+    public IReadOnlyList<CostSlice> CostSlices { get => _costSlices; private set => SetValue(ref _costSlices, value); }
 
     public void UpdateFrom(SubjectUsageRow source)
     {
-        ThreadCount = source.ThreadCount;
-        TotalTokens = source.TotalTokens;
-        UncachedInput = source.UncachedInput;
-        CachedInput = source.CachedInput;
-        Output = source.Output;
-        ReasoningOutput = source.ReasoningOutput;
+        if (Kind != source.Kind || !string.Equals(Key, source.Key, StringComparison.Ordinal))
+            throw new ArgumentException("Subject rows can only update from the same identity.", nameof(source));
+
+        var displayNameChanged = ThreadType != source.ThreadType || Role != source.Role;
+        ThreadType = source.ThreadType;
+        Role = source.Role;
+        if (displayNameChanged) RaisePropertyChanged(nameof(DisplayName));
         Cost = source.Cost;
         Share = source.Share;
+        CostSlices = [.. source.CostSlices];
     }
 }
 
@@ -245,10 +289,10 @@ public sealed class DashboardPresentationCollections
         };
         CostSlices = new ObservableCollection<CostSlice>
         {
-            new("无缓存输入", 0, "0.0%", "PrimaryBrush"),
-            new("缓存输入", 0, "0.0%", "SuccessBrush"),
-            new("思考输出", 0, "0.0%", "WarningBrush"),
-            new("其他输出", 0, "0.0%", "PurpleBrush"),
+            new(DashboardCostCategory.UncachedInput, "总费用", 0, 0, 0, 0, CostPricingStatus.Priced, "PrimaryBrush"),
+            new(DashboardCostCategory.CachedInput, "总费用", 0, 0, 0, 0, CostPricingStatus.Priced, "SuccessBrush"),
+            new(DashboardCostCategory.ReasoningOutput, "总费用", 0, 0, 0, 0, CostPricingStatus.Priced, "WarningBrush"),
+            new(DashboardCostCategory.OtherOutput, "总费用", 0, 0, 0, 0, CostPricingStatus.Priced, "PurpleBrush"),
         };
         Models = [];
         Subjects = [];
@@ -270,9 +314,9 @@ public sealed class DashboardPresentationCollections
         ArgumentNullException.ThrowIfNull(input);
 
         return WouldSynchronizeRows(Metrics, input.Metrics, static value => value.Label)
-            || WouldSynchronizeRows(CostSlices, input.CostSlices, static value => value.Label)
+            || WouldSynchronizeRows(CostSlices, input.CostSlices, static value => value.Category)
             || WouldSynchronizeRows(Models, input.Models, static value => value.Model)
-            || WouldSynchronizeRows(Subjects, input.Subjects, static value => (value.ThreadType, value.Role))
+            || WouldSynchronizeRows(Subjects, input.Subjects, static value => value.Key)
             || WouldSynchronizeRows(Diagnostics, input.Diagnostics, static value => value.Label)
             || WouldSynchronizeRows(ModelOptions, input.ModelOptions, static value => value.Model)
             || WouldSynchronizeRows(AgentOptions, input.AgentOptions, static value => value.Subject);
@@ -283,9 +327,9 @@ public sealed class DashboardPresentationCollections
         ArgumentNullException.ThrowIfNull(input);
         var hasStructuralChanges = false;
         hasStructuralChanges |= SynchronizeRows(Metrics, input.Metrics, static value => value.Label, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
-        hasStructuralChanges |= SynchronizeRows(CostSlices, input.CostSlices, static value => value.Label, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
+        hasStructuralChanges |= SynchronizeRows(CostSlices, input.CostSlices, static value => value.Category, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(Models, input.Models, static value => value.Model, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
-        hasStructuralChanges |= SynchronizeRows(Subjects, input.Subjects, static value => (value.ThreadType, value.Role), static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
+        hasStructuralChanges |= SynchronizeRows(Subjects, input.Subjects, static value => value.Key, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(Diagnostics, input.Diagnostics, static value => value.Label, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(ModelOptions, input.ModelOptions, static value => value.Model, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(AgentOptions, input.AgentOptions, static value => value.Subject, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;

@@ -11,7 +11,7 @@ dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 $sevenZip = 'C:\Tools\7-Zip\7za.exe'
 $sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.15 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.16 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
 git diff --check
 ```
 
@@ -40,7 +40,7 @@ git diff --check
 | Conflict recovery | 仅在 fixture source 中构造 Equal、Extension、ID change 和 unsafe candidate | stable metadata-exact Equal/Extension 确定性恢复;unsafe 保留最后有效 ledger、记录内部 degraded/diagnostic 并重试;GUI 无 source conflict |
 | Filters | 独立切换 model/role/main-thread/time;从下拉选择、手动输入完整 UUIDv7 session ID,再清空主线程筛选 | facet 不互相错误移除,range 使用 `[startUtc,endUtc)`;下拉仅有最近活动时间倒序的 20 项,按 `项目名 - 短 ID - 标题` 显示;项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`,并以主线程 `ConversationId` 为根归集全部子代理 event |
 | Cost | 检查含 reasoning output 的 event | reasoning 与 other output 对 output cost 只计一次 |
-| Responsive UI | 检查 900x720 minimum、Compact、Medium、Wide、short height 和 high DPI | 四个顶层筛选各一行,页面单一纵向滚动,table 独立横向滚动,无 clipping;1000/1280 切换 layout,1440 切换 table 并排 |
+| Responsive UI | 检查 900x720 minimum、1000 DIP 阈值、short height 和 high DPI | 筛选区在一行和两行之间切换;总体费用构成独占一行并常驻显示四色占比;模型与执行主体卡在 1000 DIP 切换并排和上下堆叠;整条费用构成 hover/focus 时显示四色占比;页面单一纵向滚动且无 clipping 或横向明细表 |
 | Read-only boundary | 监视真实 source metadata | 无 lock、write、rename、delete、truncate 或 repair |
 
 不要在真实 smoke 中 append、partially write、move、delete 或 rename rollout JSONL,也不要修改 `%USERPROFILE%\.codex\agents`.这些 mutation scenario 只属于 fixture test.

@@ -45,7 +45,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private string _healthStatusText = "正在启动";
     private string _lastReconciliationText = "—";
     private string _sourceFilesText = "0";
-    private string _realtimeVoiceSessionsText = "0";
     private string _retryQueueText = "0";
     private string _watcherStatusText = "启动中";
     private string _headerStatusText = "正在启动";
@@ -278,7 +277,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     public string HealthStatusText { get => _healthStatusText; private set => SetProperty(ref _healthStatusText, value); }
     public string LastReconciliationText { get => _lastReconciliationText; private set => SetProperty(ref _lastReconciliationText, value); }
     public string SourceFilesText { get => _sourceFilesText; private set => SetProperty(ref _sourceFilesText, value); }
-    public string RealtimeVoiceSessionsText { get => _realtimeVoiceSessionsText; private set => SetProperty(ref _realtimeVoiceSessionsText, value); }
     public string RetryQueueText { get => _retryQueueText; private set => SetProperty(ref _retryQueueText, value); }
     public string WatcherStatusText { get => _watcherStatusText; private set => SetProperty(ref _watcherStatusText, value); }
     public string HeaderStatusText { get => _headerStatusText; private set => SetProperty(ref _headerStatusText, value); }
@@ -768,30 +766,21 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 new("输出", FormatTokens(summary.OutputTokens)), new("未定价", FormatTokens(summary.UnpricedTokens)),
                 new("费用", FormatCost(summary.Cost.Total)),
             ],
-            DashboardCostComposition.From(summary.Cost),
+            DashboardCostComposition.From(summary, totalCost, "总费用"),
             snapshot.Result.ByModel
                 .OrderBy(row => ModelDisplayOrder(row.Key[0]))
                 .ThenBy(row => row.Key[0], StringComparer.Ordinal)
                 .Select(row =>
                 {
-                    var cost = DashboardModelCostPresentation.From(
-                        row.Summary.Cost.Total,
-                        totalCost,
-                        row.Summary.UnpricedTokens == 0);
+                    var cost = DashboardCostPresentation.From(row.Summary, totalCost);
                     return new ModelUsageRow(
-                        row.Key[0], FormatTokens(row.Summary.CanonicalTotalTokens), FormatTokens(row.Summary.UncachedInputTokens),
-                        FormatTokens(row.Summary.CachedInputTokens), FormatTokens(row.Summary.OutputTokens),
-                        FormatTokens(row.Summary.ReasoningOutputTokens), cost.Cost, cost.Share);
+                        row.Key[0],
+                        cost.Cost,
+                        cost.Share,
+                        DashboardCostComposition.From(row.Summary, totalCost, row.Key[0]));
                 })
                 .ToArray(),
-            DashboardSubjectOrdering.SortByDescendingCost(snapshot.Result.ByRole)
-                .Select(row => new SubjectUsageRow(
-                    SubjectTypeLabel(UsageAccounting.ThreadTypeText(row.ThreadType)), row.AgentRole,
-                    row.ThreadCount.ToString("N0", CultureInfo.CurrentCulture), FormatTokens(row.Summary.CanonicalTotalTokens),
-                    FormatTokens(row.Summary.UncachedInputTokens), FormatTokens(row.Summary.CachedInputTokens),
-                    FormatTokens(row.Summary.OutputTokens), FormatTokens(row.Summary.ReasoningOutputTokens),
-                    FormatCost(row.Summary.Cost.Total), FormatPercentage(row.Summary.Cost.Total, totalCost)))
-                .ToArray(),
+            CreateSubjectRows(snapshot.Result.ByRole, totalCost),
             [
                 .. CreateStatusDiagnostics(),
                 CreatePlatformStatusDiagnostic(),
@@ -903,7 +892,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             ? reconciled.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture)
             : "—";
         SourceFilesText = status.FilesKnown.ToString("N0", CultureInfo.CurrentCulture);
-        RealtimeVoiceSessionsText = status.RealtimeVoiceSessions.ToString("N0", CultureInfo.CurrentCulture);
         RetryQueueText = status.PendingFiles.ToString("N0", CultureInfo.CurrentCulture);
         WatcherStatusText = status.Phase switch
         {
@@ -1180,7 +1168,53 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    private static string FormatPercentage(decimal value, decimal total) => total > 0 ? $"{value / total:P1}" : "0.0%";
+    private static IReadOnlyList<SubjectUsageRow> CreateSubjectRows(
+        IEnumerable<RoleUsageRow> source,
+        decimal overallTotalCost)
+    {
+        var rows = source.ToArray();
+        var subjects = new List<SubjectUsageRow>(rows.Length + 1);
+        AddSubjectRows(subjects, rows.Where(row => row.ThreadType == ThreadType.Main), overallTotalCost);
+
+        var aggregate = DashboardSubagentAggregation.From(rows);
+        if (aggregate is not null)
+        {
+            var aggregateCost = DashboardCostPresentation.From(aggregate.Summary, overallTotalCost);
+            subjects.Add(new SubjectUsageRow(
+                SubjectUsageRowKind.SubagentAggregate,
+                "subagent-aggregate",
+                "子代理",
+                "合计",
+                aggregateCost.Cost,
+                aggregateCost.Share,
+                DashboardCostComposition.From(aggregate.Summary, overallTotalCost, "子代理合计")));
+        }
+
+        AddSubjectRows(subjects, rows.Where(row => row.ThreadType == ThreadType.Subagent), overallTotalCost);
+        AddSubjectRows(subjects, rows.Where(row => row.ThreadType == ThreadType.Unknown), overallTotalCost);
+        return subjects;
+    }
+
+    private static void AddSubjectRows(
+        ICollection<SubjectUsageRow> target,
+        IEnumerable<RoleUsageRow> source,
+        decimal overallTotalCost)
+    {
+        foreach (var row in DashboardSubjectOrdering.SortByDescendingCost(source))
+        {
+            var cost = DashboardCostPresentation.From(row.Summary, overallTotalCost);
+            var threadType = SubjectTypeLabel(UsageAccounting.ThreadTypeText(row.ThreadType));
+            target.Add(new SubjectUsageRow(
+                SubjectUsageRowKind.Role,
+                $"role:{row.ThreadType}:{row.AgentRole}",
+                threadType,
+                row.AgentRole,
+                cost.Cost,
+                cost.Share,
+                DashboardCostComposition.From(row.Summary, overallTotalCost, $"{threadType} · {row.AgentRole}")));
+        }
+    }
+
     private static string FormatCost(decimal value) => $"${value:N1}";
     private static int ModelDisplayOrder(string model) => model switch
     {
