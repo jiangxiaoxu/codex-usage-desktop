@@ -375,7 +375,7 @@
                                     <DataTemplate>
                                         <Border Padding="12,6" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1,0,0">
                                             <StackPanel Spacing="2">
-                                                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+                                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                                                     <TextBlock
                                                         AutomationProperties.Name="{Binding Model}"
                                                         FontSize="15"
@@ -386,12 +386,6 @@
                                                         ToolTipService.ToolTip="{Binding Model}" />
                                                     <TextBlock
                                                         Grid.Column="1"
-                                                        FontSize="15"
-                                                        FontWeight="SemiBold"
-                                                        Foreground="{StaticResource PrimaryTextBrush}"
-                                                        Text="{Binding Cost}" />
-                                                    <TextBlock
-                                                        Grid.Column="2"
                                                         Foreground="{StaticResource SecondaryTextBrush}"
                                                         Text="{Binding Share}" />
                                                 </Grid>
@@ -431,7 +425,7 @@
                                                 <StackPanel
                                                     Margin="{Binding Converter={StaticResource SubjectTreeChildConverter}}"
                                                     Spacing="2">
-                                                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+                                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                                                     <TextBlock
                                                         AutomationProperties.Name="{Binding DisplayName}"
                                                         FontSize="15"
@@ -442,12 +436,6 @@
                                                         ToolTipService.ToolTip="{Binding DisplayName}" />
                                                     <TextBlock
                                                         Grid.Column="1"
-                                                        FontSize="15"
-                                                        FontWeight="SemiBold"
-                                                        Foreground="{StaticResource PrimaryTextBrush}"
-                                                        Text="{Binding Cost}" />
-                                                    <TextBlock
-                                                        Grid.Column="2"
                                                         Foreground="{StaticResource SecondaryTextBrush}"
                                                         Text="{Binding Share}" />
                                                 </Grid>

@@ -19,10 +19,10 @@ Unicode true
   !error "APP_ICON_FILE is required"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.17"
+  !define PRODUCT_VERSION "0.3.18"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.17.0"
+  !define PRODUCT_FILE_VERSION "0.3.18.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"

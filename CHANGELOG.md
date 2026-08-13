@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.18] - 2026-08-13
+
+- Removed dollar amounts from model and execution-subject cost-composition rows; they now show only their shares of the current filtered total. The overall total-cost amount remains visible.
+
 ## [0.3.17] - 2026-08-13
 
 - Restored the dashboard's four-part filter layout to avoid an overly compressed control strip while retaining the compact cost-composition dashboard.
