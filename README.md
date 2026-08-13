@@ -24,7 +24,7 @@ CodexUsageDesktop.sln           solution entry
 - 每 5 分钟运行一次兜底 inventory reconciliation.目录枚举、解析和 hashing 被拆成小片并 cooperative yield,以降低后台 CPU 峰值.
 - canonical active/archive promotion 不重复计费.稳定候选只有在 metadata exact 且 semantic relation 为 `Equal` 或 `Extension` 时才可自动恢复;恢复只更新应用 ledger,不会修改 Codex source.
 - 按 model、实际 role、主线程和时间范围筛选并汇总 token 与费用.主线程 `AutoSuggestBox` 最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.也可手动输入完整 UUIDv7 session ID 或使用清空按钮取消筛选.合法输入会规范化;非空非法输入显示红色验证状态并保留已应用的筛选.筛选以精确的主线程 `ConversationId` 为根,归集其全部子代理 event.
-- Dashboard 采用横向优先的紧凑布局.宽窗口将时间、model、执行主体、主线程、日期和重置集中在一行,较窄窗口改为两行.总体费用构成独占一行,四色费用占比常驻显示;模型和执行主体卡片按行显示费用、对当前筛选总费用占比及四色费用构成,不再使用横向滚动长表.仅当 dashboard content 的可用宽度至少为 `1000 DIP` 时两张卡片并排显示,低于此阈值上下堆叠,不依赖窗口宽高比.
+- Dashboard 采用紧凑费用构成布局.筛选区由时间范围、model、执行主体和主线程四个独立行组成;窄窗口仅标签列自适应且 chips 换行.总体费用构成独占一行,四色费用占比常驻显示;模型和执行主体卡片按行显示费用、对当前筛选总费用占比及四色费用构成,不再使用横向滚动长表.仅当 dashboard content 的可用宽度至少为 `1000 DIP` 时两张卡片并排显示,低于此阈值上下堆叠,不依赖窗口宽高比.
 - 执行主体卡显示实际 `root`、子代理合计和缩进的各子代理 role.模型和执行主体的整条费用构成在 hover 或键盘 focus 时显示该条四色占比.
 - `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.`codex-auto-review` 保持独立未定价分类并计入未定价 tokens,其余 GPT-5.4、GPT-5.5、GPT-5.6 之外的 model 归入未计费的 `Others`,`source_model=unknown` 保持独立 attribution.
 

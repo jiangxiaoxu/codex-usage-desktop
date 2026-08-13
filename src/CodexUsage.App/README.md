@@ -7,8 +7,8 @@ The collector reuses `%LOCALAPPDATA%\Codex Usage Desktop\usage.sqlite`. `CODEX_U
 ## Design contract
 
 - The minimum AppWindow size is 900x720 effective pixels.
-- The dashboard uses a compact horizontal-first layout. Filter controls use one or two rows according to available width. Model and execution-subject cards display side by side at 1000 DIP available dashboard width or above, and stack below that threshold.
-- `AuditFilterContent` is a full-width filter surface in the page scroll owner. It presents time,model,subject and main-thread filters without a persistent filter pane.
+- The dashboard uses a compact cost-composition layout. Its four independent filter rows are time range,model,subject and main thread; at narrow widths only the label column adapts and chips wrap. Model and execution-subject cards display side by side at 1000 DIP available dashboard width or above, and stack below that threshold.
+- `AuditFilterContent` is a full-width filter surface in the page scroll owner. It presents the four independent filter rows without a persistent filter pane.
 - The main-thread filter is an `AutoSuggestBox`: it offers at most 20 recent main threads ordered by activity and shows `project name - ID prefix - title`. The project name is the main session `session_meta.cwd` directory name and the title is the authoritative `thread_name` in `session_index.jsonl`. It accepts a complete UUIDv7 session ID, normalizes valid input, shows a red validation state for nonempty invalid input without clearing the applied filter, and has a dedicated clear action. Filtering uses an exact main `ConversationId` as the root and includes all descendant-agent events.
 - The overall cost composition occupies its own row and keeps its four percentages visible. Model and execution-subject cost-composition bars reveal their four percentages on whole-bar hover or keyboard focus. The execution-subject hierarchy keeps subagent roles indented under the synthetic subagent total. The page owns the only vertical scroll container.
 

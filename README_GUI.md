@@ -63,7 +63,7 @@ override 必须是受保护 Codex tree 以外的绝对可写目录.更新下载�
 - Native title bar 显示当前软件版本,版本号来自程序集 metadata.
 - Collector health 展示 watcher、offline gap、retry、reconciliation 和 ledger 状态,不展示 source conflict.
 - 最小窗口为 `900 x 720 DIP`.模型与执行主体卡片的排列只取决于 dashboard content 的可用宽度:至少 `1000 DIP` 时并排,低于此阈值时上下堆叠,不依赖窗口宽高比或显示比例.
-- 筛选区横向优先.宽窗口的一行依次提供时间、model 已选数量、执行主体已选数量、主线程、日期和重置;较窄窗口压为两行,不再让四个顶层筛选各占一行.主线程使用 `AutoSuggestBox`,最多显示最近活动时间倒序的 20 个选项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.可手动输入完整 UUIDv7 session ID,使用清空按钮取消筛选.合法输入会规范化;非空非法输入显示红色验证状态并保留已应用的筛选.筛选以精确的主线程 `ConversationId` 为根,归集全部子代理 event.model 顺序固定为 Sol、Terra、Luna、codex-auto-review、Others.
+- 筛选区由时间范围、model、执行主体和主线程四个独立行组成.窄窗口仅标签列自适应且 chips 换行.主线程使用 `AutoSuggestBox`,最多显示最近活动时间倒序的 20 个选项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.可手动输入完整 UUIDv7 session ID,使用清空按钮取消筛选.合法输入会规范化;非空非法输入显示红色验证状态并保留已应用的筛选.筛选以精确的主线程 `ConversationId` 为根,归集全部子代理 event.model 顺序固定为 Sol、Terra、Luna、codex-auto-review、Others.
 - 总体费用构成独占一行,其四色费用占比常驻显示.全局图例只显示一次,颜色固定表示无缓存输入、缓存输入、思考输出和其他输出.模型与执行主体使用紧凑费用构成卡,每行显示名称、费用、对当前筛选总费用的占比以及 8-10px 的四色条;不再显示旧 token 明细长表.
 - 执行主体卡先显示实际 `root`,再显示当前筛选结果的子代理合计,最后显示各子代理 role.无子代理时不显示合计行;unknown attribution 和未定价数据仍会显示.已知零费用显示 `$0.0`,未定价显示 `未定价/—`,不会伪造费用构成数值.
 - 模型与执行主体的整条费用构成支持 hover 和键盘 focus.激活时,条带下方显示该条四色费用占比;详情行预留空间,不会造成布局抖动.
