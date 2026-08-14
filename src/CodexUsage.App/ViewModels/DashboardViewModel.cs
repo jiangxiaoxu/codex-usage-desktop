@@ -45,7 +45,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private string _healthStatusText = "正在启动";
     private string _lastReconciliationText = "—";
     private string _sourceFilesText = "0";
-    private string _realtimeVoiceSessionsText = "0";
     private string _retryQueueText = "0";
     private string _watcherStatusText = "启动中";
     private string _headerStatusText = "正在启动";
@@ -278,7 +277,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     public string HealthStatusText { get => _healthStatusText; private set => SetProperty(ref _healthStatusText, value); }
     public string LastReconciliationText { get => _lastReconciliationText; private set => SetProperty(ref _lastReconciliationText, value); }
     public string SourceFilesText { get => _sourceFilesText; private set => SetProperty(ref _sourceFilesText, value); }
-    public string RealtimeVoiceSessionsText { get => _realtimeVoiceSessionsText; private set => SetProperty(ref _realtimeVoiceSessionsText, value); }
     public string RetryQueueText { get => _retryQueueText; private set => SetProperty(ref _retryQueueText, value); }
     public string WatcherStatusText { get => _watcherStatusText; private set => SetProperty(ref _watcherStatusText, value); }
     public string HeaderStatusText { get => _headerStatusText; private set => SetProperty(ref _headerStatusText, value); }
@@ -903,7 +901,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             ? reconciled.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture)
             : "—";
         SourceFilesText = status.FilesKnown.ToString("N0", CultureInfo.CurrentCulture);
-        RealtimeVoiceSessionsText = status.RealtimeVoiceSessions.ToString("N0", CultureInfo.CurrentCulture);
         RetryQueueText = status.PendingFiles.ToString("N0", CultureInfo.CurrentCulture);
         WatcherStatusText = status.Phase switch
         {

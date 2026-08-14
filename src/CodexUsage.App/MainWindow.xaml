@@ -263,35 +263,6 @@
                 </Border>
 
                 <Border
-                    Padding="14,10"
-                    Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource TableDividerBrush}"
-                    BorderThickness="0,1">
-                    <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
-                        <FontIcon
-                            VerticalAlignment="Center"
-                            FontSize="12"
-                            Foreground="{StaticResource PrimaryBrush}"
-                            Glyph="&#xE8D4;" />
-                        <TextBlock
-                            Grid.Column="1"
-                            VerticalAlignment="Center"
-                            FontSize="13"
-                            FontWeight="SemiBold"
-                            Foreground="{StaticResource PrimaryTextBrush}"
-                            Text="语音会话" />
-                        <TextBlock
-                            Grid.Column="2"
-                            VerticalAlignment="Center"
-                            FontSize="12"
-                            Foreground="{StaticResource SecondaryTextBrush}">
-                            <Run Text="{Binding RealtimeVoiceSessionsText}" />
-                            <Run Text=" · 无 token 明细 / 未计费" />
-                        </TextBlock>
-                    </Grid>
-                </Border>
-
-                <Border
                     x:Name="WideMetrics"
                     Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource TableDividerBrush}"

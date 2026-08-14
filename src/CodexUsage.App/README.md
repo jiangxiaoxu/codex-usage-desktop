@@ -22,12 +22,10 @@ dotnet build .\src\CodexUsage.App\CodexUsage.App.csproj -c Debug -p:Platform=x64
 The production application is unpackaged and self-contained. From the repository root, the supported installer build publishes the x64 payload with the repository's release properties and then compiles the NSIS definition:
 
 ```powershell
-$sevenZip = 'C:\Tools\7-Zip\7za.exe'
-$sevenZipRuntime = 'C:\Tools\7-Zip\7zr.exe'
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.15 -SevenZipPath $sevenZip -SevenZipRuntimePath $sevenZipRuntime
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.16 -AutoDetectDependencies
 ```
 
-The build requires local NSIS 3.x `makensis.exe` on PATH or in a standard NSIS installation directory,plus 7-Zip Extra `7za.exe` and `7zr.exe`; it does not download build tools. It creates and validates a 7-Zip LZMA2 payload before compiling the NSIS installer. The result is `release\winui-installer\codex-usage-desktop-setup-0.3.15-x64.exe`. It is an all-users installer under `%ProgramFiles%` and therefore requires UAC. It stops the running application before replacing the current WinUI payload. Uninstalling the WinUI payload does not remove the LocalAppData ledger by default.
+`-AutoDetectDependencies` finds the locally installed .NET 8 SDK, NSIS 3.x `makensis.exe`, and 7-Zip Extra `7za.exe` and `7zr.exe`; it does not download or install build tools. If 7-Zip Extra is in a non-standard directory, add `-DependencySearchDirectory 'D:\tools\7-Zip'`; pass multiple directories as an array separated by commas or as a semicolon-delimited string. It creates and validates a 7-Zip LZMA2 payload before compiling the NSIS installer. The result is `release\winui-installer\codex-usage-desktop-setup-0.3.16-x64.exe`. It is an all-users installer under `%ProgramFiles%` and therefore requires UAC. It stops the running application before replacing the current WinUI payload. Uninstalling the WinUI payload does not remove the LocalAppData ledger by default.
 
 The SHA-256-only experimental GitHub Release metadata check runs at startup and every six hours; it requires a strict repository, SemVer tag, one x64 installer asset and a matching GitHub digest. Before launch, the user confirms a warning and the application rechecks both the local SHA-256 and current update generation; NSIS then closes the application and collector.
 

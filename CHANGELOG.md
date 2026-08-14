@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.16] - 2026-08-14
+
+- Removed the realtime voice-session summary from the dashboard while retaining collector accounting and deduplication behavior.
+
 ## [0.3.15] - 2026-08-11
 
 - Stabilized main-thread filtering across refreshes and rapid query changes; recent choices retain full `ConversationId` identity.
