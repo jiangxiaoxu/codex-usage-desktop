@@ -317,37 +317,13 @@
                     Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1">
-                    <StackPanel Spacing="4">
+                    <StackPanel Spacing="8">
                         <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
                         <controls:CostCompositionBar
-                            DetailsAlwaysVisible="True"
                             VisualHeight="10"
                             Items="{Binding CostSlices}" />
                     </StackPanel>
                 </Border>
-
-                <controls:ChipWrapPanel
-                    Margin="0,0"
-                    HorizontalSpacing="14"
-                    VerticalSpacing="6">
-                    <TextBlock Style="{StaticResource CaptionStyle}" Text="费用构成（唯一图例）" />
-                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
-                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostUncachedBrush}" />
-                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[0].Label}" />
-                    </Grid>
-                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
-                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostCachedBrush}" />
-                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[1].Label}" />
-                    </Grid>
-                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
-                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostReasoningBrush}" />
-                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[2].Label}" />
-                    </Grid>
-                    <Grid ColumnDefinitions="10,Auto" ColumnSpacing="7">
-                        <Rectangle Width="10" Height="10" VerticalAlignment="Center" Fill="{StaticResource CostOtherBrush}" />
-                        <TextBlock Grid.Column="1" Style="{StaticResource CaptionStyle}" Text="{Binding CostSlices[3].Label}" />
-                    </Grid>
-                </controls:ChipWrapPanel>
 
                 <Grid x:Name="DashboardPanelGrid" ColumnSpacing="12" RowSpacing="12">
                     <Grid.RowDefinitions>

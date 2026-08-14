@@ -5,7 +5,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 
 namespace CodexUsage.App.Controls;
@@ -24,26 +23,13 @@ public sealed partial class CostCompositionBar : UserControl
         typeof(CostCompositionBar),
         new PropertyMetadata(8d, OnVisualHeightChanged));
 
-    public static readonly DependencyProperty DetailsAlwaysVisibleProperty = DependencyProperty.Register(
-        nameof(DetailsAlwaysVisible),
-        typeof(bool),
-        typeof(CostCompositionBar),
-        new PropertyMetadata(false, OnDetailsAlwaysVisibleChanged));
-
     private readonly List<CostSlice> _subscribedItems = [];
     private readonly List<SegmentVisual> _segmentVisuals = [];
     private INotifyCollectionChanged? _collection;
-    private bool _isPointerOver;
-    private bool _isFocused;
-    private bool _canExpand;
 
     public CostCompositionBar()
     {
         InitializeComponent();
-        InteractionSurface.PointerEntered += OnInteractionSurfacePointerEntered;
-        InteractionSurface.PointerExited += OnInteractionSurfacePointerExited;
-        InteractionSurface.GotFocus += OnInteractionSurfaceGotFocus;
-        InteractionSurface.LostFocus += OnInteractionSurfaceLostFocus;
         ApplyVisualHeight();
     }
 
@@ -59,31 +45,22 @@ public sealed partial class CostCompositionBar : UserControl
         set => SetValue(VisualHeightProperty, value);
     }
 
-    public bool DetailsAlwaysVisible
-    {
-        get => (bool)GetValue(DetailsAlwaysVisibleProperty);
-        set => SetValue(DetailsAlwaysVisibleProperty, value);
-    }
-
     private static void OnItemsChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args) =>
         ((CostCompositionBar)dependencyObject).SynchronizeItems();
 
     private static void OnVisualHeightChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args) =>
         ((CostCompositionBar)dependencyObject).ApplyVisualHeight();
 
-    private static void OnDetailsAlwaysVisibleChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args) =>
-        ((CostCompositionBar)dependencyObject).UpdateDetailVisibility();
-
     private void SynchronizeItems()
     {
         UpdateSubscriptions();
         var allItems = Items?.ToArray() ?? [];
-        _canExpand = allItems.Any(IsSelectable);
-        UpdateInteractionSurface();
+        UpdateTrackAccessibility(allItems);
 
         _segmentVisuals.Clear();
         SegmentsHost.Children.Clear();
         SegmentsHost.ColumnDefinitions.Clear();
+        LegendHost.Children.Clear();
         foreach (var item in allItems.Where(IsSelectable))
         {
             var percentage = Math.Max(0.0001, item.Percentage);
@@ -103,9 +80,12 @@ public sealed partial class CostCompositionBar : UserControl
             _segmentVisuals.Add(new SegmentVisual(item, color));
         }
 
+        foreach (var item in allItems)
+        {
+            LegendHost.Children.Add(CreateLegendChip(item));
+        }
+
         ApplyVisualHeight();
-        InlineDetail.Text = DetailText(allItems);
-        UpdateDetailVisibility();
     }
 
     private void UpdateSubscriptions()
@@ -129,51 +109,19 @@ public sealed partial class CostCompositionBar : UserControl
 
     private void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs args) => SynchronizeItems();
 
-    private void OnInteractionSurfacePointerEntered(object sender, PointerRoutedEventArgs args)
+    private void UpdateTrackAccessibility(IReadOnlyList<CostSlice> items)
     {
-        _isPointerOver = true;
-        UpdateDetailVisibility();
-    }
+        var hasItems = items.Count > 0;
+        var detail = hasItems
+            ? string.Join(Environment.NewLine + Environment.NewLine, items.Select(static item => item.ToolTipText))
+            : "当前没有费用构成数据。";
 
-    private void OnInteractionSurfacePointerExited(object sender, PointerRoutedEventArgs args)
-    {
-        _isPointerOver = false;
-        UpdateDetailVisibility();
-    }
-
-    private void OnInteractionSurfaceGotFocus(object sender, RoutedEventArgs args)
-    {
-        _isFocused = true;
-        UpdateDetailVisibility();
-    }
-
-    private void OnInteractionSurfaceLostFocus(object sender, RoutedEventArgs args)
-    {
-        _isFocused = false;
-        UpdateDetailVisibility();
-    }
-
-    private void UpdateInteractionSurface()
-    {
-        var isInteractive = !DetailsAlwaysVisible && _canExpand;
-        InteractionSurface.IsHitTestVisible = isInteractive;
-        InteractionSurface.IsTabStop = isInteractive;
+        InteractionSurface.IsHitTestVisible = hasItems;
+        InteractionSurface.IsTabStop = hasItems;
+        AutomationProperties.SetAccessibilityView(InteractionSurface, AccessibilityView.Content);
         AutomationProperties.SetName(InteractionSurface, "费用构成");
-        AutomationProperties.SetHelpText(
-            InteractionSurface,
-            isInteractive
-                ? "悬停或键盘聚焦可读取费用构成百分比。"
-                : "当前没有可计费的费用构成。");
-    }
-
-    private void UpdateDetailVisibility()
-    {
-        var isExpanded = DetailsAlwaysVisible || (_canExpand && (_isPointerOver || _isFocused));
-        InlineDetail.Opacity = isExpanded ? 1 : 0;
-        AutomationProperties.SetAccessibilityView(
-            InlineDetail,
-            isExpanded ? AccessibilityView.Content : AccessibilityView.Raw);
-        UpdateInteractionSurface();
+        AutomationProperties.SetHelpText(InteractionSurface, detail);
+        ToolTipService.SetToolTip(InteractionSurface, detail);
     }
 
     private void ApplyVisualHeight()
@@ -187,10 +135,50 @@ public sealed partial class CostCompositionBar : UserControl
 
     private static bool IsSelectable(CostSlice item) => item.IsPriced && item.CostAmount > 0;
 
-    private static string DetailText(IEnumerable<CostSlice> items) =>
-        string.Join(
-            " · ",
-            items.Select(item => $"{item.Label} {item.EntityShare}"));
+    private static Grid CreateLegendChip(CostSlice item)
+    {
+        var chip = new Grid
+        {
+            ColumnSpacing = 7,
+        };
+        chip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
+        chip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        chip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        AutomationProperties.SetName(chip, $"{item.Label} {item.EntityShare}");
+        AutomationProperties.SetAccessibilityView(chip, AccessibilityView.Content);
+        ToolTipService.SetToolTip(chip, item.ToolTipText);
+
+        var color = new Border
+        {
+            Width = 10,
+            Height = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = ResolveCategoryBrush(item.Category),
+            IsHitTestVisible = false,
+        };
+        AutomationProperties.SetAccessibilityView(color, AccessibilityView.Raw);
+
+        var label = new TextBlock
+        {
+            Style = Microsoft.UI.Xaml.Application.Current.Resources["CaptionStyle"] as Style,
+            Text = item.Label,
+        };
+        AutomationProperties.SetAccessibilityView(label, AccessibilityView.Raw);
+        Grid.SetColumn(label, 1);
+
+        var percentage = new TextBlock
+        {
+            Style = Microsoft.UI.Xaml.Application.Current.Resources["CaptionStyle"] as Style,
+            Text = item.EntityShare,
+        };
+        AutomationProperties.SetAccessibilityView(percentage, AccessibilityView.Raw);
+        Grid.SetColumn(percentage, 2);
+
+        chip.Children.Add(color);
+        chip.Children.Add(label);
+        chip.Children.Add(percentage);
+        return chip;
+    }
 
     private double NormalizeVisualHeight() => Math.Clamp(VisualHeight, 8, 10);
 

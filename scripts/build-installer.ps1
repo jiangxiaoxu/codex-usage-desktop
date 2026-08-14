@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.18',
+    [string]$Version = '0.3.21',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -14,6 +14,10 @@ param(
     [string]$SevenZipPath,
 
     [string]$SevenZipRuntimePath,
+
+    [switch]$AutoDetectDependencies,
+
+    [string[]]$DependencySearchDirectory = @(),
 
     [switch]$ValidateOnly
 )
@@ -111,6 +115,40 @@ function Publish-InstallerSetup {
 }
 
 function Find-MakeNsis {
+    param([string]$VerifiedPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($VerifiedPath)) {
+        $fullPath = [System.IO.Path]::GetFullPath($VerifiedPath)
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetFileName($fullPath),
+            'makensis.exe',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Auto-detected NSIS path must be makensis.exe: $fullPath"
+        }
+        if (-not [System.IO.File]::Exists($fullPath)) {
+            throw "Auto-detected NSIS executable was not found: $fullPath"
+        }
+
+        try {
+            $versionOutput = @(& $fullPath '/VERSION' 2>&1)
+        }
+        catch {
+            throw "Auto-detected NSIS executable could not be run: $fullPath"
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Auto-detected NSIS executable returned exit code ${LASTEXITCODE}: $fullPath"
+        }
+
+        $versionText = ($versionOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+        if (-not [System.Text.RegularExpressions.Regex]::IsMatch(
+            $versionText,
+            '(?<!\d)3\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9.]+)?(?!\d)')) {
+            throw "Auto-detected NSIS executable is not NSIS 3.x: $fullPath"
+        }
+
+        return $fullPath
+    }
+
     $command = Get-Command 'makensis.exe' -ErrorAction SilentlyContinue
     if ($null -ne $command) {
         return $command.Source
@@ -148,6 +186,92 @@ function Resolve-RequiredExecutable {
     }
 
     return $fullPath
+}
+
+function ConvertTo-DependencySearchDirectories {
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$Directories = @()
+    )
+
+    $normalizedDirectories = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $Directories) {
+        if ([string]::IsNullOrWhiteSpace($entry)) {
+            continue
+        }
+
+        foreach ($directory in $entry.Split(';', [System.StringSplitOptions]::RemoveEmptyEntries)) {
+            $trimmedDirectory = $directory.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmedDirectory)) {
+                continue
+            }
+
+            try {
+                $fullDirectory = [System.IO.Path]::TrimEndingDirectorySeparator(
+                    [System.IO.Path]::GetFullPath($trimmedDirectory))
+            }
+            catch {
+                continue
+            }
+
+            if ($seen.Add($fullDirectory)) {
+                $normalizedDirectories.Add($fullDirectory)
+            }
+        }
+    }
+
+    return $normalizedDirectories.ToArray()
+}
+
+function Resolve-AutoDetectedPackagingDependencies {
+    param(
+        [AllowEmptyString()]
+        [string]$BuilderPath,
+
+        [AllowEmptyString()]
+        [string]$RuntimePath,
+
+        [AllowEmptyCollection()]
+        [string[]]$SearchDirectories = @()
+    )
+
+    $dependencyLocator = Join-Path $PSScriptRoot 'find-release-packaging-dependencies.ps1'
+    if (-not [System.IO.File]::Exists($dependencyLocator)) {
+        throw "Release packaging dependency locator not found: $dependencyLocator"
+    }
+
+    $locatorArguments = @{
+        RequireAll = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BuilderPath)) {
+        $locatorArguments['SevenZipPath'] = $BuilderPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RuntimePath)) {
+        $locatorArguments['SevenZipRuntimePath'] = $RuntimePath
+    }
+    $normalizedSearchDirectories = [string[]]@(
+        ConvertTo-DependencySearchDirectories -Directories $SearchDirectories
+    )
+    if ($normalizedSearchDirectories.Count -gt 0) {
+        $locatorArguments['SearchDirectory'] = $normalizedSearchDirectories
+    }
+
+    $dependencies = & $dependencyLocator @locatorArguments
+    if ($null -eq $dependencies -or -not $dependencies.Ready -or
+        [string]::IsNullOrWhiteSpace($dependencies.DotnetPath) -or
+        [string]::IsNullOrWhiteSpace($dependencies.MakeNsisPath) -or
+        [string]::IsNullOrWhiteSpace($dependencies.SevenZipPath) -or
+        [string]::IsNullOrWhiteSpace($dependencies.SevenZipRuntimePath)) {
+        throw 'Release packaging dependency locator did not return ready packaging dependency paths.'
+    }
+
+    return [pscustomobject]@{
+        DotnetPath = [string]$dependencies.DotnetPath
+        MakeNsisPath = [string]$dependencies.MakeNsisPath
+        SevenZipPath = [string]$dependencies.SevenZipPath
+        SevenZipRuntimePath = [string]$dependencies.SevenZipRuntimePath
+    }
 }
 
 function Invoke-CheckedExecutable {
@@ -610,12 +734,47 @@ if (-not [System.IO.File]::Exists($appIconFile)) {
 }
 Assert-AppIcon -Path $appIconFile
 Assert-InstallerSafety -Path $installerScript
+
+$autoDetectedDependencies = $null
+if ($AutoDetectDependencies) {
+    $autoDetectedDependencies = Resolve-AutoDetectedPackagingDependencies `
+        -BuilderPath $SevenZipPath `
+        -RuntimePath $SevenZipRuntimePath `
+        -SearchDirectories $DependencySearchDirectory
+}
+
+$dotnetExecutable = if ($AutoDetectDependencies) {
+    $autoDetectedDependencies.DotnetPath
+}
+else {
+    'dotnet'
+}
+$verifiedMakeNsisPath = if ($AutoDetectDependencies) {
+    $autoDetectedDependencies.MakeNsisPath
+}
+else {
+    $null
+}
+
 if ($ValidateOnly) {
+    if ($AutoDetectDependencies) {
+        Write-Host "Auto-detected packaging dependencies: dotnet=$dotnetExecutable; makensis=$verifiedMakeNsisPath; 7za=$($autoDetectedDependencies.SevenZipPath); 7zr=$($autoDetectedDependencies.SevenZipRuntimePath)"
+    }
     Write-Host "Installer static validation passed: $installerScript"
     return
 }
-$sevenZipBuilder = Resolve-RequiredExecutable -Path $SevenZipPath -ParameterName 'SevenZipPath' -Description 'The x64 7za.exe compression tool'
-$sevenZipRuntime = Resolve-RequiredExecutable -Path $SevenZipRuntimePath -ParameterName 'SevenZipRuntimePath' -Description 'The 7zr.exe extraction tool to embed in the installer'
+$sevenZipBuilder = if ($AutoDetectDependencies) {
+    $autoDetectedDependencies.SevenZipPath
+}
+else {
+    Resolve-RequiredExecutable -Path $SevenZipPath -ParameterName 'SevenZipPath' -Description 'The x64 7za.exe compression tool'
+}
+$sevenZipRuntime = if ($AutoDetectDependencies) {
+    $autoDetectedDependencies.SevenZipRuntimePath
+}
+else {
+    Resolve-RequiredExecutable -Path $SevenZipRuntimePath -ParameterName 'SevenZipRuntimePath' -Description 'The 7zr.exe extraction tool to embed in the installer'
+}
 
 [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
 Reset-GeneratedDirectory -Path $publishDirectory
@@ -648,7 +807,7 @@ try {
     )
 
     Write-Host "Publishing unpackaged WinUI app to $publishDirectory"
-    & dotnet @publishArguments
+    & $dotnetExecutable @publishArguments
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -669,7 +828,7 @@ try {
     Write-Host "Payload archive size: $($payload.ArchiveSize) bytes"
     Write-Host "Payload compression elapsed: $($payload.CompressionElapsed)"
 
-    $makeNsis = Find-MakeNsis
+    $makeNsis = Find-MakeNsis -VerifiedPath $verifiedMakeNsisPath
     $fileVersion = "$Version.0"
     $makeNsisArguments = @(
         '/V3',

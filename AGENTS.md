@@ -50,7 +50,7 @@ dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 ```
 
-当本次交付包含 release packaging 时,在已准备 NSIS 3.x、`7za.exe` 和 `7zr.exe` 的环境中运行 `pwsh -NoProfile -File .\scripts\build-installer.ps1 ...`.文档,XAML 或 CSS 改动交付前,确认 `git diff --check` 通过.不自动执行 `git add` 或 `git commit`;暂存和提交由用户决定.
+当本次交付包含 release packaging 时,常规使用 `pwsh -NoProfile -File .\scripts\build-installer.ps1 -AutoDetectDependencies ...`.自动模式调用 `find-release-packaging-dependencies.ps1` 定位和验证本机依赖,并使用该脚本返回的 `dotnet.exe`,`makensis.exe`,`7za.exe` 和 `7zr.exe`.需要单独检查依赖或传递非标准目录时,运行 `pwsh -NoProfile -File .\scripts\find-release-packaging-dependencies.ps1 -SearchDirectory 'dir1;dir2'`,并将输出的 `SevenZipPath` 和 `SevenZipRuntimePath` 显式传给 `build-installer.ps1`,或运行 `pwsh -NoProfile -File .\scripts\build-installer.ps1 -AutoDetectDependencies -DependencySearchDirectory 'dir1;dir2' ...`.两个目录参数都接受以 Windows path separator `;` 分隔的单个字符串,会忽略空项并去重.该定位脚本不得下载,安装或递归扫描.文档,XAML 或 CSS 改动交付前,确认 `git diff --check` 通过.不自动执行 `git add` 或 `git commit`;暂存和提交由用户决定.
 
 ## 费用统计不变量
 

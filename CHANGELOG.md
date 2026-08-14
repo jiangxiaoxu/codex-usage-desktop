@@ -2,6 +2,18 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.21] - 2026-08-14
+
+- Distributed the cost-composition legend evenly across wide layouts and centered it in narrow layouts.
+
+## [0.3.20] - 2026-08-14
+
+- Unified the color-indicated cost-composition legend across total, by-model, and by-execution-subject views, replacing the former plain-text details.
+
+## [0.3.19] - 2026-08-14
+
+- Reworked the cost-composition legend with color indicators, labels, percentages, and responsive spacing.
+
 ## [0.3.18] - 2026-08-13
 
 - Removed dollar amounts from model and execution-subject cost-composition rows; they now show only their shares of the current filtered total. The overall total-cost amount remains visible.

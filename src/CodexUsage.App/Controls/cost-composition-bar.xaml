@@ -1,7 +1,8 @@
 <UserControl
     x:Class="CodexUsage.App.Controls.CostCompositionBar"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CodexUsage.App.Controls">
     <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="24" />
@@ -19,19 +20,16 @@
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Stretch"
                 Background="Transparent"
-                IsTabStop="True"
+                IsTabStop="False"
                 UseSystemFocusVisuals="True" />
         </Grid>
 
-        <TextBlock
-            x:Name="InlineDetail"
+        <controls:ChipWrapPanel
+            x:Name="LegendHost"
             Grid.Row="1"
-            MinHeight="18"
             Margin="0,0,0,1"
-            FontSize="12"
-            Foreground="{StaticResource SecondaryTextBrush}"
-            Opacity="0"
-            TextTrimming="CharacterEllipsis"
-            Visibility="Visible" />
+            HorizontalSpacing="28"
+            LineDistribution="EqualCells"
+            VerticalSpacing="8" />
     </Grid>
 </UserControl>
