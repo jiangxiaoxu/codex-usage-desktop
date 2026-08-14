@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.22] - 2026-08-14
+
+- Changed cost details to stable, click-to-expand two-line cards. Refreshes update their content without closing them automatically.
+
 ## [0.3.21] - 2026-08-14
 
 - Distributed the cost-composition legend evenly across wide layouts and centered it in narrow layouts.
