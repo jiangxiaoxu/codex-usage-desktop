@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.23] - 2026-08-14
+
+- Added compact token counts for every cost-composition detail item and row total, with a unified `token count · percentage` display order.
+
 ## [0.3.22] - 2026-08-14
 
 - Changed cost details to stable, click-to-expand two-line cards. Refreshes update their content without closing them automatically.

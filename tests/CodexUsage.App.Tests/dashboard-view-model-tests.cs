@@ -301,6 +301,7 @@ public sealed class DashboardViewModelTests
 
         var model = Assert.Single(viewModel.Models);
         Assert.Equal(("gpt-5.6-sol", "$150.0", "100.0%"), (model.Model, model.Cost, model.Share));
+        Assert.Equal("1.8K", model.TotalTokens);
         Assert.Collection(
             model.CostSlices,
             slice => Assert.Equal(("gpt-5.6-sol", "无缓存输入", 30m, 300L), (slice.EntityLabel, slice.Label, slice.CostAmount, slice.TokenCount)),
@@ -314,6 +315,7 @@ public sealed class DashboardViewModelTests
             {
                 Assert.Equal(SubjectUsageRowKind.Role, row.Kind);
                 Assert.Equal(("主线程", "root", "$100.0", "66.7%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal("1.1K", row.TotalTokens);
                 Assert.Equal(4, row.CostSlices.Count);
                 Assert.Equal(new decimal[] { 20m, 60m, 15m, 5m }, row.CostSlices.Select(slice => slice.CostAmount));
                 Assert.All(row.CostSlices, slice => Assert.Equal("主线程 · root", slice.EntityLabel));
@@ -322,6 +324,7 @@ public sealed class DashboardViewModelTests
             {
                 Assert.Equal(SubjectUsageRowKind.SubagentAggregate, row.Kind);
                 Assert.Equal(("子代理", "合计", "$50.0", "33.3%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal("600", row.TotalTokens);
                 Assert.Equal(new decimal[] { 10m, 30m, 5m, 5m }, row.CostSlices.Select(slice => slice.CostAmount));
                 Assert.All(row.CostSlices, slice => Assert.Equal("子代理合计", slice.EntityLabel));
             },
@@ -329,6 +332,7 @@ public sealed class DashboardViewModelTests
             {
                 Assert.Equal(SubjectUsageRowKind.Role, row.Kind);
                 Assert.Equal(("子代理", "worker", "$50.0", "33.3%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal("600", row.TotalTokens);
                 Assert.Equal(new decimal[] { 10m, 30m, 5m, 5m }, row.CostSlices.Select(slice => slice.CostAmount));
                 Assert.All(row.CostSlices, slice => Assert.Equal("子代理 · worker", slice.EntityLabel));
             },
@@ -336,6 +340,7 @@ public sealed class DashboardViewModelTests
             {
                 Assert.Equal(SubjectUsageRowKind.Role, row.Kind);
                 Assert.Equal(("unknown", "unknown", "$0.0", "0.0%"), (row.ThreadType, row.Role, row.Cost, row.Share));
+                Assert.Equal("0", row.TotalTokens);
                 Assert.Equal(4, row.CostSlices.Count);
             });
 

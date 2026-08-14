@@ -78,7 +78,7 @@ public sealed class CostSlice(
     public bool IsPriced => PricingStatus is not CostPricingStatus.Unpriced;
     public string BrushKey { get; } = brushKey;
     public double Percentage => EntitySharePercentage;
-    public string ToolTipText => $"{EntityLabel} · {Label}\n费用  {Cost}\n占该实体费用  {EntityShare}\n占当前筛选总费用  {OverallShare}\ntokens  {Tokens}";
+    public string ToolTipText => $"{EntityLabel} · {Label}\nToken 数  {Tokens}\n占该实体费用  {EntityShare}\n占当前筛选总费用  {OverallShare}\n费用  {Cost}";
 
     public void UpdateFrom(CostSlice source)
     {
@@ -105,24 +105,34 @@ public sealed class CostSlice(
 
 public sealed class ModelUsageRow(
     string model,
+    long canonicalTotalTokens,
     string cost,
     string share,
     IReadOnlyList<CostSlice> costSlices) : DashboardPresentationItem
 {
+    private long _canonicalTotalTokens = canonicalTotalTokens;
     private string _cost = cost;
     private string _share = share;
     private IReadOnlyList<CostSlice> _costSlices = [.. costSlices];
 
     public string Model { get; } = model;
+    public long CanonicalTotalTokens { get => _canonicalTotalTokens; private set => SetValue(ref _canonicalTotalTokens, value); }
+    public string TotalTokens => DashboardCostCategoryPresentation.FormatTokens(CanonicalTotalTokens);
+    public string TotalTokensAccessibilityName => $"总计 Token 数 {TotalTokens}, 费用占比 {Share}";
     public string Cost { get => _cost; private set => SetValue(ref _cost, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
     public IReadOnlyList<CostSlice> CostSlices { get => _costSlices; private set => SetValue(ref _costSlices, value); }
 
     public void UpdateFrom(ModelUsageRow source)
     {
+        var totalTokensChanged = CanonicalTotalTokens != source.CanonicalTotalTokens;
+        var shareChanged = !string.Equals(Share, source.Share, StringComparison.Ordinal);
+        CanonicalTotalTokens = source.CanonicalTotalTokens;
         Cost = source.Cost;
         Share = source.Share;
         CostSlices = [.. source.CostSlices];
+        if (totalTokensChanged) RaisePropertyChanged(nameof(TotalTokens));
+        if (totalTokensChanged || shareChanged) RaisePropertyChanged(nameof(TotalTokensAccessibilityName));
     }
 }
 
@@ -137,12 +147,14 @@ public sealed class SubjectUsageRow(
     string key,
     string threadType,
     string role,
+    long canonicalTotalTokens,
     string cost,
     string share,
     IReadOnlyList<CostSlice> costSlices) : DashboardPresentationItem
 {
     private string _threadType = threadType;
     private string _role = role;
+    private long _canonicalTotalTokens = canonicalTotalTokens;
     private string _cost = cost;
     private string _share = share;
     private IReadOnlyList<CostSlice> _costSlices = [.. costSlices];
@@ -157,6 +169,9 @@ public sealed class SubjectUsageRow(
         _ when string.Equals(ThreadType, "子代理", StringComparison.Ordinal) => Role,
         _ => $"{ThreadType} · {Role}",
     };
+    public long CanonicalTotalTokens { get => _canonicalTotalTokens; private set => SetValue(ref _canonicalTotalTokens, value); }
+    public string TotalTokens => DashboardCostCategoryPresentation.FormatTokens(CanonicalTotalTokens);
+    public string TotalTokensAccessibilityName => $"总计 Token 数 {TotalTokens}, 费用占比 {Share}";
     public string Cost { get => _cost; private set => SetValue(ref _cost, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
     public IReadOnlyList<CostSlice> CostSlices { get => _costSlices; private set => SetValue(ref _costSlices, value); }
@@ -167,12 +182,17 @@ public sealed class SubjectUsageRow(
             throw new ArgumentException("Subject rows can only update from the same identity.", nameof(source));
 
         var displayNameChanged = ThreadType != source.ThreadType || Role != source.Role;
+        var totalTokensChanged = CanonicalTotalTokens != source.CanonicalTotalTokens;
+        var shareChanged = !string.Equals(Share, source.Share, StringComparison.Ordinal);
         ThreadType = source.ThreadType;
         Role = source.Role;
         if (displayNameChanged) RaisePropertyChanged(nameof(DisplayName));
+        CanonicalTotalTokens = source.CanonicalTotalTokens;
         Cost = source.Cost;
         Share = source.Share;
         CostSlices = [.. source.CostSlices];
+        if (totalTokensChanged) RaisePropertyChanged(nameof(TotalTokens));
+        if (totalTokensChanged || shareChanged) RaisePropertyChanged(nameof(TotalTokensAccessibilityName));
     }
 }
 

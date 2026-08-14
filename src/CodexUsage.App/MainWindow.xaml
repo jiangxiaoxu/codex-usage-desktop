@@ -362,8 +362,13 @@
                                                         ToolTipService.ToolTip="{Binding Model}" />
                                                     <TextBlock
                                                         Grid.Column="1"
-                                                        Foreground="{StaticResource SecondaryTextBrush}"
-                                                        Text="{Binding Share}" />
+                                                        AutomationProperties.Name="{Binding TotalTokensAccessibilityName}"
+                                                        Foreground="{StaticResource SecondaryTextBrush}">
+                                                        <Run Text="总计 " />
+                                                        <Run Text="{Binding TotalTokens}" />
+                                                        <Run Text="&#x2003;·&#x2003;" />
+                                                        <Run Text="{Binding Share}" />
+                                                    </TextBlock>
                                                 </Grid>
                                                 <controls:CostCompositionBar
                                                     VisualHeight="10"
@@ -412,8 +417,13 @@
                                                         ToolTipService.ToolTip="{Binding DisplayName}" />
                                                     <TextBlock
                                                         Grid.Column="1"
-                                                        Foreground="{StaticResource SecondaryTextBrush}"
-                                                        Text="{Binding Share}" />
+                                                        AutomationProperties.Name="{Binding TotalTokensAccessibilityName}"
+                                                        Foreground="{StaticResource SecondaryTextBrush}">
+                                                        <Run Text="总计 " />
+                                                        <Run Text="{Binding TotalTokens}" />
+                                                        <Run Text="&#x2003;·&#x2003;" />
+                                                        <Run Text="{Binding Share}" />
+                                                    </TextBlock>
                                                 </Grid>
                                                 <controls:CostCompositionBar
                                                     VisualHeight="10"

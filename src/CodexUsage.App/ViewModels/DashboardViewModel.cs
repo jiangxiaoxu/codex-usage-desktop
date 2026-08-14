@@ -762,8 +762,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var totalCost = summary.Cost.Total;
         var input = new DashboardPresentationInput(
             [
-                new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
-                new("输出", FormatTokens(summary.OutputTokens)), new("未定价", FormatTokens(summary.UnpricedTokens)),
+                new("总 tokens", DashboardCostCategoryPresentation.FormatTokens(summary.CanonicalTotalTokens)), new("输入", DashboardCostCategoryPresentation.FormatTokens(summary.InputTokens)),
+                new("输出", DashboardCostCategoryPresentation.FormatTokens(summary.OutputTokens)), new("未定价", DashboardCostCategoryPresentation.FormatTokens(summary.UnpricedTokens)),
                 new("费用", FormatCost(summary.Cost.Total)),
             ],
             DashboardCostComposition.From(summary, totalCost, "总费用"),
@@ -775,6 +775,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                     var cost = DashboardCostPresentation.From(row.Summary, totalCost);
                     return new ModelUsageRow(
                         row.Key[0],
+                        row.Summary.CanonicalTotalTokens,
                         cost.Cost,
                         cost.Share,
                         DashboardCostComposition.From(row.Summary, totalCost, row.Key[0]));
@@ -1185,6 +1186,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 "subagent-aggregate",
                 "子代理",
                 "合计",
+                aggregate.Summary.CanonicalTotalTokens,
                 aggregateCost.Cost,
                 aggregateCost.Share,
                 DashboardCostComposition.From(aggregate.Summary, overallTotalCost, "子代理合计")));
@@ -1209,6 +1211,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 $"role:{row.ThreadType}:{row.AgentRole}",
                 threadType,
                 row.AgentRole,
+                row.Summary.CanonicalTotalTokens,
                 cost.Cost,
                 cost.Share,
                 DashboardCostComposition.From(row.Summary, overallTotalCost, $"{threadType} · {row.AgentRole}")));
@@ -1231,14 +1234,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         "main" => "主线程",
         "subagent" => "子代理",
         _ => threadType,
-    };
-
-    private static string FormatTokens(long value) => value switch
-    {
-        >= 1_000_000_000 => $"{value / 1_000_000_000d:F1}B",
-        >= 1_000_000 => $"{value / 1_000_000d:F1}M",
-        >= 1_000 => $"{value / 1_000d:F1}K",
-        _ => value.ToString("N0", CultureInfo.CurrentCulture),
     };
 
 }

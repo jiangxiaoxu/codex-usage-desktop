@@ -143,7 +143,7 @@ public sealed partial class CostCompositionBar : UserControl
         var detail = string.Join(
             Environment.NewLine,
             items.Select(static item =>
-                $"{item.EntityLabel} · {item.Label}; 费用 {item.Cost}; 实体 {item.EntityShare}; 筛选 {item.OverallShare}; tokens {item.Tokens}"));
+                $"{item.EntityLabel} · {item.Label}; Token 数 {item.Tokens}; 实体 {item.EntityShare}; 筛选 {item.OverallShare}; 费用 {item.Cost}"));
 
         InteractionSurface.IsEnabled = isAvailable;
         InteractionSurface.IsTabStop = isAvailable;
@@ -205,7 +205,7 @@ public sealed partial class CostCompositionBar : UserControl
         chip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
         chip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         chip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        AutomationProperties.SetName(chip, $"{item.Label} {item.EntityShare}");
+        AutomationProperties.SetName(chip, $"{item.Label}, Token 数 {item.Tokens}, {item.EntityShare}");
         AutomationProperties.SetAccessibilityView(chip, AccessibilityView.Content);
 
         var color = new Border
@@ -229,7 +229,7 @@ public sealed partial class CostCompositionBar : UserControl
         var percentage = new TextBlock
         {
             Style = Microsoft.UI.Xaml.Application.Current.Resources["CaptionStyle"] as Style,
-            Text = item.EntityShare,
+            Text = $"{item.Tokens}\u2003·\u2003{item.EntityShare}",
         };
         AutomationProperties.SetAccessibilityView(percentage, AccessibilityView.Raw);
         Grid.SetColumn(percentage, 2);
@@ -253,7 +253,7 @@ public sealed partial class CostCompositionBar : UserControl
         AutomationProperties.SetAccessibilityView(card, AccessibilityView.Content);
         AutomationProperties.SetName(
             card,
-            $"{item.EntityLabel} · {item.Label}; 费用 {item.Cost}; 实体 {item.EntityShare}; 筛选 {item.OverallShare}; tokens {item.Tokens}");
+            $"{item.EntityLabel} · {item.Label}; Token 数 {item.Tokens}; 实体 {item.EntityShare}; 筛选 {item.OverallShare}; 费用 {item.Cost}");
 
         var content = new Grid
         {
@@ -298,13 +298,13 @@ public sealed partial class CostCompositionBar : UserControl
         var detail = new TextBlock
         {
             Style = Microsoft.UI.Xaml.Application.Current.Resources["CaptionStyle"] as Style,
-            Text = $"实体 {item.EntityShare} · 筛选 {item.OverallShare} · tokens {item.Tokens}",
+            Text = $"{item.Tokens}\u2003·\u2003实体 {item.EntityShare} · 筛选 {item.OverallShare}",
             TextWrapping = TextWrapping.NoWrap,
         };
         AutomationProperties.SetAccessibilityView(detail, AccessibilityView.Content);
         AutomationProperties.SetName(
             detail,
-            $"{item.EntityLabel} · {item.Label}; 费用 {item.Cost}; 实体 {item.EntityShare}; 筛选 {item.OverallShare}; tokens {item.Tokens}");
+            $"{item.EntityLabel} · {item.Label}; Token 数 {item.Tokens}; 实体 {item.EntityShare}; 筛选 {item.OverallShare}; 费用 {item.Cost}");
         Grid.SetRow(detail, 1);
         Grid.SetColumnSpan(detail, 4);
 

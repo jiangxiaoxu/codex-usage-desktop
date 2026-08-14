@@ -414,6 +414,7 @@ public sealed class DashboardPresentationTests
                 "role:Subagent:worker",
                 "子代理",
                 "worker",
+                1_200,
                 "$10.0",
                 "10.0%",
                 CreateTestSlices("子代理 · worker", "subagent")),
@@ -422,6 +423,7 @@ public sealed class DashboardPresentationTests
                 "role:Unknown:worker",
                 "unknown",
                 "worker",
+                800,
                 "$5.0",
                 "5.0%",
                 CreateTestSlices("unknown · worker", "unknown")),
@@ -475,7 +477,11 @@ public sealed class DashboardPresentationTests
         var modelOption = collections.ModelOptions[0];
         var agentOption = collections.AgentOptions[0];
         var collectionChanges = new List<NotifyCollectionChangedAction>();
+        var modelPropertyChanges = new List<string?>();
+        var subjectPropertyChanges = new List<string?>();
         SubscribeToAllCollectionChanges(collections, collectionChanges);
+        model.PropertyChanged += (_, args) => modelPropertyChanges.Add(args.PropertyName);
+        subject.PropertyChanged += (_, args) => subjectPropertyChanges.Add(args.PropertyName);
 
         Assert.False(collections.WouldApplyHaveStructuralChanges(CreatePresentationInput("second")));
         var result = collections.Apply(CreatePresentationInput("second"));
@@ -495,9 +501,17 @@ public sealed class DashboardPresentationTests
         Assert.Equal("cost-second", cost.EntityLabel);
         Assert.Equal("model-cost-second", model.Cost);
         Assert.Equal("model-share-second", model.Share);
+        Assert.Equal("2.0K", model.TotalTokens);
+        Assert.Contains(nameof(ModelUsageRow.TotalTokens), modelPropertyChanges);
+        Assert.Equal("总计 Token 数 2.0K, 费用占比 model-share-second", model.TotalTokensAccessibilityName);
+        Assert.Contains(nameof(ModelUsageRow.TotalTokensAccessibilityName), modelPropertyChanges);
         Assert.Equal(2, model.CostSlices[0].CostAmount);
         Assert.Equal("subject-cost-second", subject.Cost);
         Assert.Equal("subject-share-second", subject.Share);
+        Assert.Equal("2.0K", subject.TotalTokens);
+        Assert.Contains(nameof(SubjectUsageRow.TotalTokens), subjectPropertyChanges);
+        Assert.Equal("总计 Token 数 2.0K, 费用占比 subject-share-second", subject.TotalTokensAccessibilityName);
+        Assert.Contains(nameof(SubjectUsageRow.TotalTokensAccessibilityName), subjectPropertyChanges);
         Assert.Equal("主线程 · root", subject.DisplayName);
         Assert.Equal(2, subject.CostSlices[0].CostAmount);
         Assert.Equal("diagnostic-value-second", diagnostic.Value);
@@ -546,8 +560,8 @@ public sealed class DashboardPresentationTests
         {
             Subjects =
             [
-                new(SubjectUsageRowKind.SubagentAggregate, "subagent-aggregate", "子代理", "合计", "$10.0", "10.0%", CreateTestSlices("子代理合计", "first")),
-                new(SubjectUsageRowKind.Role, "role:Subagent:aggregate", "子代理", "aggregate", "$5.0", "5.0%", CreateTestSlices("子代理 · aggregate", "first")),
+                new(SubjectUsageRowKind.SubagentAggregate, "subagent-aggregate", "子代理", "合计", 1_000, "$10.0", "10.0%", CreateTestSlices("子代理合计", "first")),
+                new(SubjectUsageRowKind.Role, "role:Subagent:aggregate", "子代理", "aggregate", 500, "$5.0", "5.0%", CreateTestSlices("子代理 · aggregate", "first")),
             ],
         };
         collections.Apply(first);
@@ -558,8 +572,8 @@ public sealed class DashboardPresentationTests
         {
             Subjects =
             [
-                new(SubjectUsageRowKind.SubagentAggregate, "subagent-aggregate", "子代理", "合计", "$12.0", "12.0%", CreateTestSlices("子代理合计", "second")),
-                new(SubjectUsageRowKind.Role, "role:Subagent:aggregate", "子代理", "aggregate", "$6.0", "6.0%", CreateTestSlices("子代理 · aggregate", "second")),
+                new(SubjectUsageRowKind.SubagentAggregate, "subagent-aggregate", "子代理", "合计", 1_200, "$12.0", "12.0%", CreateTestSlices("子代理合计", "second")),
+                new(SubjectUsageRowKind.Role, "role:Subagent:aggregate", "子代理", "aggregate", 600, "$6.0", "6.0%", CreateTestSlices("子代理 · aggregate", "second")),
             ],
         };
 
@@ -574,7 +588,9 @@ public sealed class DashboardPresentationTests
         Assert.Equal(SubjectUsageRowKind.Role, role.Kind);
         Assert.Equal("aggregate", role.DisplayName);
         Assert.Equal("$12.0", aggregate.Cost);
+        Assert.Equal("1.2K", aggregate.TotalTokens);
         Assert.Equal("$6.0", role.Cost);
+        Assert.Equal("600", role.TotalTokens);
     }
 
     [Fact]
@@ -1100,18 +1116,18 @@ public sealed class DashboardPresentationTests
         var worker = new SubjectFilter(ThreadType.Subagent, "worker");
         var models = new List<ModelUsageRow>
         {
-            new("gpt-5.6-sol", $"model-cost-{marker}", $"model-share-{marker}", CreateTestSlices("gpt-5.6-sol", marker)),
+            new("gpt-5.6-sol", marker == "first" ? 1_000 : 2_000, $"model-cost-{marker}", $"model-share-{marker}", CreateTestSlices("gpt-5.6-sol", marker)),
         };
         var subjects = new List<SubjectUsageRow>
         {
-            new(SubjectUsageRowKind.Role, "role:Main:root", "主线程", "root", $"subject-cost-{marker}", $"subject-share-{marker}", CreateTestSlices("主线程 · root", marker)),
+            new(SubjectUsageRowKind.Role, "role:Main:root", "主线程", "root", marker == "first" ? 1_000 : 2_000, $"subject-cost-{marker}", $"subject-share-{marker}", CreateTestSlices("主线程 · root", marker)),
         };
         var modelOptions = new List<ModelFilterOption> { new("gpt-5.6-sol") };
         var agentOptions = new List<SubjectFilterOption> { new(root) };
         if (includeAdditionalFacet)
         {
-            models.Add(new("gpt-5.6-terra", "model-cost-terra", "model-share-terra", CreateTestSlices("gpt-5.6-terra", "terra")));
-            subjects.Add(new(SubjectUsageRowKind.Role, "role:Subagent:worker", "子代理", "worker", "subject-cost-worker", "subject-share-worker", CreateTestSlices("子代理 · worker", "worker")));
+            models.Add(new("gpt-5.6-terra", 3_000, "model-cost-terra", "model-share-terra", CreateTestSlices("gpt-5.6-terra", "terra")));
+            subjects.Add(new(SubjectUsageRowKind.Role, "role:Subagent:worker", "子代理", "worker", 3_000, "subject-cost-worker", "subject-share-worker", CreateTestSlices("子代理 · worker", "worker")));
             modelOptions.Add(new("gpt-5.6-terra"));
             agentOptions.Add(new(worker));
         }
