@@ -265,14 +265,19 @@ public sealed record CoveragePresentation(
         };
 }
 
-public readonly record struct DashboardModelCostPresentation(string Cost, string Share)
+public readonly record struct DashboardLongContextRatePresentation(string LongContextRate, string Share)
 {
-    public static DashboardModelCostPresentation From(decimal cost, decimal totalCost, bool priced)
+    public static DashboardLongContextRatePresentation From(
+        decimal cost,
+        decimal totalCost,
+        decimal? actualToBaselineMultiplier,
+        bool priced)
     {
-        if (!priced) return new("未定价", "—");
+        var rate = actualToBaselineMultiplier is { } multiplier ? $"×{multiplier:N2}" : "—";
+        if (!priced && actualToBaselineMultiplier is null) return new(rate, "—");
 
         var share = totalCost > 0 ? $"{cost / totalCost:P1}" : "0.0%";
-        return new($"${cost:N1}", share);
+        return new(rate, share);
     }
 }
 

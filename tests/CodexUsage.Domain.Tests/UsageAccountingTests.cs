@@ -14,52 +14,131 @@ public sealed class UsageAccountingTests
         DateTimeOffset.Parse("2026-07-15T00:00:00.000Z"), DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"), null, null);
 
     [Fact]
-    public void ReasoningOutputIsSubsetAndRatesNeverApplyLongContextPremium()
+    public void LongContextPricingAppliesToTheFullRequestWithoutDoubleChargingReasoning()
     {
         var cost = UsageAccounting.CostFor(Event);
-        Assert.Equal(1m, cost.UncachedInput);
-        Assert.Equal(0.4m, cost.CachedInput);
-        Assert.Equal(2.1m, cost.ReasoningOutput);
-        Assert.Equal(0.9m, cost.OtherOutput);
-        Assert.Equal(4.4m, cost.Total);
+        Assert.Equal(2m, cost.UncachedInput);
+        Assert.Equal(0.8m, cost.CachedInput);
+        Assert.Equal(3.15m, cost.ReasoningOutput);
+        Assert.Equal(1.35m, cost.OtherOutput);
+        Assert.Equal(7.3m, cost.Total);
+        Assert.Equal(4.4m, cost.BaselineTotal);
+        Assert.Equal(2.9m, cost.LongContextPremium);
+        Assert.Equal(73m / 44m, cost.ActualToBaselineMultiplier);
         Assert.Equal(1_100_000, UsageAccounting.Summarize([Event]).CanonicalTotalTokens);
 
-        Assert.Equal(2.5m, UsageAccounting.CostFor(Event with { Model = "gpt-5.4", CachedInputTokens = 0 }).UncachedInput);
-        Assert.Equal(1.2m, UsageAccounting.CostFor(Event with { Model = "gpt-5.4-mini", CachedInputTokens = 0 }).Total);
-        Assert.Equal(0.325m, UsageAccounting.CostFor(Event with { Model = "gpt-5.4-nano", CachedInputTokens = 0 }).Total);
-        Assert.Equal(1.360005m, UsageAccounting.CostFor(Event with { Model = "gpt-5.5", InputTokens = 272_001, CachedInputTokens = 0 }).UncachedInput);
+        Assert.Equal(5m, UsageAccounting.CostFor(Event with { Model = "gpt-5.4", CachedInputTokens = 0 }).UncachedInput);
         Assert.Equal(cost, UsageAccounting.CostFor(Event with { Model = "gpt-5.6" }));
     }
 
+    [Theory]
+    [InlineData("gpt-5.4-mini", 1.2)]
+    [InlineData("gpt-5.4-nano", 0.325)]
+    public void LongContextPricingDoesNotApplyToModelsWithoutLongContextRates(string model, decimal expectedTotal)
+    {
+        var cost = UsageAccounting.CostFor(Event with { Model = model, CachedInputTokens = 0 });
+
+        Assert.Equal(expectedTotal, cost.Total);
+        Assert.Equal(cost.Total, cost.BaselineTotal);
+        Assert.Equal(0m, cost.LongContextPremium);
+        Assert.Equal(1m, cost.ActualToBaselineMultiplier);
+    }
+
     [Fact]
-    public void TerraAndLunaUseCurrentRatesForAllUsage()
+    public void LongContextPricingStartsOnlyAboveTheInputThreshold()
+    {
+        var atThreshold = UsageAccounting.CostFor(Event with
+        {
+            Model = "gpt-5.5",
+            InputTokens = UsageAccounting.LongContextInputTokenThreshold,
+            CachedInputTokens = 0,
+        });
+        var aboveThreshold = UsageAccounting.CostFor(Event with
+        {
+            Model = "gpt-5.5",
+            InputTokens = UsageAccounting.LongContextInputTokenThreshold + 1,
+            CachedInputTokens = 0,
+        });
+
+        Assert.Equal(4.36m, atThreshold.Total);
+        Assert.Equal(atThreshold.Total, atThreshold.BaselineTotal);
+        Assert.Equal(0m, atThreshold.LongContextPremium);
+        Assert.Equal(1m, atThreshold.ActualToBaselineMultiplier);
+        Assert.Equal(2.72001m, aboveThreshold.UncachedInput);
+        Assert.Equal(3.15m, aboveThreshold.ReasoningOutput);
+        Assert.Equal(1.35m, aboveThreshold.OtherOutput);
+        Assert.Equal(7.22001m, aboveThreshold.Total);
+        Assert.Equal(4.360005m, aboveThreshold.BaselineTotal);
+        Assert.Equal(2.860005m, aboveThreshold.LongContextPremium);
+        Assert.Equal(aboveThreshold.Total / aboveThreshold.BaselineTotal, aboveThreshold.ActualToBaselineMultiplier);
+    }
+
+    [Fact]
+    public void TerraAndLunaUseLongContextRatesForAllPricedUsage()
     {
         var terra = UsageAccounting.CostFor(Event with { Model = "gpt-5.6-terra" });
-        Assert.Equal(0.4m, terra.UncachedInput);
-        Assert.Equal(0.16m, terra.CachedInput);
-        Assert.Equal(0.84m, terra.ReasoningOutput);
-        Assert.Equal(0.36m, terra.OtherOutput);
-        Assert.Equal(1.76m, terra.Total);
+        Assert.Equal(0.8m, terra.UncachedInput);
+        Assert.Equal(0.32m, terra.CachedInput);
+        Assert.Equal(1.26m, terra.ReasoningOutput);
+        Assert.Equal(0.54m, terra.OtherOutput);
+        Assert.Equal(2.92m, terra.Total);
+        Assert.Equal(1.76m, terra.BaselineTotal);
+        Assert.Equal(1.16m, terra.LongContextPremium);
 
         var luna = UsageAccounting.CostFor(Event with { Model = "gpt-5.6-luna" });
-        Assert.Equal(0.04m, luna.UncachedInput);
-        Assert.Equal(0.016m, luna.CachedInput);
-        Assert.Equal(0.084m, luna.ReasoningOutput);
-        Assert.Equal(0.036m, luna.OtherOutput);
-        Assert.Equal(0.176m, luna.Total);
+        Assert.Equal(0.08m, luna.UncachedInput);
+        Assert.Equal(0.032m, luna.CachedInput);
+        Assert.Equal(0.126m, luna.ReasoningOutput);
+        Assert.Equal(0.054m, luna.OtherOutput);
+        Assert.Equal(0.292m, luna.Total);
+        Assert.Equal(0.176m, luna.BaselineTotal);
+        Assert.Equal(0.116m, luna.LongContextPremium);
 
-        Assert.Equal(0.544002m, UsageAccounting.CostFor(Event with
+        Assert.Equal(1.088004m, UsageAccounting.CostFor(Event with
         {
             Model = "gpt-5.6-terra",
             InputTokens = 272_001,
             CachedInputTokens = 0,
         }).UncachedInput);
-        Assert.Equal(0.0544002m, UsageAccounting.CostFor(Event with
+        Assert.Equal(0.1088004m, UsageAccounting.CostFor(Event with
         {
             Model = "gpt-5.6-luna",
             InputTokens = 272_001,
             CachedInputTokens = 0,
         }).UncachedInput);
+    }
+
+    [Fact]
+    public void SummaryAggregatesMixedRequestsWithoutPricingOthersOrUnknownAttribution()
+    {
+        var shortRequest = Event with
+        {
+            InputTokens = UsageAccounting.LongContextInputTokenThreshold,
+            CachedInputTokens = 0,
+        };
+        var mixed = UsageAccounting.Summarize(
+        [
+            Event,
+            shortRequest,
+            Event with { Model = "o3" },
+            Event with { Model = "unknown" },
+        ]);
+        var zeroBaseline = UsageAccounting.Summarize(
+        [
+            Event with { Model = "o3" },
+            Event with { Model = "unknown" },
+        ]);
+
+        Assert.Equal(8.76m, mixed.Cost.BaselineTotal);
+        Assert.Equal(11.66m, mixed.Cost.Total);
+        Assert.Equal(2.9m, mixed.Cost.LongContextPremium);
+        Assert.Equal(mixed.Cost.Total / mixed.Cost.BaselineTotal, mixed.Cost.ActualToBaselineMultiplier);
+        Assert.Equal(1_100_000, mixed.UnpricedTokens);
+        Assert.Equal(0m, zeroBaseline.Cost.BaselineTotal);
+        Assert.Equal(0m, zeroBaseline.Cost.Total);
+        Assert.Equal(0m, zeroBaseline.Cost.LongContextPremium);
+        Assert.Null(zeroBaseline.Cost.ActualToBaselineMultiplier);
+        Assert.Equal(1_100_000, zeroBaseline.UnpricedTokens);
     }
 
     [Theory]

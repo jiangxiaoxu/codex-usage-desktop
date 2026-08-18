@@ -49,10 +49,14 @@ public sealed record CostBreakdown(
     decimal ReasoningOutput,
     decimal OtherOutput,
     decimal Total,
+    decimal BaselineTotal,
+    decimal LongContextPremium,
     bool Priced)
 {
-    public static CostBreakdown PricedZero { get; } = new(0, 0, 0, 0, 0, true);
-    public static CostBreakdown UnpricedZero { get; } = new(0, 0, 0, 0, 0, false);
+    public decimal? ActualToBaselineMultiplier => BaselineTotal > 0 ? Total / BaselineTotal : null;
+
+    public static CostBreakdown PricedZero { get; } = new(0, 0, 0, 0, 0, 0, 0, true);
+    public static CostBreakdown UnpricedZero { get; } = new(0, 0, 0, 0, 0, 0, 0, false);
 }
 
 public sealed record UsageSummary(

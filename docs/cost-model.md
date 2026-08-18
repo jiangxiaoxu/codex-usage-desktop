@@ -37,21 +37,23 @@ The `gpt-5.6` alias is priced as GPT-5.6 Sol. The exact source model `codex-auto
 
 ## Cost calculation
 
-For a priced event, the calculation is:
+For a priced event, the base-rate calculation is:
 
 ```text
-uncachedInputCost = (input - cachedInput) * inputRate / 1,000,000
-cachedInputCost   = cachedInput * cachedInputRate / 1,000,000
-reasoningCost     = reasoningOutput * outputRate / 1,000,000
-otherOutputCost   = (output - reasoningOutput) * outputRate / 1,000,000
-totalCost         = sum of the four components
+baselineUncachedInput = (input - cachedInput) * inputRate / 1,000,000
+baselineCachedInput   = cachedInput * cachedInputRate / 1,000,000
+baselineReasoning     = reasoningOutput * outputRate / 1,000,000
+baselineOtherOutput   = (output - reasoningOutput) * outputRate / 1,000,000
+baselineTotal         = sum of the four baseline components
 ```
 
-The UI shows the four cost components separately. Reasoning and other output have the same configured output rate; separating them is analytical only and does not change total output pricing. The current rate table is applied uniformly to all stored usage, without preserving historical rate versions.
+When `input_tokens > 272_000`, long-context rates apply to the full event: uncached and cached input components are each `2x`, and reasoning and other output components are each `1.5x`. At `272_000` or below, every component stays at its base rate. `actualTotal` is the sum of the adjusted four components, `longContextPremium` is `actualTotal - baselineTotal`, and `actualToBaselineMultiplier` is `actualTotal / baselineTotal` when the baseline is positive. The dashboard shows no multiplier for a zero baseline.
+
+The UI shows the four actual-cost components separately. The dashboard summary shows baseline cost, actual total cost, and the actual-to-baseline multiplier; long-context premium remains an internal aggregate because it overlaps the adjusted input and output costs. The model and role tables show the same multiplier per row alongside that row's share of actual total cost. Reasoning and other output have the same configured output rate; separating them is analytical only and does not change total output pricing. The current rate table is applied uniformly to all stored usage, without preserving historical rate versions.
 
 ## Codex subscription context policy
 
-This application treats every observed rollout as Codex subscription usage. Input length never applies an additional long-context multiplier to any model; all token-cost estimates use the base rates above. This is an application reporting convention, not a claim about a current provider invoice. In particular, cache-write charges, tool-call charges, subscription charges, taxes, discounts and credits are absent from rollout token records and are excluded.
+This application treats every observed rollout as Codex subscription usage. The long-context rule above applies only to `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4`. `gpt-5.4-mini` and `gpt-5.4-nano` always use their base rates. The Codex rate card has no separate cache-write surcharge: cache-write tokens remain part of `input_tokens`, while only `cached_input_tokens` receive the cached-input rate. `cache_write_input_tokens` is therefore not stored or added as another cost component. Tool-call charges, subscription charges, taxes, discounts and credits are also excluded. These estimates are not a provider invoice.
 
 ## Time, filters and percentages
 

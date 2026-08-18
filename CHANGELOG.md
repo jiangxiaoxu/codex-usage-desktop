@@ -2,6 +2,12 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.17] - 2026-08-18
+
+- Applied full-request long-context pricing when GPT-5.4, GPT-5.5, or GPT-5.6 input exceeds 272K tokens: input and cached input use 2x rates, while output uses 1.5x.
+- Added baseline cost, actual cost, and long-context multiplier reporting, including model and thread-role table multipliers and actual-cost shares.
+- Kept Codex cache-write input tokens free of an independent surcharge and streamlined the dashboard cost summary.
+
 ## [0.3.16] - 2026-08-14
 
 - Removed the realtime voice-session summary from the dashboard while retaining collector accounting and deduplication behavior.

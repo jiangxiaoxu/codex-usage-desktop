@@ -764,7 +764,9 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             [
                 new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
                 new("输出", FormatTokens(summary.OutputTokens)), new("未定价", FormatTokens(summary.UnpricedTokens)),
-                new("费用", FormatCost(summary.Cost.Total)),
+                new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
+                new("实际费用", FormatCost(summary.Cost.Total)),
+                new("长上下文费用率", FormatMultiplier(summary.Cost.ActualToBaselineMultiplier)),
             ],
             DashboardCostComposition.From(summary.Cost),
             snapshot.Result.ByModel
@@ -772,23 +774,32 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 .ThenBy(row => row.Key[0], StringComparer.Ordinal)
                 .Select(row =>
                 {
-                    var cost = DashboardModelCostPresentation.From(
+                    var presentation = DashboardLongContextRatePresentation.From(
                         row.Summary.Cost.Total,
                         totalCost,
-                        row.Summary.UnpricedTokens == 0);
+                        row.Summary.Cost.ActualToBaselineMultiplier,
+                        row.Summary.UnpricedTokens < row.Summary.CanonicalTotalTokens);
                     return new ModelUsageRow(
                         row.Key[0], FormatTokens(row.Summary.CanonicalTotalTokens), FormatTokens(row.Summary.UncachedInputTokens),
                         FormatTokens(row.Summary.CachedInputTokens), FormatTokens(row.Summary.OutputTokens),
-                        FormatTokens(row.Summary.ReasoningOutputTokens), cost.Cost, cost.Share);
+                        FormatTokens(row.Summary.ReasoningOutputTokens), presentation.LongContextRate, presentation.Share);
                 })
                 .ToArray(),
             DashboardSubjectOrdering.SortByDescendingCost(snapshot.Result.ByRole)
-                .Select(row => new SubjectUsageRow(
-                    SubjectTypeLabel(UsageAccounting.ThreadTypeText(row.ThreadType)), row.AgentRole,
-                    row.ThreadCount.ToString("N0", CultureInfo.CurrentCulture), FormatTokens(row.Summary.CanonicalTotalTokens),
-                    FormatTokens(row.Summary.UncachedInputTokens), FormatTokens(row.Summary.CachedInputTokens),
-                    FormatTokens(row.Summary.OutputTokens), FormatTokens(row.Summary.ReasoningOutputTokens),
-                    FormatCost(row.Summary.Cost.Total), FormatPercentage(row.Summary.Cost.Total, totalCost)))
+                .Select(row =>
+                {
+                    var presentation = DashboardLongContextRatePresentation.From(
+                        row.Summary.Cost.Total,
+                        totalCost,
+                        row.Summary.Cost.ActualToBaselineMultiplier,
+                        row.Summary.UnpricedTokens < row.Summary.CanonicalTotalTokens);
+                    return new SubjectUsageRow(
+                        SubjectTypeLabel(UsageAccounting.ThreadTypeText(row.ThreadType)), row.AgentRole,
+                        row.ThreadCount.ToString("N0", CultureInfo.CurrentCulture), FormatTokens(row.Summary.CanonicalTotalTokens),
+                        FormatTokens(row.Summary.UncachedInputTokens), FormatTokens(row.Summary.CachedInputTokens),
+                        FormatTokens(row.Summary.OutputTokens), FormatTokens(row.Summary.ReasoningOutputTokens),
+                        presentation.LongContextRate, presentation.Share);
+                })
                 .ToArray(),
             [
                 .. CreateStatusDiagnostics(),
@@ -1177,8 +1188,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    private static string FormatPercentage(decimal value, decimal total) => total > 0 ? $"{value / total:P1}" : "0.0%";
     private static string FormatCost(decimal value) => $"${value:N1}";
+    private static string FormatMultiplier(decimal? value) => value is { } multiplier ? $"×{multiplier:N2}" : "—";
     private static int ModelDisplayOrder(string model) => model switch
     {
         "gpt-5.6-sol" => 0,

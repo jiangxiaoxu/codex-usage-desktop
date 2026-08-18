@@ -16,6 +16,87 @@ public sealed class DashboardViewModelTests
     private const string SecondCollidingMainThreadId = "019fe0d7-dd66-7412-8fa0-ea96334569dd";
 
     [Fact]
+    public async Task SnapshotPresentsBaselineActualCostAndLongContextRateMetrics()
+    {
+        var cost = new CostBreakdown(2m, 0.8m, 3.15m, 1.35m, 7.3m, 4.4m, 2.9m, Priced: true);
+        var service = new FakeUsageDashboardService(Snapshot("priced", [], cost));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Collection(
+            viewModel.Metrics,
+            metric => Assert.Equal(("总 tokens", "0"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("输入", "0"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("输出", "0"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("未定价", "0"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("基准费用", "$4.4"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("实际费用", "$7.3"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("长上下文费用率", "×1.66"), (metric.Label, metric.Value)));
+    }
+
+    [Fact]
+    public async Task SnapshotSuppressesMultiplierWhenThereIsNoPricedBaseline()
+    {
+        var service = new FakeUsageDashboardService(Snapshot("unpriced", [], CostBreakdown.UnpricedZero));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "基准费用").Value);
+        Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "实际费用").Value);
+        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "长上下文费用率").Value);
+    }
+
+    [Fact]
+    public async Task SnapshotPresentsLongContextRateAndActualShareForModelAndRoleRows()
+    {
+        var modelCost = new CostBreakdown(1m, 1m, 1m, 0m, 6m, 4m, 2m, Priced: true);
+        var unpricedCost = CostBreakdown.UnpricedZero;
+        var roleCost = new CostBreakdown(1m, 1m, 1m, 0m, 4m, 4m, 0m, Priced: true);
+        var service = new FakeUsageDashboardService(Snapshot(
+            "rows",
+            [],
+            new CostBreakdown(2m, 2m, 2m, 0m, 10m, 8m, 2m, Priced: true),
+            [
+                new GroupRow(["gpt-5.6-sol"], Summary(modelCost)),
+                new GroupRow(["unknown"], Summary(unpricedCost, unpricedTokens: 2)),
+            ],
+            [
+                new RoleUsageRow(ThreadType.Main, "root", 1, Summary(roleCost, unpricedTokens: 1)),
+                new RoleUsageRow(ThreadType.Unknown, "unknown", 1, Summary(unpricedCost, unpricedTokens: 2)),
+            ]));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Collection(
+            viewModel.Models,
+            row =>
+            {
+                Assert.Equal("×1.50", row.LongContextRate);
+                Assert.Equal("60.0%", row.Share);
+            },
+            row =>
+            {
+                Assert.Equal("—", row.LongContextRate);
+                Assert.Equal("—", row.Share);
+            });
+        Assert.Collection(
+            viewModel.Subjects,
+            row =>
+            {
+                Assert.Equal("×1.00", row.LongContextRate);
+                Assert.Equal("40.0%", row.Share);
+            },
+            row =>
+            {
+                Assert.Equal("—", row.LongContextRate);
+                Assert.Equal("—", row.Share);
+            });
+    }
+
+    [Fact]
     public async Task MainThreadFilterKeepsSelectionWhenAnOptionDisappearsAndReselectsRemainingOptionAfterClear()
     {
         var firstThread = MainThread(FirstCollidingMainThreadId, 100);
@@ -305,7 +386,12 @@ public sealed class DashboardViewModelTests
         return applied.Task;
     }
 
-    private static DashboardSnapshot Snapshot(string message, IReadOnlyList<MainThreadOption> mainThreads) => new(
+    private static DashboardSnapshot Snapshot(
+        string message,
+        IReadOnlyList<MainThreadOption> mainThreads,
+        CostBreakdown? cost = null,
+        IReadOnlyList<GroupRow>? byModel = null,
+        IReadOnlyList<RoleUsageRow>? byRole = null) => new(
         new CollectorStatus(
             CollectorPhase.Watching,
             "usage.sqlite",
@@ -323,14 +409,26 @@ public sealed class DashboardViewModelTests
             new CollectorDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0),
             0),
         new QueryResult(
-            new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, CostBreakdown.PricedZero),
-            ImmutableArray<GroupRow>.Empty,
-            ImmutableArray<RoleUsageRow>.Empty,
+            new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, cost ?? CostBreakdown.PricedZero),
+            byModel?.ToImmutableArray() ?? ImmutableArray<GroupRow>.Empty,
+            byRole?.ToImmutableArray() ?? ImmutableArray<RoleUsageRow>.Empty,
             ImmutableArray<GroupRow>.Empty,
             new QueryFacets(ImmutableArray<ModelFacetOption>.Empty, ImmutableArray<SubjectFacetOption>.Empty),
             ScanDiagnostics.Empty),
         mainThreads,
         new ProcessEfficiencyModeResult(ProcessExecutionMode.Efficiency, false, false, "Not attempted"));
+
+    private static UsageSummary Summary(CostBreakdown cost, long unpricedTokens = 0) => new(
+        Calls: 1,
+        InputTokens: 1,
+        CachedInputTokens: 0,
+        UncachedInputTokens: 1,
+        OutputTokens: 1,
+        ReasoningOutputTokens: 0,
+        OtherOutputTokens: 1,
+        CanonicalTotalTokens: 2,
+        UnpricedTokens: unpricedTokens,
+        Cost: cost);
 
     private sealed class InlineUiDispatcher : IUiDispatcher
     {

@@ -5,11 +5,21 @@ namespace CodexUsage.Domain;
 
 public static class UsageAccounting
 {
+    public const long LongContextInputTokenThreshold = 272_000;
     public const string OtherModelCategory = "Others";
     public const string AutoReviewModelCategory = "codex-auto-review";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
     private static readonly string[] SupportedFamilies = ["gpt-5.6", "gpt-5.5", "gpt-5.4"];
+    private static readonly IReadOnlySet<string> LongContextEligibleModels = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+    };
     private static readonly IReadOnlyDictionary<string, ModelRate> Rates = new Dictionary<string, ModelRate>(StringComparer.Ordinal)
     {
         ["gpt-5.6"] = new(5m, 0.5m, 30m),
@@ -42,18 +52,28 @@ public static class UsageAccounting
         if (category is AutoReviewModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
             return CostBreakdown.UnpricedZero;
 
-        var uncached = (usageEvent.InputTokens - usageEvent.CachedInputTokens) * rate.Input / Million;
-        var cached = usageEvent.CachedInputTokens * rate.CachedInput / Million;
-        var reasoning = usageEvent.ReasoningOutputTokens * rate.Output / Million;
-        var other = (usageEvent.OutputTokens - usageEvent.ReasoningOutputTokens) * rate.Output / Million;
-        return new(uncached, cached, reasoning, other, uncached + cached + reasoning + other, true);
+        var baselineUncached = (usageEvent.InputTokens - usageEvent.CachedInputTokens) * rate.Input / Million;
+        var baselineCached = usageEvent.CachedInputTokens * rate.CachedInput / Million;
+        var baselineReasoning = usageEvent.ReasoningOutputTokens * rate.Output / Million;
+        var baselineOther = (usageEvent.OutputTokens - usageEvent.ReasoningOutputTokens) * rate.Output / Million;
+        var baselineTotal = baselineUncached + baselineCached + baselineReasoning + baselineOther;
+        var isLongContext = usageEvent.InputTokens > LongContextInputTokenThreshold
+            && LongContextEligibleModels.Contains(usageEvent.Model);
+        var inputMultiplier = isLongContext ? 2m : 1m;
+        var outputMultiplier = isLongContext ? 1.5m : 1m;
+        var uncached = baselineUncached * inputMultiplier;
+        var cached = baselineCached * inputMultiplier;
+        var reasoning = baselineReasoning * outputMultiplier;
+        var other = baselineOther * outputMultiplier;
+        var total = uncached + cached + reasoning + other;
+        return new(uncached, cached, reasoning, other, total, baselineTotal, total - baselineTotal, true);
     }
 
     public static UsageSummary Summarize(IEnumerable<UsageEvent> events)
     {
         var calls = 0;
         long input = 0, cached = 0, output = 0, reasoning = 0, unpriced = 0;
-        decimal uncachedCost = 0, cachedCost = 0, reasoningCost = 0, otherCost = 0, totalCost = 0;
+        decimal uncachedCost = 0, cachedCost = 0, reasoningCost = 0, otherCost = 0, totalCost = 0, baselineCost = 0, longContextPremium = 0;
         foreach (var usageEvent in events)
         {
             var cost = CostFor(usageEvent);
@@ -69,12 +89,14 @@ public static class UsageAccounting
             reasoningCost += cost.ReasoningOutput;
             otherCost += cost.OtherOutput;
             totalCost += cost.Total;
+            baselineCost += cost.BaselineTotal;
+            longContextPremium += cost.LongContextPremium;
         }
 
         return new(
             calls, input, cached, checked(input - cached), output, reasoning, checked(output - reasoning),
             checked(input + output), unpriced,
-            new(uncachedCost, cachedCost, reasoningCost, otherCost, totalCost, true));
+            new(uncachedCost, cachedCost, reasoningCost, otherCost, totalCost, baselineCost, longContextPremium, true));
     }
 
     public static bool MatchesFilter(UsageEvent usageEvent, FilterSpec filter)

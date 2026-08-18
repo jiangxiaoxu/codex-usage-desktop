@@ -55,7 +55,7 @@ public sealed class ModelUsageRow(
     string cachedInput,
     string output,
     string reasoningOutput,
-    string cost,
+    string longContextRate,
     string share) : DashboardPresentationItem
 {
     private string _totalTokens = totalTokens;
@@ -63,7 +63,7 @@ public sealed class ModelUsageRow(
     private string _cachedInput = cachedInput;
     private string _output = output;
     private string _reasoningOutput = reasoningOutput;
-    private string _cost = cost;
+    private string _longContextRate = longContextRate;
     private string _share = share;
 
     public string Model { get; } = model;
@@ -72,7 +72,7 @@ public sealed class ModelUsageRow(
     public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
     public string Output { get => _output; private set => SetValue(ref _output, value); }
     public string ReasoningOutput { get => _reasoningOutput; private set => SetValue(ref _reasoningOutput, value); }
-    public string Cost { get => _cost; private set => SetValue(ref _cost, value); }
+    public string LongContextRate { get => _longContextRate; private set => SetValue(ref _longContextRate, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
 
     public void UpdateFrom(ModelUsageRow source)
@@ -82,7 +82,7 @@ public sealed class ModelUsageRow(
         CachedInput = source.CachedInput;
         Output = source.Output;
         ReasoningOutput = source.ReasoningOutput;
-        Cost = source.Cost;
+        LongContextRate = source.LongContextRate;
         Share = source.Share;
     }
 }
@@ -96,7 +96,7 @@ public sealed class SubjectUsageRow(
     string cachedInput,
     string output,
     string reasoningOutput,
-    string cost,
+    string longContextRate,
     string share) : DashboardPresentationItem
 {
     private string _threadCount = threadCount;
@@ -105,7 +105,7 @@ public sealed class SubjectUsageRow(
     private string _cachedInput = cachedInput;
     private string _output = output;
     private string _reasoningOutput = reasoningOutput;
-    private string _cost = cost;
+    private string _longContextRate = longContextRate;
     private string _share = share;
 
     public string ThreadType { get; } = threadType;
@@ -116,7 +116,7 @@ public sealed class SubjectUsageRow(
     public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
     public string Output { get => _output; private set => SetValue(ref _output, value); }
     public string ReasoningOutput { get => _reasoningOutput; private set => SetValue(ref _reasoningOutput, value); }
-    public string Cost { get => _cost; private set => SetValue(ref _cost, value); }
+    public string LongContextRate { get => _longContextRate; private set => SetValue(ref _longContextRate, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
 
     public void UpdateFrom(SubjectUsageRow source)
@@ -127,7 +127,7 @@ public sealed class SubjectUsageRow(
         CachedInput = source.CachedInput;
         Output = source.Output;
         ReasoningOutput = source.ReasoningOutput;
-        Cost = source.Cost;
+        LongContextRate = source.LongContextRate;
         Share = source.Share;
     }
 }
@@ -241,7 +241,9 @@ public sealed class DashboardPresentationCollections
             new("输入", "0"),
             new("输出", "0"),
             new("未定价", "0"),
-            new("费用", "$0.0"),
+            new("基准费用", "$0.0"),
+            new("实际费用", "$0.0"),
+            new("长上下文费用率", "—"),
         };
         CostSlices = new ObservableCollection<CostSlice>
         {
