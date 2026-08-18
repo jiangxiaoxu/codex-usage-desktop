@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.18] - 2026-08-18
+
+- Removed the top-level unpriced summary card while retaining underlying unpriced accounting.
+- Fixed system-tray mouse and keyboard selection to restore and activate the window while preserving the context menu and tooltip.
+
 ## [0.3.17] - 2026-08-18
 
 - Applied full-request long-context pricing when GPT-5.4, GPT-5.5, or GPT-5.6 input exceeds 272K tokens: input and cached input use 2x rates, while output uses 1.5x.

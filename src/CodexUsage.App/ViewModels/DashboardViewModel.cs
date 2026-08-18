@@ -763,8 +763,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var input = new DashboardPresentationInput(
             [
                 new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
-                new("输出", FormatTokens(summary.OutputTokens)), new("未定价", FormatTokens(summary.UnpricedTokens)),
-                new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
+                new("输出", FormatTokens(summary.OutputTokens)), new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
                 new("实际费用", FormatCost(summary.Cost.Total)),
                 new("长上下文费用率", FormatMultiplier(summary.Cost.ActualToBaselineMultiplier)),
             ],

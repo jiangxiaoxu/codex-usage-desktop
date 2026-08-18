@@ -240,7 +240,6 @@ public sealed class DashboardPresentationCollections
             new("总 tokens", "0"),
             new("输入", "0"),
             new("输出", "0"),
-            new("未定价", "0"),
             new("基准费用", "$0.0"),
             new("实际费用", "$0.0"),
             new("长上下文费用率", "—"),

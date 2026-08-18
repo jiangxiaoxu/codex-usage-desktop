@@ -29,7 +29,6 @@ public sealed class DashboardViewModelTests
             metric => Assert.Equal(("总 tokens", "0"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("输入", "0"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("输出", "0"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("未定价", "0"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("基准费用", "$4.4"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("实际费用", "$7.3"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("长上下文费用率", "×1.66"), (metric.Label, metric.Value)));

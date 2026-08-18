@@ -5,6 +5,13 @@ using CodexUsage.Application;
 
 namespace CodexUsage.App.Platform;
 
+internal enum TrayNotificationKind
+{
+    Ignore,
+    ShowWindow,
+    ShowContextMenu,
+}
+
 internal sealed class ShellTrayIcon : IDisposable
 {
     private const int GwlWndProc = -4;
@@ -22,9 +29,11 @@ internal sealed class ShellTrayIcon : IDisposable
     private const uint TrayCallbackMessage = 0x8000 + 42;
     private const uint NimAdd = 0x00000000;
     private const uint NimDelete = 0x00000002;
+    private const uint NimSetVersion = 0x00000004;
     private const uint NifMessage = 0x00000001;
     private const uint NifIcon = 0x00000002;
     private const uint NifTip = 0x00000004;
+    private const uint NifShowTip = 0x00000080;
     private const uint MfString = 0x00000000;
     private const uint MfSeparator = 0x00000800;
     private const uint TpmRightButton = 0x0002;
@@ -37,6 +46,9 @@ internal sealed class ShellTrayIcon : IDisposable
     private const uint ShowCommand = 1;
     private const uint ExitCommand = 2;
     private const int IdiApplication = 32512;
+    private const uint NinSelect = 0x00000400;
+    private const uint NinKeySelect = 0x00000401;
+    private const uint NotifyIconVersion4 = 4;
 
     private readonly IntPtr _windowHandle;
     private readonly Action _showWindow;
@@ -100,7 +112,7 @@ internal sealed class ShellTrayIcon : IDisposable
                 Size = (uint)Marshal.SizeOf<NotifyIconData>(),
                 WindowHandle = windowHandle,
                 Id = 1,
-                Flags = NifMessage | NifIcon | NifTip,
+                Flags = NifMessage | NifIcon | NifTip | NifShowTip,
                 CallbackMessage = TrayCallbackMessage,
                 IconHandle = iconHandle,
                 ToolTip = "Codex Usage Desktop",
@@ -113,6 +125,12 @@ internal sealed class ShellTrayIcon : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建系统托盘图标");
             }
             _trayIconAdded = true;
+
+            _iconData.VersionOrTimeout = NotifyIconVersion4;
+            if (!ShellNotifyIcon(NimSetVersion, ref _iconData))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "无法设置系统托盘图标通知版本");
+            }
         }
         catch
         {
@@ -211,14 +229,14 @@ internal sealed class ShellTrayIcon : IDisposable
 
         if (message == TrayCallbackMessage)
         {
-            var notification = unchecked((uint)lParam.ToInt64());
-            if (notification is WmLButtonUp or WmLButtonDoubleClick)
+            var notificationKind = ClassifyNotification(lParam);
+            if (notificationKind == TrayNotificationKind.ShowWindow)
             {
                 _showWindow();
                 return IntPtr.Zero;
             }
 
-            if (notification is WmRButtonUp or WmContextMenu)
+            if (notificationKind == TrayNotificationKind.ShowContextMenu)
             {
                 ShowContextMenu();
                 return IntPtr.Zero;
@@ -226,6 +244,17 @@ internal sealed class ShellTrayIcon : IDisposable
         }
 
         return CallWindowProc(_previousWindowProcedure, window, message, wParam, lParam);
+    }
+
+    internal static TrayNotificationKind ClassifyNotification(IntPtr callbackData)
+    {
+        var notification = unchecked((uint)callbackData.ToInt64()) & 0xFFFFu;
+        return notification switch
+        {
+            NinSelect or NinKeySelect or WmLButtonUp or WmLButtonDoubleClick => TrayNotificationKind.ShowWindow,
+            WmRButtonUp or WmContextMenu => TrayNotificationKind.ShowContextMenu,
+            _ => TrayNotificationKind.Ignore,
+        };
     }
 
     private void NotifyNonClientPointerPressed()
