@@ -334,8 +334,9 @@ public sealed class CollectionIntegrationTests
         Assert.False(archived.UsageChanged);
         Assert.Equal(["main-rollout", "child-rollout"], archivedEvents.Select(value => value.RolloutId));
         Assert.Equal(15, archivedEvents.Sum(value => value.InputTokens));
-        Assert.Contains(await collector.QueryRecentMainThreadsAsync(20),
-            value => value.ConversationId == mainConversationId);
+        var archivedRecent = Assert.Single(await collector.QueryRecentMainThreadsAsync(20));
+        Assert.Equal(mainConversationId, archivedRecent.ConversationId);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-15T01:03:03.004Z"), archivedRecent.LastActivityUtc);
 
         File.Delete(archivePath);
         var deleted = await collector.RefreshAsync();
@@ -344,8 +345,9 @@ public sealed class CollectionIntegrationTests
         Assert.False(deleted.UsageChanged);
         Assert.Equal(["main-rollout", "child-rollout"], deletedEvents.Select(value => value.RolloutId));
         Assert.Equal(15, deletedEvents.Sum(value => value.InputTokens));
-        Assert.Contains(await collector.QueryRecentMainThreadsAsync(20),
-            value => value.ConversationId == mainConversationId);
+        var deletedRecent = Assert.Single(await collector.QueryRecentMainThreadsAsync(20));
+        Assert.Equal(mainConversationId, deletedRecent.ConversationId);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-15T01:03:03.004Z"), deletedRecent.LastActivityUtc);
     }
 
     [Fact]

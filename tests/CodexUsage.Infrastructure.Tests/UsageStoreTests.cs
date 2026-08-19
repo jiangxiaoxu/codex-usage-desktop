@@ -628,15 +628,15 @@ public sealed class UsageStoreTests
         using var temporary = new TemporaryDirectory();
         using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
         const string mainConversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
-        var main = Metadata with { ConversationId = mainConversationId };
+        var main = Metadata with { ConversationId = mainConversationId, RolloutId = mainConversationId };
         store.AppendEvents(main, [Event(0, 1_000), Event(1, 2_000), Event(2, 3_000)], 3_000);
 
         var childMetadata = new RolloutMetadata(
-            "019fe0d7-dd65-7412-8fa0-ea96334569dd", "child-rollout", main.ConversationId, ThreadType.Subagent,
+            main.ConversationId, "child-rollout", main.RolloutId, ThreadType.Subagent,
             "worker", "/root/worker", "worker-a", false, "Codex", string.Empty, 2_500);
         store.AppendEvents(childMetadata, [Event(0, 2_500)], 3_000);
         var nestedChildMetadata = new RolloutMetadata(
-            "019fe0d7-dd66-7412-8fa0-ea96334569dd", "nested-child-rollout", childMetadata.ConversationId, ThreadType.Subagent,
+            main.ConversationId, "nested-child-rollout", childMetadata.RolloutId, ThreadType.Subagent,
             "worker", "/root/worker/nested", "worker-b", false, "Codex", string.Empty, 2_600);
         store.AppendEvents(nestedChildMetadata, [Event(0, 2_600)], 3_000);
         store.AppendEvents(Metadata with
@@ -652,7 +652,7 @@ public sealed class UsageStoreTests
         Assert.Equal([1_000L, 2_000L, 2_500L, 2_600L], events.Select(item => item.TimestampEpochMs));
         Assert.Equal(DateTimeOffset.Parse("1970-01-01T00:00:01Z"), events[0].TimestampUtc);
         Assert.Empty(store.QueryEvents(new UsageEventQuery(
-            0, 4_000, MainThreadConversationId: childMetadata.ConversationId)));
+            0, 4_000, MainThreadConversationId: "019fe0d7-dd65-7412-8fa0-ea96334569dd")));
         Assert.Throws<ArgumentException>(() => store.QueryEvents(new UsageEventQuery(
             0, 4_000, MainThreadConversationId: "unknown-main-thread")));
     }
@@ -666,17 +666,17 @@ public sealed class UsageStoreTests
         const string mainB = "019fe0d7-dd65-7412-8fa0-ea96334569dd";
         const string mainC = "019fe0d7-dd66-7412-8fa0-ea96334569dd";
         var parsedMain = RolloutParser.Parse("""
-            {"timestamp":"1970-01-01T00:00:00.100Z","type":"session_meta","payload":{"session_id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","id":"rollout-a","thread_source":"user"}}
+            {"timestamp":"1970-01-01T00:00:00.100Z","type":"session_meta","payload":{"session_id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","id":"019fe0d7-dd64-7412-8fa0-ea96334569dd","thread_source":"user"}}
             {"timestamp":"1970-01-01T00:00:00.200Z","type":"event_msg","payload":{"type":"user_message","message":"Alpha"}}
             {"timestamp":"1970-01-01T00:00:00.600Z","type":"response_item","payload":{"type":"message","content":"latest response"}}
             """ + "\n", "fallback");
         store.AppendEvents(parsedMain.Metadata, [], 600);
         store.AppendEvents(new RolloutMetadata(
-            "019fe0d7-dd67-7412-8fa0-ea96334569dd", "rollout-child-a", mainA, ThreadType.Subagent,
+            mainA, "rollout-child-a", mainA, ThreadType.Subagent,
             "worker", "/root/worker", "worker-a", false, "Codex", string.Empty, 500), [], 500);
         store.AppendEvents(new RolloutMetadata(
-            "019fe0d7-dd68-7412-8fa0-ea96334569dd", "rollout-nested-child-a", "019fe0d7-dd67-7412-8fa0-ea96334569dd", ThreadType.Subagent,
-            "worker", "/root/worker/nested", "worker-b", false, "Codex", string.Empty, 550), [], 550);
+            mainA, "rollout-nested-child-a", "rollout-child-a", ThreadType.Subagent,
+            "worker", "/root/worker/nested", "worker-b", false, "Codex", string.Empty, 700), [], 700);
         store.AppendEvents(Metadata with
         {
             ConversationId = mainB,
@@ -717,7 +717,7 @@ public sealed class UsageStoreTests
 
         Assert.Equal([mainA, mainC], threads.Select(value => value.ConversationId));
         Assert.Equal("Alpha", threads[0].Title);
-        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(600), threads[0].LastActivityUtc);
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(700), threads[0].LastActivityUtc);
     }
 
     [Fact]

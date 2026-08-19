@@ -589,16 +589,17 @@ public sealed class UsageStore : IDisposable
         {
             conditions.Add("""
                 r.rollout_id IN (
-                    WITH RECURSIVE thread_rollouts(rollout_id, conversation_id) AS (
-                        SELECT rollout_id, conversation_id
+                    WITH RECURSIVE thread_rollouts(rollout_id, conversation_id, thread_type) AS (
+                        SELECT rollout_id, conversation_id, thread_type
                         FROM rollouts
                         WHERE conversation_id = $mainThreadConversationId
                           AND thread_type = 'main'
                         UNION
-                        SELECT child.rollout_id, child.conversation_id
+                        SELECT child.rollout_id, child.conversation_id, child.thread_type
                         FROM rollouts AS child
                         JOIN thread_rollouts AS parent
-                          ON child.parent_thread_id = parent.conversation_id
+                          ON child.parent_thread_id = parent.rollout_id
+                          OR (parent.thread_type = 'main' AND child.parent_thread_id = parent.conversation_id)
                     )
                     SELECT rollout_id FROM thread_rollouts
                 )
@@ -654,17 +655,18 @@ public sealed class UsageStore : IDisposable
                 FROM ranked_main_rollouts
                 WHERE rank = 1
             ),
-            thread_rollouts(root_conversation_id, rollout_id, conversation_id) AS (
-                SELECT main.conversation_id, root.rollout_id, root.conversation_id
+            thread_rollouts(root_conversation_id, rollout_id, conversation_id, thread_type) AS (
+                SELECT main.conversation_id, root.rollout_id, root.conversation_id, root.thread_type
                 FROM main_threads AS main
                 JOIN rollouts AS root
                   ON root.conversation_id = main.conversation_id
                  AND root.thread_type = 'main'
                 UNION
-                SELECT parent.root_conversation_id, child.rollout_id, child.conversation_id
+                SELECT parent.root_conversation_id, child.rollout_id, child.conversation_id, child.thread_type
                 FROM thread_rollouts AS parent
                 JOIN rollouts AS child
-                  ON child.parent_thread_id = parent.conversation_id
+                  ON child.parent_thread_id = parent.rollout_id
+                  OR (parent.thread_type = 'main' AND child.parent_thread_id = parent.conversation_id)
             )
             SELECT main.conversation_id,
                    main.project_name,

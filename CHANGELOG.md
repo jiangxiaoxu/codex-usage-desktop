@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.19] - 2026-08-19
+
+- Fixed main-thread filtering and recent-activity ordering to include nested subagents at any depth.
+
 ## [0.3.18] - 2026-08-18
 
 - Removed the top-level unpriced summary card while retaining underlying unpriced accounting.
