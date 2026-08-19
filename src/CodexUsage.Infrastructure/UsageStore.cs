@@ -6,7 +6,7 @@ namespace CodexUsage.Infrastructure;
 
 public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 6;
+    private const int SchemaVersion = 7;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -589,17 +589,27 @@ public sealed class UsageStore : IDisposable
         {
             conditions.Add("""
                 r.rollout_id IN (
-                    WITH RECURSIVE thread_rollouts(rollout_id, conversation_id, thread_type) AS (
-                        SELECT rollout_id, conversation_id, thread_type
+                    WITH RECURSIVE
+                    rollout_parent_keys(rollout_id, parent_key) AS (
+                        SELECT rollout_id, rollout_id
+                        FROM rollouts
+                        UNION
+                        SELECT rollout_id, conversation_id
+                        FROM rollouts
+                        WHERE thread_type = 'main'
+                    ),
+                    thread_rollouts(rollout_id) AS (
+                        SELECT rollout_id
                         FROM rollouts
                         WHERE conversation_id = $mainThreadConversationId
                           AND thread_type = 'main'
                         UNION
-                        SELECT child.rollout_id, child.conversation_id, child.thread_type
-                        FROM rollouts AS child
-                        JOIN thread_rollouts AS parent
-                          ON child.parent_thread_id = parent.rollout_id
-                          OR (parent.thread_type = 'main' AND child.parent_thread_id = parent.conversation_id)
+                        SELECT child.rollout_id
+                        FROM thread_rollouts AS parent
+                        JOIN rollout_parent_keys AS parent_key
+                          ON parent_key.rollout_id = parent.rollout_id
+                        JOIN rollouts AS child
+                          ON child.parent_thread_id = parent_key.parent_key
                     )
                     SELECT rollout_id FROM thread_rollouts
                 )
@@ -655,18 +665,27 @@ public sealed class UsageStore : IDisposable
                 FROM ranked_main_rollouts
                 WHERE rank = 1
             ),
-            thread_rollouts(root_conversation_id, rollout_id, conversation_id, thread_type) AS (
-                SELECT main.conversation_id, root.rollout_id, root.conversation_id, root.thread_type
+            rollout_parent_keys(rollout_id, parent_key) AS (
+                SELECT rollout_id, rollout_id
+                FROM rollouts
+                UNION
+                SELECT rollout_id, conversation_id
+                FROM rollouts
+                WHERE thread_type = 'main'
+            ),
+            thread_rollouts(root_conversation_id, rollout_id) AS (
+                SELECT main.conversation_id, root.rollout_id
                 FROM main_threads AS main
                 JOIN rollouts AS root
                   ON root.conversation_id = main.conversation_id
                  AND root.thread_type = 'main'
                 UNION
-                SELECT parent.root_conversation_id, child.rollout_id, child.conversation_id, child.thread_type
+                SELECT parent.root_conversation_id, child.rollout_id
                 FROM thread_rollouts AS parent
+                JOIN rollout_parent_keys AS parent_key
+                  ON parent_key.rollout_id = parent.rollout_id
                 JOIN rollouts AS child
-                  ON child.parent_thread_id = parent.rollout_id
-                  OR (parent.thread_type = 'main' AND child.parent_thread_id = parent.conversation_id)
+                  ON child.parent_thread_id = parent_key.parent_key
             )
             SELECT main.conversation_id,
                    main.project_name,
@@ -1081,6 +1100,13 @@ public sealed class UsageStore : IDisposable
                 ExecuteNonQuery(transaction, """
                     ALTER TABLE rollouts
                     ADD COLUMN project_name TEXT NOT NULL DEFAULT 'Codex';
+                    """);
+            }
+
+            if (currentVersion < 7)
+            {
+                ExecuteNonQuery(transaction, """
+                    CREATE INDEX IF NOT EXISTS rollouts_parent_thread_idx ON rollouts(parent_thread_id);
                     """);
             }
 

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using CodexUsage.Domain;
@@ -14,17 +15,17 @@ public sealed class UsageStoreTests
         "main", "/root", string.Empty, false, "Codex", string.Empty, 0);
 
     [Fact]
-    public void EmptyDatabaseMigratesToExactSchemaV6AndRequiredPragmas()
+    public void EmptyDatabaseMigratesToExactSchemaV7AndRequiredPragmas()
     {
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(6, store.CurrentSchemaVersion);
+            Assert.Equal(7, store.CurrentSchemaVersion);
         }
 
         using var connection = Open(databasePath);
-        Assert.Equal(6L, ScalarLong(connection, "PRAGMA user_version"));
+        Assert.Equal(7L, ScalarLong(connection, "PRAGMA user_version"));
         Assert.Equal(1L, ScalarLong(connection, "PRAGMA foreign_keys"));
         Assert.Equal("wal", ScalarString(connection, "PRAGMA journal_mode"));
         Assert.Equal(
@@ -50,6 +51,7 @@ public sealed class UsageStoreTests
             [
                 "collector_diagnostics_run_idx",
                 "rollout_checkpoints_rollout_idx",
+                "rollouts_parent_thread_idx",
                 "source_files_rollout_idx",
                 "usage_events_model_timestamp_idx",
                 "usage_events_timestamp_idx",
@@ -92,7 +94,7 @@ public sealed class UsageStoreTests
 
         using var store = new UsageStore(databasePath);
 
-        Assert.Equal(6, store.CurrentSchemaVersion);
+        Assert.Equal(7, store.CurrentSchemaVersion);
         Assert.False(store.GetRolloutMetadata("rollout-1")!.IsRealtimeVoice);
     }
 
@@ -103,7 +105,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(6, store.CurrentSchemaVersion);
+            Assert.Equal(7, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var command = connection.CreateCommand())
@@ -117,7 +119,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(6, migrated.CurrentSchemaVersion);
+        Assert.Equal(7, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("safe_null_padding_records",
             ReadStrings(verified, "SELECT name FROM pragma_table_info('rollout_checkpoints')"));
@@ -144,8 +146,37 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(6, migrated.CurrentSchemaVersion);
+        Assert.Equal(7, migrated.CurrentSchemaVersion);
         Assert.Equal("Codex", migrated.GetRolloutMetadata("rollout-1")!.ProjectName);
+    }
+
+    [Fact]
+    public void SchemaV6MigrationAddsRolloutParentThreadIndex()
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using (var store = new UsageStore(databasePath))
+        {
+            store.AppendEvents(Metadata, [], 1);
+        }
+        using (var connection = Open(databasePath))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                DROP INDEX rollouts_parent_thread_idx;
+                PRAGMA user_version = 6;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        using var migrated = new UsageStore(databasePath);
+
+        Assert.Equal(7, migrated.CurrentSchemaVersion);
+        using var verified = Open(databasePath);
+        Assert.Contains("rollouts_parent_thread_idx", ReadStrings(verified, """
+            SELECT name FROM sqlite_schema
+            WHERE type = 'index' AND tbl_name = 'rollouts'
+            """));
     }
 
     [Fact]
@@ -800,6 +831,52 @@ public sealed class UsageStoreTests
         var threads = store.QueryRecentMainThreads(20);
 
         Assert.Equal(expected.AsEnumerable().Reverse(), threads.Select(value => value.ConversationId));
+    }
+
+    [Fact]
+    public void QueryRecentMainThreadsRemainsResponsiveForLargeIndependentMainThreadSet()
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using (var store = new UsageStore(databasePath))
+        {
+            Assert.Equal(7, store.CurrentSchemaVersion);
+        }
+        using (var connection = Open(databasePath))
+        using (var transaction = connection.BeginTransaction())
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO rollouts (
+                    rollout_id, conversation_id, parent_thread_id, thread_type, agent_role, agent_path,
+                    agent_nickname, is_realtime_voice, project_name, thread_title, last_activity_epoch_ms,
+                    canonical_source_path, created_at_epoch_ms, updated_at_epoch_ms)
+                VALUES (
+                    $rolloutId, $conversationId, '', 'main', 'main', '/root', '', 0, 'Codex', '',
+                    $lastActivityEpochMs, NULL, $lastActivityEpochMs, $lastActivityEpochMs);
+                """;
+            var rolloutId = command.Parameters.Add("$rolloutId", SqliteType.Text);
+            var conversationId = command.Parameters.Add("$conversationId", SqliteType.Text);
+            var lastActivityEpochMs = command.Parameters.Add("$lastActivityEpochMs", SqliteType.Integer);
+            for (var index = 0; index < 8_192; index++)
+            {
+                rolloutId.Value = $"rollout-{index}";
+                conversationId.Value = $"019fe0d7-{index:x4}-7412-8fa0-ea96334569dd";
+                lastActivityEpochMs.Value = index;
+                command.ExecuteNonQuery();
+            }
+            transaction.Commit();
+        }
+
+        using var queried = new UsageStore(databasePath);
+        var stopwatch = Stopwatch.StartNew();
+        var threads = queried.QueryRecentMainThreads(20);
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3));
+        Assert.Equal(20, threads.Count);
+        Assert.Equal("019fe0d7-1fff-7412-8fa0-ea96334569dd", threads[0].ConversationId);
+        Assert.Equal("019fe0d7-1fec-7412-8fa0-ea96334569dd", threads[^1].ConversationId);
     }
 
     private static UsageEventInput Event(long ordinal, long timestamp, string? signature = null) => new(

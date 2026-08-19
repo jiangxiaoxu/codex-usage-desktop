@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.20] - 2026-08-19
+
+- Fixed filter refresh stalls caused by a recursive SQLite query performance regression.
+- Preserved nested subagent traversal and historical main-thread parent attribution while restoring responsive query execution.
+
 ## [0.3.19] - 2026-08-19
 
 - Fixed main-thread filtering and recent-activity ordering to include nested subagents at any depth.
