@@ -25,10 +25,10 @@ dotnet format CodexUsageDesktop.sln --verify-no-changes
 使用 `-AutoDetectDependencies` 可查找本机已有的 .NET 8 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.生成 unpackaged、self-contained 的 x64 WinUI 3 应用和全用户 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.20 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.21 -AutoDetectDependencies
 ```
 
-7-Zip Extra 位于非标准目录时,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.20-x64.exe`.构建会先用 7-Zip 生成并校验 payload archive,再生成唯一 pending EXE;仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
+7-Zip Extra 位于非标准目录时,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.21-x64.exe`.构建会先用 7-Zip 生成并校验 payload archive,再生成唯一 pending EXE;仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
 
 setup 会在替换当前 WinUI payload 前检测并强制终止正在运行的 Codex Usage Desktop process.卸载 WinUI 3 默认不删除 LocalAppData ledger.用户可显式检查 GitHub Release,实验通道在下载时校验 SHA-256;运行前需要在警示 dialog 中确认并再次校验文件,随后 NSIS 结束当前应用和 collector process.
 
@@ -76,7 +76,7 @@ dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.20 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.21 -AutoDetectDependencies
 git diff --check
 ```
 

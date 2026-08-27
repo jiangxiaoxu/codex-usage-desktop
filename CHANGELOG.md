@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.21] - 2026-08-27
+
+- Classified `agent_created_thread` sessions as main threads so they appear in main-thread filtering and aggregate descendant usage.
+
 ## [0.3.20] - 2026-08-19
 
 - Fixed filter refresh stalls caused by a recursive SQLite query performance regression.

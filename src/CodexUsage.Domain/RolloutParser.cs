@@ -669,7 +669,7 @@ public static partial class RolloutParser
         var threadSource = payload is { } value ? GetNonEmptyString(value, "thread_source") : null;
         var threadType = threadSource == "subagent" || hasSpawn
             ? ThreadType.Subagent
-            : threadSource is null or "user" or "realtime_voice" ? ThreadType.Main : ThreadType.Unknown;
+            : threadSource is null or "user" or "realtime_voice" or "agent_created_thread" ? ThreadType.Main : ThreadType.Unknown;
         var rolloutId = payload is { } p ? GetNonEmptyString(p, "id") ?? fallbackRolloutId : fallbackRolloutId;
         string? Top(string name) => payload is { } topPayload ? GetNonEmptyString(topPayload, name) : null;
         string Field(string nestedName, string topName, string fallback) =>

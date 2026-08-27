@@ -63,10 +63,10 @@ override path 如果 resolve 到 protected Codex source tree 会被拒绝.复制
 生成 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.20 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.21 -AutoDetectDependencies
 ```
 
-`-AutoDetectDependencies` 查找本机已有的 .NET 8 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本生成 self-contained x64 publish,用 7-Zip LZMA2 生成并校验 payload archive,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.20-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /F /IM` 终止同名 process,不会递归杀掉启动它的安装器,确认退出后才替换程序文件;无法确认退出时安装失败.
+`-AutoDetectDependencies` 查找本机已有的 .NET 8 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本生成 self-contained x64 publish,用 7-Zip LZMA2 生成并校验 payload archive,再由 NSIS 3.x 输出 `release\winui-installer\codex-usage-desktop-setup-0.3.21-x64.exe`.每次 build 使用唯一 pending EXE;只有 `makensis` 成功且 pending EXE 存在并非空后,才会在同卷原子替换正式 setup.失败不会覆盖现有正式产物.同一 workspace 的 installer build 必须串行执行.安装器检测已运行的 Codex Usage Desktop process,使用 `taskkill /F /IM` 终止同名 process,不会递归杀掉启动它的安装器,确认退出后才替换程序文件;无法确认退出时安装失败.
 
 setup 在替换当前 WinUI payload 前结束运行中的 process,并保留或更新 HKCU Run entry 的选择.检测到更高版本时拒绝降级,相同版本可执行 repair install.安装、升级和卸载不会删除 `%LOCALAPPDATA%\Codex Usage Desktop` 下的 ledger.
 

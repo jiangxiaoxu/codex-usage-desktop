@@ -51,6 +51,23 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void AgentCreatedThreadIsMainRoot()
+    {
+        var result = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new
+            {
+                session_id = "conversation-agent-created",
+                id = "rollout-agent-created",
+                thread_source = "agent_created_thread",
+            })), "fallback");
+
+        Assert.Equal(ThreadType.Main, result.Metadata.ThreadType);
+        Assert.Equal("main", result.Metadata.AgentRole);
+        Assert.Equal("/root", result.Metadata.AgentPath);
+        Assert.False(result.Metadata.IsRealtimeVoice);
+    }
+
+    [Fact]
     public void LateTurnContextsResolveCandidatesWithoutChangingStableSignature()
     {
         var prefix = Jsonl(

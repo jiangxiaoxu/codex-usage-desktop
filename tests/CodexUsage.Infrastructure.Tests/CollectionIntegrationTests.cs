@@ -1497,6 +1497,91 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
+    public async Task ParserRevisionReclassifiesAgentCreatedThreadAsMainAndMakesItQueryable()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string rolloutId = "rollout-agent-created";
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-agent-created.jsonl");
+        var content = string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                session_id = conversationId,
+                id = rolloutId,
+                thread_source = "agent_created_thread",
+                cwd = "C:/Projects/codex-usage-desktop",
+            }),
+            Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]),
+        ]) + "\n";
+        WriteRollout(rolloutPath, content);
+        var file = new FileInfo(rolloutPath);
+        var parsed = await RolloutParser.ParseChunkCooperativelyAsync(
+            Encoding.UTF8.GetBytes(content),
+            rolloutId,
+            new(64 * 1024, 32, TimeSpan.FromMilliseconds(8), 1024 * 1024, _ => ValueTask.CompletedTask));
+        var parserStateJson = RolloutParserStateCodec.Serialize(parsed.State);
+        var parserStateHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(parserStateJson)))
+            .ToLowerInvariant();
+
+        using (var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome)))
+        {
+            store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
+                new RolloutMetadata(conversationId, rolloutId, "", ThreadType.Unknown,
+                    "unknown", "/root", "", false, "stale-project", "", 0),
+                [new UsageEventInput(
+                    0,
+                    DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
+                    "gpt-5.6-sol", 10, 2, 4, 1, "stale-agent-created")],
+                new CanonicalSourceInput(
+                    rolloutPath,
+                    file.Length,
+                    new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+                    file.Length,
+                    HashBoundary(content),
+                    PrefixStatus.Matches,
+                    1,
+                    null),
+                1,
+                null,
+                new RolloutCheckpointInput(
+                    rolloutPath,
+                    rolloutId,
+                    RolloutParserStateCodec.FormatRevision,
+                    15,
+                    new SourceIdentity(SourceIdentityKind.ConservativeStat, "revision-15-seed"),
+                    file.Length,
+                    new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+                    file.Length,
+                    HashBoundary(content),
+                    parserStateJson,
+                    parserStateHash,
+                    0,
+                    0,
+                    0,
+                    1)));
+            store.SetCollectorState("rollout_parser_revision", "15", 1);
+        }
+
+        await using var collector = CreateCollector(codexHome, temporary.Path);
+        await StartAndWaitForInventoryAsync(collector);
+
+        var option = Assert.Single(await collector.QueryRecentMainThreadsAsync(20));
+        Assert.Equal(conversationId, option.ConversationId);
+        Assert.Equal("codex-usage-desktop", option.ProjectName);
+
+        using var verified = new UsageStore(
+            databasePath,
+            protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
+        Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
+        Assert.Equal("16", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(16, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+    }
+
+    [Fact]
     public void TimestampedRolloutFallbackUsesExactTrailingUuidV7()
     {
         const string id = "019fb70e-1234-7abc-8def-0123456789ab";
@@ -1584,9 +1669,9 @@ public sealed class CollectionIntegrationTests
             Assert.Equal(CanonicalStatus.Canonical, source.CanonicalStatus);
             var checkpoint = Assert.Single(verified.ListRolloutCheckpoints());
             Assert.Equal(actualId, checkpoint.RolloutId);
-            Assert.Equal(15, checkpoint.ParserRevision);
+            Assert.Equal(16, checkpoint.ParserRevision);
             Assert.Equal(1, checkpoint.SafeNullPaddingRecords);
-            Assert.Equal("15", verified.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal("16", verified.GetCollectorState("rollout_parser_revision"));
         }
 
         await using var restarted = CreateCollector(codexHome, temporary.Path);
@@ -1622,7 +1707,7 @@ public sealed class CollectionIntegrationTests
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Null(store.GetRolloutMetadata(legacyId));
         Assert.NotNull(store.GetRolloutMetadata(actualId));
-        Assert.Equal("15", store.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("16", store.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
