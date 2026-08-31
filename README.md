@@ -64,10 +64,10 @@ git diff --check
 生成 x64 全用户安装包:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.22 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.23 -AutoDetectDependencies
 ```
 
-`-AutoDetectDependencies` 查找本机已有的 .NET 8 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.22-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+`-AutoDetectDependencies` 查找本机已有的 .NET 8 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.23-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
 安装器会在替换 payload 前终止正在运行的 Codex Usage Desktop process,并只删除当前 WinUI payload 的已知文件.卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 LocalAppData ledger.
 

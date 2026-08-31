@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.22',
+    [string]$Version = '0.3.23',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -35,6 +35,7 @@ if ($PSVersionTable.PSVersion -lt [version]'7.4') {
 $workspace = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $projectPath = Join-Path $workspace 'src\CodexUsage.App\CodexUsage.App.csproj'
 $installerScript = Join-Path $workspace 'installer\codex-usage-desktop.nsi'
+$installerRegressionScript = Join-Path $workspace 'installer\tests\installer-regression.nsi'
 $licenseFile = Join-Path $workspace 'LICENSE'
 $appIconFile = Join-Path $workspace 'assets\codex-usage-desktop.ico'
 $outputRoot = Join-Path $workspace 'release\winui-installer'
@@ -459,10 +460,60 @@ function New-PayloadArchive {
     }
 }
 
+function Get-PayloadSizeKilobytes {
+    param([Parameter(Mandatory)][string]$PublishPath)
+
+    [int64]$totalBytes = 0
+    foreach ($file in Get-ChildItem -LiteralPath $PublishPath -File -Recurse -Force) {
+        if ($file.Length -gt ([int64]::MaxValue - $totalBytes)) {
+            throw "Published payload size exceeds Int64 capacity: $PublishPath"
+        }
+        $totalBytes += $file.Length
+    }
+    if ($totalBytes -le 0) {
+        throw "Published payload contains no file bytes: $PublishPath"
+    }
+
+    return [int64][Math]::Ceiling($totalBytes / 1KB)
+}
+
 function Convert-ToNsisPath {
     param([Parameter(Mandatory)][string]$Path)
 
     return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Invoke-InstallerRegressionTests {
+    param(
+        [Parameter(Mandatory)][string]$MakeNsisPath,
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [Parameter(Mandatory)][int64]$PayloadSizeKilobytes
+    )
+
+    if ($PayloadSizeKilobytes -lt 1) {
+        throw "Installer payload size must be at least 1 KiB, found: $PayloadSizeKilobytes"
+    }
+    if ([System.IO.File]::Exists($OutputPath)) {
+        throw "Installer regression output already exists: $OutputPath"
+    }
+
+    Write-Host "Compiling installer regression checks with $MakeNsisPath"
+    Invoke-CheckedExecutable -ExecutablePath $MakeNsisPath -Arguments @(
+        '/V3',
+        '/WX',
+        '/INPUTCHARSET', 'UTF8',
+        "/DPAYLOAD_SIZE_KB=$PayloadSizeKilobytes",
+        "/DOUTPUT_FILE=$(Convert-ToNsisPath $OutputPath)",
+        (Convert-ToNsisPath $ScriptPath)
+    ) -Operation 'NSIS installer regression compilation'
+
+    if (-not [System.IO.File]::Exists($OutputPath) -or (Get-Item -LiteralPath $OutputPath).Length -le 0) {
+        throw "NSIS installer regression executable is missing or empty: $OutputPath"
+    }
+
+    Write-Host "Running installer regression checks: $OutputPath"
+    Invoke-CheckedExecutable -ExecutablePath $OutputPath -Arguments @('/S') -Operation 'NSIS installer regression execution'
 }
 
 function Assert-AppIcon {
@@ -555,14 +606,18 @@ function Assert-InstallerSafety {
         'Call EnsureAppClosed',
         'Call RemoveInstalledPayload',
         'Call DeployPayload',
+        'Call IsSafeInstallDirectory',
         'taskkill.exe',
         'taskkill.exe" /F /IM "${PRODUCT_EXE}"',
         '!include "${UNINSTALL_FILES_INCLUDE}"',
         '!ifndef PAYLOAD_ARCHIVE',
         '!ifndef PAYLOAD_EXTRACTOR',
+        '!ifndef PAYLOAD_SIZE_KB',
         'File /oname=payload.7z "${PAYLOAD_ARCHIVE}"',
         'File /oname=7zr.exe "${PAYLOAD_EXTRACTOR}"',
         '!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXE}"',
+        'InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"',
+        '!include "install-directory-validation.nsh"',
         '!ifndef APP_ICON_FILE',
         '!define MUI_ICON "${APP_ICON_FILE}"',
         '!define MUI_UNICON "${APP_ICON_FILE}"',
@@ -576,6 +631,9 @@ function Assert-InstallerSafety {
     if ($source.IndexOf('RMDir /r "$INSTDIR"', [System.StringComparison]::Ordinal) -ge 0) {
         throw 'Installer contains a recursive deletion of INSTDIR.'
     }
+    if ($source.IndexOf('GetFullPathName $INSTDIR "$INSTDIR"', [System.StringComparison]::Ordinal) -ge 0) {
+        throw 'Installer must not resolve a non-existent install directory before validation.'
+    }
     if ($source.IndexOf('File /r "${PUBLISH_DIR}\*.*"', [System.StringComparison]::Ordinal) -ge 0 -or
         $source.IndexOf('PUBLISH_DIR', [System.StringComparison]::Ordinal) -ge 0) {
         throw 'Installer must embed only the pre-compressed payload archive, not the publish directory.'
@@ -583,6 +641,12 @@ function Assert-InstallerSafety {
     $coreStart = $source.IndexOf('Section "$(SectionProgram)"', [System.StringComparison]::Ordinal)
     $coreEnd = $source.IndexOf('SectionEnd', $coreStart, [System.StringComparison]::Ordinal)
     $core = $source.Substring($coreStart, $coreEnd - $coreStart)
+    $payloadSizeCount = [System.Text.RegularExpressions.Regex]::Matches(
+        $core,
+        '(?m)^\s*AddSize\s+\$\{PAYLOAD_SIZE_KB\}\s*$').Count
+    if ($payloadSizeCount -ne 1) {
+        throw "Installer program section must include PAYLOAD_SIZE_KB exactly once, found $payloadSizeCount."
+    }
     $replacementOrderPattern = [System.Text.RegularExpressions.Regex]::new(
         'Call EnsureAppClosed\s+Call RemoveInstalledPayload\s+Call DeployPayload',
         [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
@@ -729,6 +793,9 @@ if (-not [System.IO.File]::Exists($projectPath)) {
 if (-not [System.IO.File]::Exists($installerScript)) {
     throw "NSIS script not found: $installerScript"
 }
+if (-not [System.IO.File]::Exists($installerRegressionScript)) {
+    throw "Installer regression script not found: $installerRegressionScript"
+}
 if (-not [System.IO.File]::Exists($appIconFile)) {
     throw "Application icon not found: $appIconFile"
 }
@@ -818,6 +885,7 @@ try {
     }
 
     Assert-WinUiPublish -PublishPath $publishDirectory -IconPath $appIconFile
+    $payloadInstalledSizeKilobytes = Get-PayloadSizeKilobytes -PublishPath $publishDirectory
     Write-UninstallManifest -PublishPath $publishDirectory -Destination $uninstallInclude
     $payload = New-PayloadArchive -BuilderPath $sevenZipBuilder -ExtractorPath $sevenZipRuntime -PublishPath $publishDirectory -ArchivePath $payloadArchive -ValidationPath $payloadValidationDirectory
     $extractedApplicationExe = Join-Path $payloadValidationDirectory 'Codex Usage Desktop.exe'
@@ -826,16 +894,24 @@ try {
     }
     Assert-WinUiPublish -PublishPath $payloadValidationDirectory -IconPath $appIconFile
     Write-Host "Payload archive size: $($payload.ArchiveSize) bytes"
+    Write-Host "Payload installed size: $payloadInstalledSizeKilobytes KiB"
     Write-Host "Payload compression elapsed: $($payload.CompressionElapsed)"
 
     $makeNsis = Find-MakeNsis -VerifiedPath $verifiedMakeNsisPath
     $fileVersion = "$Version.0"
+    $installerRegressionOutput = Join-Path $workDirectory 'installer-regression.exe'
+    Invoke-InstallerRegressionTests `
+        -MakeNsisPath $makeNsis `
+        -ScriptPath $installerRegressionScript `
+        -OutputPath $installerRegressionOutput `
+        -PayloadSizeKilobytes $payloadInstalledSizeKilobytes
     $makeNsisArguments = @(
         '/V3',
         '/WX',
         '/INPUTCHARSET', 'UTF8',
         "/DPRODUCT_VERSION=$Version",
         "/DPRODUCT_FILE_VERSION=$fileVersion",
+        "/DPAYLOAD_SIZE_KB=$payloadInstalledSizeKilobytes",
         "/DPAYLOAD_ARCHIVE=$(Convert-ToNsisPath $payload.ArchivePath)",
         "/DPAYLOAD_EXTRACTOR=$(Convert-ToNsisPath $sevenZipRuntime)",
         "/DOUTPUT_FILE=$(Convert-ToNsisPath $pendingSetupPath)",
@@ -864,6 +940,7 @@ try {
         MakeNsis = $makeNsis
         PayloadArchive = $payload.ArchivePath
         PayloadSize = $payload.ArchiveSize
+        PayloadInstalledSizeKiB = $payloadInstalledSizeKilobytes
         PayloadCompressionElapsed = $payload.CompressionElapsed
     }
 }

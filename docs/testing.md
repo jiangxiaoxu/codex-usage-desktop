@@ -9,7 +9,7 @@ dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.22 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.23 -AutoDetectDependencies
 git diff --check
 ```
 
@@ -47,7 +47,7 @@ git diff --check
 
 ## NSIS installer acceptance
 
-1. 在 clean Windows 11 x64 环境运行 setup,确认 UAC、全用户 Program Files 安装、开始菜单/桌面选项和 launch.
+1. 在 clean Windows 11 x64 环境运行 setup,确认 UAC、默认的非现有 `%ProgramFiles%\Codex Usage Desktop` 目录可通过校验、Components 页面显示非零 Required Space、全用户 Program Files 安装、开始菜单/桌面选项和 launch.
 2. 在已安装当前 WinUI 版本的环境运行更高版本 setup,确认 payload replacement 和正常 launch.
 3. 使用 `/S /CURRENTADMIN=1` 执行 silent upgrade,确认安装器完成 payload replacement 且不修改 LocalAppData ledger.
 4. 验证现有 HKCU Run entry 的保留或更新,并确认 `--startup` launch 进入预期 lifecycle.

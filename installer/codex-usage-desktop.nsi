@@ -18,11 +18,14 @@ Unicode true
 !ifndef APP_ICON_FILE
   !error "APP_ICON_FILE is required"
 !endif
+!ifndef PAYLOAD_SIZE_KB
+  !error "PAYLOAD_SIZE_KB is required"
+!endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.22"
+  !define PRODUCT_VERSION "0.3.23"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.22.0"
+  !define PRODUCT_FILE_VERSION "0.3.23.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
@@ -42,6 +45,7 @@ Unicode true
 !include "nsDialogs.nsh"
 !include "Sections.nsh"
 !include "x64.nsh"
+!include "install-directory-validation.nsh"
 
 !insertmacro VersionCompare
 ${StrStr}
@@ -387,20 +391,12 @@ Function EnsureAppClosed
 FunctionEnd
 
 Function ValidateInstallDirectory
-  GetFullPathName $INSTDIR "$INSTDIR"
-  ${GetRoot} "$INSTDIR" $0
-  StrCmp "$INSTDIR" "$0" invalid
+  Call IsSafeInstallDirectory
+  StrCmp "$0" "1" valid
 
-  ${GetFileName} "$INSTDIR" $1
-  StrCmp "$1" "${PRODUCT_NAME}" valid
-  ${If} ${FileExists} "$INSTDIR\${PRODUCT_EXE}"
-    Goto valid
-  ${EndIf}
-
-  invalid:
-    MessageBox MB_ICONSTOP "$(UnsafeInstallDir)" /SD IDOK
-    SetErrorLevel 11
-    Quit
+  MessageBox MB_ICONSTOP "$(UnsafeInstallDir)" /SD IDOK
+  SetErrorLevel 11
+  Quit
   valid:
 FunctionEnd
 
@@ -486,6 +482,7 @@ FunctionEnd
 
 Section "$(SectionProgram)" SEC_PROGRAM
   SectionIn RO
+  AddSize ${PAYLOAD_SIZE_KB}
   SetRegView 64
   SetShellVarContext all
   Call ValidateInstallDirectory

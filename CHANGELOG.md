@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.23] - 2026-08-31
+
+- Fixed clean installs rejecting the default non-existent `%ProgramFiles%\Codex Usage Desktop` directory while retaining dedicated-directory validation.
+- Report the published WinUI payload size on the installer Components page instead of `0 KB`.
+
 ## [0.3.22] - 2026-08-31
 
 - Classified Codex Guardian review rollouts as a dedicated `guardian_review` thread type with the `guardian` role, including automatic historical ledger re-attribution.
