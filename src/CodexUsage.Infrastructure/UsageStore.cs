@@ -6,7 +6,7 @@ namespace CodexUsage.Infrastructure;
 
 public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 7;
+    private const int SchemaVersion = 8;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -939,16 +939,20 @@ public sealed class UsageStore : IDisposable
             return;
         }
 
-        WriteTransaction(transaction =>
+        var requiresRolloutsRebuild = currentVersion is > 0 and < SchemaVersion;
+        if (requiresRolloutsRebuild) ExecuteNonQuery(null, "PRAGMA foreign_keys = OFF");
+        try
         {
-            if (currentVersion == 0)
+            WriteTransaction(transaction =>
             {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion == 0)
+                {
+                    ExecuteNonQuery(transaction, """
                     CREATE TABLE rollouts (
                         rollout_id TEXT PRIMARY KEY,
                         conversation_id TEXT NOT NULL,
                         parent_thread_id TEXT NOT NULL,
-                        thread_type TEXT NOT NULL CHECK (thread_type IN ('main', 'subagent', 'unknown')),
+                        thread_type TEXT NOT NULL CHECK (thread_type IN ('main', 'subagent', 'guardian_review', 'unknown')),
                         agent_role TEXT NOT NULL,
                         agent_path TEXT NOT NULL,
                         agent_nickname TEXT NOT NULL,
@@ -1027,20 +1031,20 @@ public sealed class UsageStore : IDisposable
                         updated_at_epoch_ms INTEGER NOT NULL CHECK (updated_at_epoch_ms >= 0)
                     ) STRICT;
                     """);
-            }
+                }
 
-            if (currentVersion == 1)
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion == 1)
+                {
+                    ExecuteNonQuery(transaction, """
                     ALTER TABLE rollouts
                     ADD COLUMN is_realtime_voice INTEGER NOT NULL DEFAULT 0
                     CHECK (is_realtime_voice IN (0, 1));
                     """);
-            }
+                }
 
-            if (currentVersion < 3)
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion < 3)
+                {
+                    ExecuteNonQuery(transaction, """
                     CREATE TABLE rollout_checkpoints (
                         file_path TEXT PRIMARY KEY REFERENCES source_files(file_path) ON DELETE CASCADE,
                         rollout_id TEXT NOT NULL REFERENCES rollouts(rollout_id) ON DELETE CASCADE,
@@ -1067,52 +1071,95 @@ public sealed class UsageStore : IDisposable
 
                     CREATE INDEX rollout_checkpoints_rollout_idx ON rollout_checkpoints(rollout_id);
                     """);
-            }
+                }
 
-            if (currentVersion == 3)
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion == 3)
+                {
+                    ExecuteNonQuery(transaction, """
                     ALTER TABLE rollout_checkpoints
                     ADD COLUMN safe_null_padding_records INTEGER NOT NULL DEFAULT 0
                     CHECK (safe_null_padding_records >= 0);
                     """);
-            }
+                }
 
-            if (currentVersion < 5 && !HasRolloutColumn(transaction, "thread_title"))
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion < 5 && !HasRolloutColumn(transaction, "thread_title"))
+                {
+                    ExecuteNonQuery(transaction, """
                     ALTER TABLE rollouts
                     ADD COLUMN thread_title TEXT NOT NULL DEFAULT '';
                     """);
-            }
+                }
 
-            if (currentVersion < 5 && !HasRolloutColumn(transaction, "last_activity_epoch_ms"))
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion < 5 && !HasRolloutColumn(transaction, "last_activity_epoch_ms"))
+                {
+                    ExecuteNonQuery(transaction, """
                     ALTER TABLE rollouts
                     ADD COLUMN last_activity_epoch_ms INTEGER NOT NULL DEFAULT 0
                     CHECK (last_activity_epoch_ms >= 0);
                     """);
-            }
+                }
 
-            if (currentVersion < 6 && !HasRolloutColumn(transaction, "project_name"))
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion < 6 && !HasRolloutColumn(transaction, "project_name"))
+                {
+                    ExecuteNonQuery(transaction, """
                     ALTER TABLE rollouts
                     ADD COLUMN project_name TEXT NOT NULL DEFAULT 'Codex';
                     """);
-            }
+                }
 
-            if (currentVersion < 7)
-            {
-                ExecuteNonQuery(transaction, """
+                if (currentVersion < 7)
+                {
+                    ExecuteNonQuery(transaction, """
                     CREATE INDEX IF NOT EXISTS rollouts_parent_thread_idx ON rollouts(parent_thread_id);
                     """);
-            }
+                }
 
-            ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
-            return 0;
-        });
+                if (requiresRolloutsRebuild)
+                {
+                    ExecuteNonQuery(transaction, """
+                        CREATE TABLE rollouts_guardian_migration (
+                            rollout_id TEXT PRIMARY KEY,
+                            conversation_id TEXT NOT NULL,
+                            parent_thread_id TEXT NOT NULL,
+                            thread_type TEXT NOT NULL CHECK (thread_type IN ('main', 'subagent', 'guardian_review', 'unknown')),
+                            agent_role TEXT NOT NULL,
+                            agent_path TEXT NOT NULL,
+                            agent_nickname TEXT NOT NULL,
+                            is_realtime_voice INTEGER NOT NULL CHECK (is_realtime_voice IN (0, 1)),
+                            project_name TEXT NOT NULL,
+                            thread_title TEXT NOT NULL,
+                            last_activity_epoch_ms INTEGER NOT NULL CHECK (last_activity_epoch_ms >= 0),
+                            canonical_source_path TEXT,
+                            created_at_epoch_ms INTEGER NOT NULL CHECK (created_at_epoch_ms >= 0),
+                            updated_at_epoch_ms INTEGER NOT NULL CHECK (updated_at_epoch_ms >= 0)
+                        ) STRICT;
+
+                        INSERT INTO rollouts_guardian_migration (
+                            rollout_id, conversation_id, parent_thread_id, thread_type,
+                            agent_role, agent_path, agent_nickname, is_realtime_voice,
+                            project_name, thread_title, last_activity_epoch_ms,
+                            canonical_source_path, created_at_epoch_ms, updated_at_epoch_ms
+                        )
+                        SELECT rollout_id, conversation_id, parent_thread_id, thread_type,
+                               agent_role, agent_path, agent_nickname, is_realtime_voice,
+                               project_name, thread_title, last_activity_epoch_ms,
+                               canonical_source_path, created_at_epoch_ms, updated_at_epoch_ms
+                        FROM rollouts;
+
+                        DROP TABLE rollouts;
+                        ALTER TABLE rollouts_guardian_migration RENAME TO rollouts;
+                        CREATE INDEX rollouts_parent_thread_idx ON rollouts(parent_thread_id);
+                        """);
+                }
+
+                ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
+                return 0;
+            });
+        }
+        finally
+        {
+            if (requiresRolloutsRebuild) ExecuteNonQuery(null, "PRAGMA foreign_keys = ON");
+        }
     }
 
     private AppendEventsResult AppendWithinTransaction(
@@ -1745,6 +1792,7 @@ public sealed class UsageStore : IDisposable
     {
         ThreadType.Main => "main",
         ThreadType.Subagent => "subagent",
+        ThreadType.GuardianReview => "guardian_review",
         ThreadType.Unknown => "unknown",
         _ => throw new ArgumentOutOfRangeException(nameof(value)),
     };
@@ -1753,6 +1801,7 @@ public sealed class UsageStore : IDisposable
     {
         "main" => ThreadType.Main,
         "subagent" => ThreadType.Subagent,
+        "guardian_review" => ThreadType.GuardianReview,
         "unknown" => ThreadType.Unknown,
         _ => throw new InvalidDataException($"Unknown thread type: {value}"),
     };

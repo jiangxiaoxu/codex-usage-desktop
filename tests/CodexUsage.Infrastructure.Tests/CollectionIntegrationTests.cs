@@ -1577,8 +1577,69 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("16", verified.GetCollectorState("rollout_parser_revision"));
-        Assert.Equal(16, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+        Assert.Equal("17", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(17, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+    }
+
+    [Fact]
+    public async Task ParserRevisionReclassifiesExistingGuardianReviewWithoutSourceChanges()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        const string conversationId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string rolloutId = "guardian-rollout";
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-guardian.jsonl");
+        var content = string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                session_id = conversationId,
+                id = rolloutId,
+                parent_thread_id = "parent-rollout",
+                thread_source = "guardian_review",
+                source = new { subagent = new { other = "guardian" } },
+            }),
+            Line("turn_context", new { turn_id = "turn-a", model = "codex-auto-review" }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]),
+        ]) + "\n";
+        WriteRollout(rolloutPath, content);
+        var file = new FileInfo(rolloutPath);
+        using (var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome)))
+        {
+            store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
+                new RolloutMetadata(conversationId, rolloutId, "parent-rollout", ThreadType.Unknown,
+                    "unknown", "/root", "", false, "Codex", "", 0),
+                [new UsageEventInput(
+                    0,
+                    DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
+                    "codex-auto-review", 10, 2, 4, 1, "stale-guardian")],
+                new CanonicalSourceInput(
+                    rolloutPath,
+                    file.Length,
+                    new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+                    file.Length,
+                    HashBoundary(content),
+                    PrefixStatus.Matches,
+                    1,
+                    null),
+                1,
+                null));
+            store.SetCollectorState("rollout_parser_revision", "16", 1);
+        }
+
+        await using var collector = CreateCollector(codexHome, temporary.Path);
+        var status = await StartAndWaitForInventoryAsync(collector);
+        var usage = Assert.Single(await collector.QueryEventsAsync(AllTimeQuery()));
+
+        Assert.Equal(1, status.UsageRevision);
+        Assert.Equal(ThreadType.GuardianReview, usage.ThreadType);
+        Assert.Equal("guardian", usage.AgentRole);
+        using var verified = new UsageStore(
+            databasePath,
+            protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
+        Assert.Equal(ThreadType.GuardianReview, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
+        Assert.Equal("17", verified.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -1669,9 +1730,9 @@ public sealed class CollectionIntegrationTests
             Assert.Equal(CanonicalStatus.Canonical, source.CanonicalStatus);
             var checkpoint = Assert.Single(verified.ListRolloutCheckpoints());
             Assert.Equal(actualId, checkpoint.RolloutId);
-            Assert.Equal(16, checkpoint.ParserRevision);
+            Assert.Equal(17, checkpoint.ParserRevision);
             Assert.Equal(1, checkpoint.SafeNullPaddingRecords);
-            Assert.Equal("16", verified.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal("17", verified.GetCollectorState("rollout_parser_revision"));
         }
 
         await using var restarted = CreateCollector(codexHome, temporary.Path);
@@ -1707,7 +1768,7 @@ public sealed class CollectionIntegrationTests
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Null(store.GetRolloutMetadata(legacyId));
         Assert.NotNull(store.GetRolloutMetadata(actualId));
-        Assert.Equal("16", store.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("17", store.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]

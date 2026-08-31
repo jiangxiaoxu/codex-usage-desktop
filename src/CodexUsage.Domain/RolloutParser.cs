@@ -667,7 +667,9 @@ public static partial class RolloutParser
             && TryGetObject(source, "subagent", out var subagent)
             && TryGetObject(subagent, "thread_spawn", out spawn);
         var threadSource = payload is { } value ? GetNonEmptyString(value, "thread_source") : null;
-        var threadType = threadSource == "subagent" || hasSpawn
+        var threadType = threadSource == "guardian_review"
+            ? ThreadType.GuardianReview
+            : threadSource == "subagent" || hasSpawn
             ? ThreadType.Subagent
             : threadSource is null or "user" or "realtime_voice" or "agent_created_thread" ? ThreadType.Main : ThreadType.Unknown;
         var rolloutId = payload is { } p ? GetNonEmptyString(p, "id") ?? fallbackRolloutId : fallbackRolloutId;
@@ -679,7 +681,12 @@ public static partial class RolloutParser
             rolloutId,
             Field("parent_thread_id", "parent_thread_id", string.Empty),
             threadType,
-            threadType == ThreadType.Main ? "main" : Field("agent_role", "agent_role", "unknown"),
+            threadType switch
+            {
+                ThreadType.Main => "main",
+                ThreadType.GuardianReview => "guardian",
+                _ => Field("agent_role", "agent_role", "unknown"),
+            },
             threadType == ThreadType.Main ? "/root" : Field("agent_path", "agent_path", "/root"),
             Field("agent_nickname", "agent_nickname", string.Empty),
             threadSource == "realtime_voice",

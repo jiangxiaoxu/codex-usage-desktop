@@ -298,15 +298,16 @@ public static class DashboardSubjectOrdering
     public static int SemanticOrder(string threadType, string role) => (threadType, role) switch
     {
         ("main", "root") => 0,
-        ("subagent", "worker") => 1,
-        ("subagent", "reviewer") => 2,
-        ("subagent", "explorer") => 3,
-        ("subagent", "scout") => 4,
-        ("subagent", "awaiter") => 5,
-        ("subagent", "scoped_worker") => 6,
-        ("subagent", "simple_worker") => 7,
-        ("subagent", "unknown") => 8,
-        _ => 9,
+        ("guardian_review", "guardian") => 1,
+        ("subagent", "worker") => 2,
+        ("subagent", "reviewer") => 3,
+        ("subagent", "explorer") => 4,
+        ("subagent", "scout") => 5,
+        ("subagent", "awaiter") => 6,
+        ("subagent", "scoped_worker") => 7,
+        ("subagent", "simple_worker") => 8,
+        ("subagent", "unknown") => 9,
+        _ => 10,
     };
 }
 

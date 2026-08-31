@@ -96,6 +96,30 @@ public sealed class DashboardViewModelTests
     }
 
     [Fact]
+    public async Task SnapshotPresentsGuardianReviewAsItsOwnThreadType()
+    {
+        var service = new FakeUsageDashboardService(Snapshot(
+            "guardian",
+            [],
+            CostBreakdown.UnpricedZero,
+            byRole:
+            [
+                new RoleUsageRow(
+                    ThreadType.GuardianReview,
+                    "guardian",
+                    1,
+                    Summary(CostBreakdown.UnpricedZero, unpricedTokens: 2)),
+            ]));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        var row = Assert.Single(viewModel.Subjects);
+        Assert.Equal("guardian_review", row.ThreadType);
+        Assert.Equal("guardian", row.Role);
+    }
+
+    [Fact]
     public async Task MainThreadFilterKeepsSelectionWhenAnOptionDisappearsAndReselectsRemainingOptionAfterClear()
     {
         var firstThread = MainThread(FirstCollidingMainThreadId, 100);

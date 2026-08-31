@@ -51,6 +51,29 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void GuardianReviewUsesItsExactThreadSourceAndGuardianRole()
+    {
+        var guardian = RolloutParser.Parse(Jsonl(Line("session_meta", new
+        {
+            session_id = "parent",
+            id = "guardian",
+            parent_thread_id = "parent-rollout",
+            thread_source = "guardian_review",
+            source = new { subagent = new { other = "guardian" } },
+        })), "fallback");
+        var unrelatedModel = RolloutParser.Parse(Jsonl(Line("session_meta", new
+        {
+            id = "not-guardian",
+            thread_source = "user",
+        }), ThreadSettings("codex-auto-review")), "fallback");
+
+        Assert.Equal(ThreadType.GuardianReview, guardian.Metadata.ThreadType);
+        Assert.Equal("guardian", guardian.Metadata.AgentRole);
+        Assert.Equal("/root", guardian.Metadata.AgentPath);
+        Assert.Equal(ThreadType.Main, unrelatedModel.Metadata.ThreadType);
+    }
+
+    [Fact]
     public void AgentCreatedThreadIsMainRoot()
     {
         var result = RolloutParser.Parse(Jsonl(

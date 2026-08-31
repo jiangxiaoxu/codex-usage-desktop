@@ -1194,15 +1194,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         "gpt-5.6-sol" => 0,
         "gpt-5.6-terra" => 1,
         "gpt-5.6-luna" => 2,
-        "codex-auto-review" => 3,
-        "Others" => 4,
-        _ => 5,
+        "Others" => 3,
+        _ => 4,
     };
 
     private static string SubjectTypeLabel(string threadType) => threadType switch
     {
         "main" => "主线程",
         "subagent" => "子代理",
+        "guardian_review" => "guardian_review",
         _ => threadType,
     };
 

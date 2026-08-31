@@ -6,6 +6,7 @@ public enum ThreadType
 {
     Main,
     Subagent,
+    GuardianReview,
     Unknown,
 }
 

@@ -7,7 +7,6 @@ public static class UsageAccounting
 {
     public const long LongContextInputTokenThreshold = 272_000;
     public const string OtherModelCategory = "Others";
-    public const string AutoReviewModelCategory = "codex-auto-review";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
     private static readonly string[] SupportedFamilies = ["gpt-5.6", "gpt-5.5", "gpt-5.4"];
@@ -36,7 +35,6 @@ public static class UsageAccounting
     {
         ArgumentNullException.ThrowIfNull(sourceModel);
         if (sourceModel == "unknown") return UnknownAttributionCategory;
-        if (sourceModel == AutoReviewModelCategory) return AutoReviewModelCategory;
         return SupportedFamilies.Any(family => sourceModel == family || sourceModel.StartsWith(family + "-", StringComparison.Ordinal))
             ? sourceModel
             : OtherModelCategory;
@@ -48,8 +46,7 @@ public static class UsageAccounting
     public static CostBreakdown CostFor(UsageEvent usageEvent)
     {
         var category = ModelCategory(usageEvent.Model);
-        if (category == OtherModelCategory) return CostBreakdown.PricedZero;
-        if (category is AutoReviewModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
+        if (category is OtherModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
             return CostBreakdown.UnpricedZero;
 
         var baselineUncached = (usageEvent.InputTokens - usageEvent.CachedInputTokens) * rate.Input / Million;
@@ -160,6 +157,7 @@ public static class UsageAccounting
     {
         ThreadType.Main => "main",
         ThreadType.Subagent => "subagent",
+        ThreadType.GuardianReview => "guardian_review",
         _ => "unknown",
     };
 

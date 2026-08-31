@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.22] - 2026-08-31
+
+- Classified Codex Guardian review rollouts as a dedicated `guardian_review` thread type with the `guardian` role, including automatic historical ledger re-attribution.
+- Grouped `codex-auto-review` and other non-GPT-5.4, GPT-5.5, or GPT-5.6 models into the unpriced `Others` category.
+
 ## [0.3.21] - 2026-08-27
 
 - Classified `agent_created_thread` sessions as main threads so they appear in main-thread filtering and aggregate descendant usage.

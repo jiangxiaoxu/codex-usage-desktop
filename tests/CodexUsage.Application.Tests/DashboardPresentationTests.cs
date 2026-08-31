@@ -801,6 +801,7 @@ public sealed class DashboardPresentationTests
             SubjectRow(5m, ThreadType.Subagent, "simple_worker"),
             SubjectRow(5m, ThreadType.Subagent, "zeta"),
             SubjectRow(5m, ThreadType.Subagent, "reviewer"),
+            SubjectRow(5m, ThreadType.GuardianReview, "guardian"),
             SubjectRow(5m, ThreadType.Subagent, "unknown"),
             SubjectRow(5m, ThreadType.Subagent, "scoped_worker"),
             SubjectRow(5m, ThreadType.Main, "root"),
@@ -810,7 +811,7 @@ public sealed class DashboardPresentationTests
         ]);
 
         Assert.Equal(
-            ["root", "worker", "reviewer", "scoped_worker", "simple_worker", "unknown", "alpha", "zeta", "omega"],
+            ["root", "guardian", "worker", "reviewer", "scoped_worker", "simple_worker", "unknown", "alpha", "zeta", "omega"],
             sorted.Select(row => row.AgentRole).ToArray());
     }
 

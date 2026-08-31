@@ -133,19 +133,19 @@ public sealed class UsageAccountingTests
         Assert.Equal(11.66m, mixed.Cost.Total);
         Assert.Equal(2.9m, mixed.Cost.LongContextPremium);
         Assert.Equal(mixed.Cost.Total / mixed.Cost.BaselineTotal, mixed.Cost.ActualToBaselineMultiplier);
-        Assert.Equal(1_100_000, mixed.UnpricedTokens);
+        Assert.Equal(2_200_000, mixed.UnpricedTokens);
         Assert.Equal(0m, zeroBaseline.Cost.BaselineTotal);
         Assert.Equal(0m, zeroBaseline.Cost.Total);
         Assert.Equal(0m, zeroBaseline.Cost.LongContextPremium);
         Assert.Null(zeroBaseline.Cost.ActualToBaselineMultiplier);
-        Assert.Equal(1_100_000, zeroBaseline.UnpricedTokens);
+        Assert.Equal(2_200_000, zeroBaseline.UnpricedTokens);
     }
 
     [Theory]
     [InlineData("gpt-5.4-mini", "gpt-5.4-mini")]
     [InlineData("gpt-5.5", "gpt-5.5")]
     [InlineData("gpt-5.6-preview", "gpt-5.6-preview")]
-    [InlineData("codex-auto-review", "codex-auto-review")]
+    [InlineData("codex-auto-review", "Others")]
     [InlineData("codex-auto-review-preview", "Others")]
     [InlineData("unknown", "Unknown attribution")]
     [InlineData("Unknown", "Others")]
@@ -155,17 +155,17 @@ public sealed class UsageAccountingTests
         Assert.Equal(expected, UsageAccounting.ModelCategory(model));
 
     [Fact]
-    public void OthersIsIntentionallyZeroPricedButAutoReviewUnknownAndUnsupportedVariantsAreUnpriced()
+    public void OthersAutoReviewUnknownAndUnsupportedVariantsAreUnpriced()
     {
         var other = Event with { Model = "o3" };
         var autoReview = Event with { Model = "codex-auto-review" };
         var unknown = Event with { Model = "unknown" };
         var variant = Event with { Model = "gpt-5.6-preview" };
-        Assert.True(UsageAccounting.CostFor(other).Priced);
+        Assert.False(UsageAccounting.CostFor(other).Priced);
         Assert.Equal(CostBreakdown.UnpricedZero, UsageAccounting.CostFor(autoReview));
         Assert.False(UsageAccounting.CostFor(unknown).Priced);
         Assert.False(UsageAccounting.CostFor(variant).Priced);
-        Assert.Equal(2_200_000, UsageAccounting.Summarize([other, unknown, variant]).UnpricedTokens);
+        Assert.Equal(3_300_000, UsageAccounting.Summarize([other, unknown, variant]).UnpricedTokens);
         Assert.Equal(1_100_000, UsageAccounting.Summarize([autoReview]).CanonicalTotalTokens);
         Assert.Equal(1_100_000, UsageAccounting.Summarize([autoReview]).UnpricedTokens);
     }
@@ -233,21 +233,21 @@ public sealed class UsageAccountingTests
         };
         var result = UsageAccounting.Query(events, ScanDiagnostics.Empty, Filter with { Models = ["gpt-5.6-sol"] });
         Assert.Single(result.ByModel);
-        Assert.Equal(4, result.Facets.Models.Length);
+        Assert.Equal(3, result.Facets.Models.Length);
         Assert.DoesNotContain(result.Facets.Models, value => value.Model == "gpt-5.4");
-        Assert.Contains(result.Facets.Models, value => value.Model == "Others");
         Assert.Contains(result.Facets.Models, value =>
-            value.Model == "codex-auto-review" && value.CanonicalTotalTokens == 1_100_000 && value.TotalCost == 0);
+            value.Model == "Others" && value.CanonicalTotalTokens == 2_200_000 && value.TotalCost == 0);
         Assert.Contains(result.Facets.Models, value => value.Model == "Unknown attribution");
 
-        var autoReviewOnly = UsageAccounting.Query(
+        var othersOnly = UsageAccounting.Query(
             events,
             ScanDiagnostics.Empty,
-            Filter with { Models = ["codex-auto-review"] });
-        Assert.Single(autoReviewOnly.ByModel);
-        Assert.Equal("codex-auto-review", autoReviewOnly.ByModel[0].Key[0]);
-        Assert.Equal(1_100_000, autoReviewOnly.Summary.CanonicalTotalTokens);
-        Assert.Equal(0, autoReviewOnly.Summary.Cost.Total);
+            Filter with { Models = ["Others"] });
+        Assert.Single(othersOnly.ByModel);
+        Assert.Equal("Others", othersOnly.ByModel[0].Key[0]);
+        Assert.Equal(2_200_000, othersOnly.Summary.CanonicalTotalTokens);
+        Assert.Equal(0, othersOnly.Summary.Cost.Total);
+        Assert.Equal(2_200_000, othersOnly.Summary.UnpricedTokens);
     }
 
 }

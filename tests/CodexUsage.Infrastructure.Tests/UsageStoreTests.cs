@@ -15,17 +15,17 @@ public sealed class UsageStoreTests
         "main", "/root", string.Empty, false, "Codex", string.Empty, 0);
 
     [Fact]
-    public void EmptyDatabaseMigratesToExactSchemaV7AndRequiredPragmas()
+    public void EmptyDatabaseMigratesToExactSchemaV8AndRequiredPragmas()
     {
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(7, store.CurrentSchemaVersion);
+            Assert.Equal(8, store.CurrentSchemaVersion);
         }
 
         using var connection = Open(databasePath);
-        Assert.Equal(7L, ScalarLong(connection, "PRAGMA user_version"));
+        Assert.Equal(8L, ScalarLong(connection, "PRAGMA user_version"));
         Assert.Equal(1L, ScalarLong(connection, "PRAGMA foreign_keys"));
         Assert.Equal("wal", ScalarString(connection, "PRAGMA journal_mode"));
         Assert.Equal(
@@ -94,7 +94,7 @@ public sealed class UsageStoreTests
 
         using var store = new UsageStore(databasePath);
 
-        Assert.Equal(7, store.CurrentSchemaVersion);
+        Assert.Equal(8, store.CurrentSchemaVersion);
         Assert.False(store.GetRolloutMetadata("rollout-1")!.IsRealtimeVoice);
     }
 
@@ -105,7 +105,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(7, store.CurrentSchemaVersion);
+            Assert.Equal(8, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var command = connection.CreateCommand())
@@ -119,7 +119,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(7, migrated.CurrentSchemaVersion);
+        Assert.Equal(8, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("safe_null_padding_records",
             ReadStrings(verified, "SELECT name FROM pragma_table_info('rollout_checkpoints')"));
@@ -146,7 +146,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(7, migrated.CurrentSchemaVersion);
+        Assert.Equal(8, migrated.CurrentSchemaVersion);
         Assert.Equal("Codex", migrated.GetRolloutMetadata("rollout-1")!.ProjectName);
     }
 
@@ -171,12 +171,65 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(7, migrated.CurrentSchemaVersion);
+        Assert.Equal(8, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("rollouts_parent_thread_idx", ReadStrings(verified, """
             SELECT name FROM sqlite_schema
             WHERE type = 'index' AND tbl_name = 'rollouts'
             """));
+    }
+
+    [Fact]
+    public void SchemaV7MigrationRebuildsThreadTypeConstraintWithoutLosingUsage()
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using (var store = new UsageStore(databasePath))
+        {
+            store.AppendEvents(Metadata, [Event(0, 1_000)], 1_000);
+        }
+        using (var connection = Open(databasePath))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE rollouts_v7 (
+                    rollout_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    parent_thread_id TEXT NOT NULL,
+                    thread_type TEXT NOT NULL CHECK (thread_type IN ('main', 'subagent', 'unknown')),
+                    agent_role TEXT NOT NULL,
+                    agent_path TEXT NOT NULL,
+                    agent_nickname TEXT NOT NULL,
+                    is_realtime_voice INTEGER NOT NULL CHECK (is_realtime_voice IN (0, 1)),
+                    project_name TEXT NOT NULL,
+                    thread_title TEXT NOT NULL,
+                    last_activity_epoch_ms INTEGER NOT NULL CHECK (last_activity_epoch_ms >= 0),
+                    canonical_source_path TEXT,
+                    created_at_epoch_ms INTEGER NOT NULL CHECK (created_at_epoch_ms >= 0),
+                    updated_at_epoch_ms INTEGER NOT NULL CHECK (updated_at_epoch_ms >= 0)
+                ) STRICT;
+                INSERT INTO rollouts_v7 SELECT * FROM rollouts;
+                DROP TABLE rollouts;
+                ALTER TABLE rollouts_v7 RENAME TO rollouts;
+                CREATE INDEX rollouts_parent_thread_idx ON rollouts(parent_thread_id);
+                PRAGMA user_version = 7;
+                PRAGMA foreign_keys = ON;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        using var migrated = new UsageStore(databasePath);
+
+        Assert.Equal(8, migrated.CurrentSchemaVersion);
+        Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
+        migrated.AppendEvents(Metadata with
+        {
+            RolloutId = "guardian-rollout",
+            ThreadType = ThreadType.GuardianReview,
+            AgentRole = "guardian",
+        }, [], 1_000);
+        Assert.Equal(ThreadType.GuardianReview, migrated.GetRolloutMetadata("guardian-rollout")!.ThreadType);
     }
 
     [Fact]
@@ -840,7 +893,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(7, store.CurrentSchemaVersion);
+            Assert.Equal(8, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var transaction = connection.BeginTransaction())
