@@ -23,6 +23,7 @@ public static class UsageAccounting
     {
         ["gpt-5.6"] = new(5m, 0.5m, 30m),
         ["gpt-5.6-sol"] = new(5m, 0.5m, 30m),
+        // Standard API prices from the 2026-07-30 price-performance announcement, in USD per 1M tokens.
         ["gpt-5.6-terra"] = new(2m, 0.2m, 12m),
         ["gpt-5.6-luna"] = new(0.2m, 0.02m, 1.2m),
         ["gpt-5.5"] = new(5m, 0.5m, 30m),

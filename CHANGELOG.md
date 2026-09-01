@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.25] - 2026-09-01
+
+- Fixed GPT-5.6 API-equivalent estimates to use the standard prices in OpenAI's 2026-07-30 price-performance announcement.
+- Documented that displayed USD values do not represent Plus/Pro subscription charges and do not add a separate Codex cache-write fee.
+
 ## [0.3.24] - 2026-09-01
 
 - Fixed upgrades and repairs into an existing dedicated directory being rejected by the installer path validator.
