@@ -58,6 +58,12 @@ Function .onInit
     StrCpy $INSTDIR "$PLUGINSDIR\${PRODUCT_NAME}"
     Call AssertSafeInstallDirectory
 
+    ; An existing dedicated directory must follow the same single-backslash
+    ; absolute-path validation as a fresh install.
+    CreateDirectory "$INSTDIR"
+    IfErrors failed
+    Call AssertSafeInstallDirectory
+
     ${GetRoot} "$PROGRAMFILES64" $1
     StrCpy $INSTDIR "$1\"
     Call AssertUnsafeInstallDirectory
@@ -78,6 +84,13 @@ Function .onInit
     IfErrors failed
     FileClose $2
     Call AssertSafeInstallDirectory
+
+    ; The runner compiles this script once with REGRESSION_CANARY to prove
+    ; that a non-zero child exit code is observed instead of being hidden.
+    !ifdef REGRESSION_CANARY
+      SetErrorLevel 99
+      Quit
+    !endif
 
     SetErrorLevel 0
     Quit

@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.24] - 2026-09-01
+
+- Fixed upgrades and repairs into an existing dedicated directory being rejected by the installer path validator.
+- Hardened installer regression execution to wait for child completion and fail on non-zero exit codes.
+
 ## [0.3.23] - 2026-08-31
 
 - Fixed clean installs rejecting the default non-existent `%ProgramFiles%\Codex Usage Desktop` directory while retaining dedicated-directory validation.

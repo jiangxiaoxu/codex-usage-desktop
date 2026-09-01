@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.23',
+    [string]$Version = '0.3.24',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -513,7 +513,54 @@ function Invoke-InstallerRegressionTests {
     }
 
     Write-Host "Running installer regression checks: $OutputPath"
-    Invoke-CheckedExecutable -ExecutablePath $OutputPath -Arguments @('/S') -Operation 'NSIS installer regression execution'
+    $regressionProcess = Start-Process `
+        -FilePath $OutputPath `
+        -ArgumentList @('/S') `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru
+    $regressionExitCode = $regressionProcess.ExitCode
+    if ($regressionExitCode -ne 0) {
+        throw "NSIS installer regression execution failed with exit code $regressionExitCode."
+    }
+
+    # Verify that this runner does not mask a failing child process. The
+    # canary uses the same compiled checks but exits with a deliberate error.
+    $canaryOutputPath = "$OutputPath.canary.exe"
+    if ([System.IO.File]::Exists($canaryOutputPath)) {
+        [System.IO.File]::Delete($canaryOutputPath)
+    }
+    try {
+        Invoke-CheckedExecutable -ExecutablePath $MakeNsisPath -Arguments @(
+            '/V3',
+            '/WX',
+            '/INPUTCHARSET', 'UTF8',
+            "/DREGRESSION_CANARY=1",
+            "/DPAYLOAD_SIZE_KB=$PayloadSizeKilobytes",
+            "/DOUTPUT_FILE=$(Convert-ToNsisPath $canaryOutputPath)",
+            (Convert-ToNsisPath $ScriptPath)
+        ) -Operation 'NSIS installer regression canary compilation'
+        if (-not [System.IO.File]::Exists($canaryOutputPath)) {
+            throw "NSIS installer regression canary executable is missing: $canaryOutputPath"
+        }
+
+        $canaryProcess = Start-Process `
+            -FilePath $canaryOutputPath `
+            -ArgumentList @('/S') `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+        $canaryExitCode = $canaryProcess.ExitCode
+        if ($canaryExitCode -eq 0) {
+            throw 'NSIS installer regression canary unexpectedly succeeded; child failures may be masked.'
+        }
+        Write-Host "Installer regression canary failed as expected with exit code $canaryExitCode"
+    }
+    finally {
+        if ([System.IO.File]::Exists($canaryOutputPath)) {
+            [System.IO.File]::Delete($canaryOutputPath)
+        }
+    }
 }
 
 function Assert-AppIcon {

@@ -27,7 +27,7 @@ Function IsSafeInstallDirectory
   ; GetRoot returns a drive root without its trailing separator. Require that
   ; separator to reject drive-relative paths such as C:folder.
   StrCpy $3 "$INSTDIR" 1 $2
-  StrCmp "$3" "\\" has_absolute_root
+  StrCmp "$3" "\" has_absolute_root
   StrCmp "$3" "/" has_absolute_root
   Goto done
 
