@@ -47,6 +47,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private string _sourceFilesText = "0";
     private string _retryQueueText = "0";
     private string _watcherStatusText = "启动中";
+    private long _collectorConflicts;
     private string _headerStatusText = "正在启动";
     private string _headerStatusGlyph = "\uE895";
     private DashboardHeaderStatusTone _headerStatusTone = DashboardHeaderStatusTone.Muted;
@@ -897,7 +898,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyStatus(CollectorStatus status, bool synchronizeDiagnostics = true)
     {
-        HealthStatusText = status.Phase switch
+        _collectorConflicts = status.Conflicts;
+        var healthStatus = status.Phase switch
         {
             CollectorPhase.Watching => "正常",
             CollectorPhase.Partial => "部分解析",
@@ -907,6 +909,9 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             CollectorPhase.Stopped => "已停止",
             _ => "初始化",
         };
+        HealthStatusText = _collectorConflicts > 0
+            ? $"{healthStatus} · 冲突 {_collectorConflicts.ToString("N0", CultureInfo.CurrentCulture)}"
+            : healthStatus;
         LastReconciliationText = status.LastSuccessfulInventoryUtc is { } reconciled
             ? reconciled.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture)
             : "—";
@@ -926,7 +931,9 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         CoverageText = coverage.Text;
         CollectorStatusText = status.Message;
         var headerPresentation = DashboardHeaderStatusPresentation.From(status.Phase);
-        HeaderStatusText = headerPresentation.Text;
+        HeaderStatusText = _collectorConflicts > 0
+            ? $"{headerPresentation.Text} · 冲突 {_collectorConflicts.ToString("N0", CultureInfo.CurrentCulture)}"
+            : headerPresentation.Text;
         HeaderStatusGlyph = headerPresentation.Glyph;
         if (_headerStatusTone != headerPresentation.Tone)
         {
@@ -939,8 +946,12 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     private DiagnosticRow[] CreateStatusDiagnostics() =>
     [
-        new("健康状态", HealthStatusText, $"Watcher: {WatcherStatusText}"),
-        new("Watcher", WatcherStatusText, CollectorStatusText),
+        new("健康状态", HealthStatusText, _collectorConflicts > 0
+            ? $"Watcher: {WatcherStatusText} · 检测到 {_collectorConflicts.ToString("N0", CultureInfo.CurrentCulture)} 个 source conflict"
+            : $"Watcher: {WatcherStatusText}"),
+        new("Watcher", WatcherStatusText, _collectorConflicts > 0
+            ? $"{CollectorStatusText} · 需处理 {_collectorConflicts.ToString("N0", CultureInfo.CurrentCulture)} 个 source conflict"
+            : CollectorStatusText),
         new("上次对账", LastReconciliationText, "最近完成的全量对账"),
         new("源文件", SourceFilesText, "已发现的 rollout JSONL"),
         new("待处理文件", RetryQueueText, "等待处理的源文件"),

@@ -13,7 +13,10 @@ public sealed record RolloutMetadata(
     bool IsRealtimeVoice,
     string ProjectName,
     string ThreadTitle,
-    long LastActivityEpochMs);
+    long LastActivityEpochMs)
+{
+    public bool IsPaginatedContinuation { get; init; }
+}
 
 public sealed record MainThreadOption(
     string ConversationId,
@@ -55,13 +58,16 @@ public sealed record RolloutParseDiagnostics(
     int DuplicateSnapshotsSkipped,
     int ZeroBreakdownSnapshotsSkipped,
     int InvalidTokenRelationshipsSkipped,
-    int InvalidTimestampsSkipped)
+    int InvalidTimestampsSkipped,
+    int InvalidPaginatedHistoryMetadata)
 {
     public int SafeOpaqueOversizedRecordsSkipped => OversizedRecords.Count(value =>
         value.Disposition == OversizedRecordDisposition.SafeOpaqueSkipped);
 
     public bool HasUnsafeOversizedRecords => OversizedRecords.Any(value =>
         value.Disposition != OversizedRecordDisposition.SafeOpaqueSkipped);
+
+    public bool HasInvalidPaginatedHistoryMetadata => InvalidPaginatedHistoryMetadata > 0;
 }
 
 public enum OversizedRecordDisposition
@@ -85,6 +91,7 @@ public enum OversizedRecordKind
     Compacted,
     ImageGenerationEnd,
     McpToolCallEnd,
+    ItemCompleted,
 }
 
 public sealed record OversizedRecordDiagnostic(

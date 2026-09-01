@@ -162,6 +162,7 @@ public static partial class RolloutParser
         private readonly ImmutableDictionary<string, string>.Builder _turnModels;
         private readonly List<TokenCandidate> _candidates = [];
         private bool _hasMetadata;
+        private bool _hasInvalidPaginatedHistoryMetadata;
         private RolloutMetadata _metadata;
         private string _currentTurnId;
         private bool _currentTurnModelOverridden;
@@ -174,7 +175,7 @@ public static partial class RolloutParser
             _priorState = priorState;
             _turnModels = priorState?.TurnModels.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
             _hasMetadata = priorState?.HasMetadata ?? false;
-            _metadata = priorState?.Metadata ?? MetadataFrom(null, fallbackRolloutId);
+            _metadata = priorState?.Metadata ?? MetadataFrom(null, fallbackRolloutId).Metadata;
             _currentTurnId = priorState?.CurrentTurnId ?? string.Empty;
             _currentTurnModelOverridden = priorState?.CurrentTurnModelOverridden ?? false;
             _currentModel = priorState?.CurrentModel ?? "unknown";
@@ -217,14 +218,22 @@ public static partial class RolloutParser
                     _diagnostics.NonObjectLines++;
                     return;
                 }
+                if (_hasInvalidPaginatedHistoryMetadata) return;
                 var eventType = GetNonEmptyString(root, "type");
                 var hasPayload = TryGetObject(root, "payload", out var payload);
                 RecordActivity(root);
 
                 if (eventType == "session_meta" && !_hasMetadata && hasPayload)
                 {
+                    var parsedMetadata = MetadataFrom(payload, _metadata.RolloutId);
+                    if (parsedMetadata.InvalidPaginatedHistoryMetadata)
+                    {
+                        _diagnostics.InvalidPaginatedHistoryMetadata++;
+                        _hasInvalidPaginatedHistoryMetadata = true;
+                        return;
+                    }
                     _hasMetadata = true;
-                    _metadata = MetadataFrom(payload, _metadata.RolloutId) with
+                    _metadata = parsedMetadata.Metadata with
                     {
                         ThreadTitle = _metadata.ThreadTitle,
                         LastActivityEpochMs = Math.Max(
@@ -642,6 +651,7 @@ public static partial class RolloutParser
             || reader.ValueTextEquals("task_complete"u8)) return OversizedPayloadType.EventContext;
         if (reader.ValueTextEquals("image_generation_end"u8)) return OversizedPayloadType.ImageGenerationEnd;
         if (reader.ValueTextEquals("mcp_tool_call_end"u8)) return OversizedPayloadType.McpToolCallEnd;
+        if (reader.ValueTextEquals("item_completed"u8)) return OversizedPayloadType.ItemCompleted;
         if (reader.ValueTextEquals("custom_tool_call"u8)
             || reader.ValueTextEquals("custom_tool_call_output"u8)
             || reader.ValueTextEquals("function_call"u8)
@@ -659,8 +669,9 @@ public static partial class RolloutParser
         return OversizedPayloadType.Other;
     }
 
-    private static RolloutMetadata MetadataFrom(JsonElement? payload, string fallbackRolloutId)
+    private static ParsedMetadata MetadataFrom(JsonElement? payload, string fallbackRolloutId)
     {
+        var paginatedContinuation = PaginatedContinuationFrom(payload, fallbackRolloutId);
         JsonElement spawn = default;
         var hasSpawn = payload is { } metadata
             && TryGetObject(metadata, "source", out var source)
@@ -672,27 +683,51 @@ public static partial class RolloutParser
             : threadSource == "subagent" || hasSpawn
             ? ThreadType.Subagent
             : threadSource is null or "user" or "realtime_voice" or "agent_created_thread" ? ThreadType.Main : ThreadType.Unknown;
-        var rolloutId = payload is { } p ? GetNonEmptyString(p, "id") ?? fallbackRolloutId : fallbackRolloutId;
+        var rolloutId = paginatedContinuation.SegmentRolloutId
+            ?? (payload is { } p ? GetNonEmptyString(p, "id") ?? fallbackRolloutId : fallbackRolloutId);
         string? Top(string name) => payload is { } topPayload ? GetNonEmptyString(topPayload, name) : null;
         string Field(string nestedName, string topName, string fallback) =>
             hasSpawn ? GetNonEmptyString(spawn, nestedName) ?? Top(topName) ?? fallback : Top(topName) ?? fallback;
         return new(
-            payload is { } data ? GetNonEmptyString(data, "session_id") ?? rolloutId : rolloutId,
-            rolloutId,
-            Field("parent_thread_id", "parent_thread_id", string.Empty),
-            threadType,
-            threadType switch
+            new RolloutMetadata(
+                paginatedContinuation.RootConversationId
+                    ?? (payload is { } data ? GetNonEmptyString(data, "session_id") ?? rolloutId : rolloutId),
+                rolloutId,
+                paginatedContinuation.RootConversationId
+                    ?? Field("parent_thread_id", "parent_thread_id", string.Empty),
+                threadType,
+                threadType switch
+                {
+                    ThreadType.Main => "main",
+                    ThreadType.GuardianReview => "guardian",
+                    _ => Field("agent_role", "agent_role", "unknown"),
+                },
+                threadType == ThreadType.Main ? "/root" : Field("agent_path", "agent_path", "/root"),
+                Field("agent_nickname", "agent_nickname", string.Empty),
+                threadSource == "realtime_voice",
+                ProjectNameFromCwd(Top("cwd")),
+                string.Empty,
+                0)
             {
-                ThreadType.Main => "main",
-                ThreadType.GuardianReview => "guardian",
-                _ => Field("agent_role", "agent_role", "unknown"),
+                IsPaginatedContinuation = paginatedContinuation.SegmentRolloutId is not null,
             },
-            threadType == ThreadType.Main ? "/root" : Field("agent_path", "agent_path", "/root"),
-            Field("agent_nickname", "agent_nickname", string.Empty),
-            threadSource == "realtime_voice",
-            ProjectNameFromCwd(Top("cwd")),
-            string.Empty,
-            0);
+            paginatedContinuation.Invalid);
+    }
+
+    private static PaginatedContinuation PaginatedContinuationFrom(JsonElement? payload, string fallbackRolloutId)
+    {
+        if (payload is not { } metadata || GetNonEmptyString(metadata, "history_mode") != "paginated")
+            return PaginatedContinuation.None;
+        if (!metadata.TryGetProperty("history_base", out var historyBase) || historyBase.ValueKind == JsonValueKind.Null)
+            return PaginatedContinuation.None;
+        if (historyBase.ValueKind != JsonValueKind.Object) return PaginatedContinuation.InvalidMetadata;
+        var threadId = GetNonEmptyString(historyBase, "thread_id");
+        var endOrdinal = GetNonNegativeSafeInteger(historyBase, "end_ordinal_exclusive");
+        var endByteOffset = GetNonNegativeSafeInteger(historyBase, "end_byte_offset");
+        if (threadId is null || !UuidV7Pattern().IsMatch(threadId)
+            || endOrdinal is null || endByteOffset is null || !UuidV7Pattern().IsMatch(fallbackRolloutId))
+            return PaginatedContinuation.InvalidMetadata;
+        return new(fallbackRolloutId, threadId, false);
     }
 
     private static string ProjectNameFromCwd(string? cwd)
@@ -807,6 +842,12 @@ public static partial class RolloutParser
     private static partial Regex UuidV7Pattern();
 
     private sealed record StableInput(int ByteLength, bool TrailingPartialLine);
+    private sealed record ParsedMetadata(RolloutMetadata Metadata, bool InvalidPaginatedHistoryMetadata);
+    private sealed record PaginatedContinuation(string? SegmentRolloutId, string? RootConversationId, bool Invalid)
+    {
+        public static PaginatedContinuation None { get; } = new(null, null, false);
+        public static PaginatedContinuation InvalidMetadata { get; } = new(null, null, true);
+    }
     private sealed record OversizedRecordSliceResult(
         int BytesConsumed,
         JsonReaderState ReaderState,
@@ -829,10 +870,11 @@ public static partial class RolloutParser
         public int ZeroBreakdownSnapshotsSkipped { get; set; }
         public int InvalidTokenRelationshipsSkipped { get; set; }
         public int InvalidTimestampsSkipped { get; set; }
+        public int InvalidPaginatedHistoryMetadata { get; set; }
         public RolloutParseDiagnostics ToImmutable() => new(BlankLines, SafeNullPaddingRecordsSkipped,
             MalformedLines, NonObjectLines, [.. OversizedRecords],
             InvalidTokenUsageLines, DuplicateSnapshotsSkipped, ZeroBreakdownSnapshotsSkipped,
-            InvalidTokenRelationshipsSkipped, InvalidTimestampsSkipped);
+            InvalidTokenRelationshipsSkipped, InvalidTimestampsSkipped, InvalidPaginatedHistoryMetadata);
     }
 
     private sealed class OversizedRecordInspector(int stableLineNumber, int recordByteLength)
@@ -934,6 +976,8 @@ public static partial class RolloutParser
                     Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.ImageGenerationEnd),
                 (OversizedEventType.EventMessage, OversizedPayloadType.McpToolCallEnd, true) =>
                     Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.McpToolCallEnd),
+                (OversizedEventType.EventMessage, OversizedPayloadType.ItemCompleted, true) =>
+                    Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.ItemCompleted),
                 (OversizedEventType.Compacted, _, _) =>
                     Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.Compacted),
                 _ => Create(OversizedRecordDisposition.UnsafeUnclassified, OversizedRecordKind.Unknown),
@@ -972,5 +1016,6 @@ public static partial class RolloutParser
         OpaqueResponseItem,
         ImageGenerationEnd,
         McpToolCallEnd,
+        ItemCompleted,
     }
 }

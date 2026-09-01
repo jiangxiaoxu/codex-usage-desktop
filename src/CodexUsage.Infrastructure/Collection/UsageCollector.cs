@@ -17,8 +17,7 @@ public sealed class UsageCollector : IUsageCollector
 {
     private const int BoundaryWindowBytes = 64 * 1024;
     private const long ReverseReconciliationMaximumBytes = 64L * 1024 * 1024;
-    private const int ParserRevision = 17;
-    private const string PartialSourceErrorPrefix = "partial-opaque-oversized:";
+    private const int ParserRevision = 19;
     private static readonly TimeSpan RepeatedFailureDiagnosticInterval = TimeSpan.FromMinutes(5);
     private const string ParserRevisionStateKey = "rollout_parser_revision";
     private const string LastInventoryStateKey = "last_successful_inventory_epoch_ms";
@@ -75,7 +74,12 @@ public sealed class UsageCollector : IUsageCollector
     private ObservationGap? _gap;
     private bool _started;
     private bool _stopping;
-    private bool _watcherHealthy = true;
+    private WatcherMonitorState _watcherState = WatcherMonitorState.Healthy;
+    private int _watcherRecoveryGeneration;
+    private int _watcherRecoveryFailures;
+    private int _watcherReconciliationGeneration;
+    private int _watcherReconciliationFailures;
+    private bool _watcherReconciliationQueued;
     private int _timerInventoryQueued;
     private bool _inventoryActive;
     private long _lastInventoryCompletedTimestamp;
@@ -247,6 +251,16 @@ public sealed class UsageCollector : IUsageCollector
                     case WatcherWakeCommand:
                         DrainWatcherInbox();
                         break;
+                    case WatcherRecoveryCommand recovery when recovery.Generation == _watcherRecoveryGeneration
+                        && _started && !_stopping:
+                        AttemptWatcherRecovery();
+                        break;
+                    case WatcherReconciliationCommand reconciliation when reconciliation.Generation == _watcherReconciliationGeneration
+                        && _watcherState == WatcherMonitorState.AwaitingInventory
+                        && _started && !_stopping:
+                        _watcherReconciliationQueued = false;
+                        await RunBackgroundInventoryAsync(cancellationToken).ConfigureAwait(false);
+                        break;
                     case DrainWatcherCommand drain when drain.Generation == _debounceGeneration:
                         _debounce?.Dispose();
                         _debounce = null;
@@ -330,7 +344,11 @@ public sealed class UsageCollector : IUsageCollector
         _store.BeginCollectorRun(new CollectorRunStartInput(_runId, "application-session", _runStartedEpochMs));
         await RehydrateCheckpointsAsync(cancellationToken).ConfigureAwait(false);
         _started = true;
-        if (_options.EnableWatchers) StartWatchers();
+        if (_options.EnableWatchers && !StartWatchers())
+        {
+            _watcherState = WatcherMonitorState.Faulted;
+            ScheduleWatcherRecovery();
+        }
         StartTimers();
         _phase = CollectorPhase.Syncing;
         _message = "Ledger ready; initial inventory queued";
@@ -634,14 +652,16 @@ public sealed class UsageCollector : IUsageCollector
         && token.OutputTokens == ledger.OutputTokens
         && token.ReasoningOutputTokens == ledger.ReasoningOutputTokens;
 
-    private void StartWatchers()
+    private bool StartWatchers()
     {
+        var watchers = new List<FileSystemWatcher>();
         foreach (var root in _observationRoots)
         {
             if (!Directory.Exists(root)) continue;
+            FileSystemWatcher? watcher = null;
             try
             {
-                var watcher = new FileSystemWatcher(root, "rollout-*.jsonl")
+                watcher = new FileSystemWatcher(root, "rollout-*.jsonl")
                 {
                     IncludeSubdirectories = true,
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
@@ -653,38 +673,71 @@ public sealed class UsageCollector : IUsageCollector
                 watcher.Renamed += OnWatcherRenamed;
                 watcher.Error += OnWatcherError;
                 watcher.EnableRaisingEvents = true;
-                _watchers.Add(watcher);
+                watchers.Add(watcher);
             }
             catch (Exception error)
             {
-                _watcherHealthy = false;
                 AddDiagnostic(root, "watcher-start-failed", error.Message, DiagnosticSeverity.Warning);
+                watcher?.Dispose();
+                DisposeWatchers(watchers);
+                return false;
             }
         }
 
-        if (!Directory.Exists(_options.CodexHome)) return;
-        try
+        if (Directory.Exists(_options.CodexHome))
         {
-            var watcher = new FileSystemWatcher(_options.CodexHome, "session_index.jsonl")
+            FileSystemWatcher? watcher = null;
+            try
             {
-                IncludeSubdirectories = false,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
-                EnableRaisingEvents = false,
-            };
-            watcher.Created += OnSessionIndexWatcherChanged;
-            watcher.Changed += OnSessionIndexWatcherChanged;
-            watcher.Deleted += OnSessionIndexWatcherChanged;
-            watcher.Renamed += OnSessionIndexWatcherRenamed;
-            watcher.Error += OnWatcherError;
-            watcher.EnableRaisingEvents = true;
-            _watchers.Add(watcher);
-        }
-        catch (Exception error)
-        {
-            _watcherHealthy = false;
-            AddDiagnostic(_options.CodexHome, "session-index-watcher-start-failed", error.Message, DiagnosticSeverity.Warning);
+                watcher = new FileSystemWatcher(_options.CodexHome, "session_index.jsonl")
+                {
+                    IncludeSubdirectories = false,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
+                    EnableRaisingEvents = false,
+                };
+                watcher.Created += OnSessionIndexWatcherChanged;
+                watcher.Changed += OnSessionIndexWatcherChanged;
+                watcher.Deleted += OnSessionIndexWatcherChanged;
+                watcher.Renamed += OnSessionIndexWatcherRenamed;
+                watcher.Error += OnWatcherError;
+                watcher.EnableRaisingEvents = true;
+                watchers.Add(watcher);
+            }
+            catch (Exception error)
+            {
+                AddDiagnostic(_options.CodexHome, "session-index-watcher-start-failed", error.Message, DiagnosticSeverity.Warning);
+                watcher?.Dispose();
+                DisposeWatchers(watchers);
+                return false;
+            }
         }
 
+        _watchers.AddRange(watchers);
+        return true;
+    }
+
+    private void StopWatchers()
+    {
+        DisposeWatchers(_watchers);
+        _watchers.Clear();
+    }
+
+    private void DisposeWatchers(IEnumerable<FileSystemWatcher> watchers)
+    {
+        foreach (var watcher in watchers)
+        {
+            watcher.EnableRaisingEvents = false;
+            watcher.Created -= OnWatcherChanged;
+            watcher.Changed -= OnWatcherChanged;
+            watcher.Deleted -= OnWatcherChanged;
+            watcher.Renamed -= OnWatcherRenamed;
+            watcher.Created -= OnSessionIndexWatcherChanged;
+            watcher.Changed -= OnSessionIndexWatcherChanged;
+            watcher.Deleted -= OnSessionIndexWatcherChanged;
+            watcher.Renamed -= OnSessionIndexWatcherRenamed;
+            watcher.Error -= OnWatcherError;
+            watcher.Dispose();
+        }
     }
 
     private void OnWatcherChanged(object sender, FileSystemEventArgs args) => EnqueueWatcherObservation(args.FullPath);
@@ -713,6 +766,13 @@ public sealed class UsageCollector : IUsageCollector
     internal void EnqueueWatcherObservationForTest(string filePath) => EnqueueWatcherObservation(filePath);
 
     internal void EnqueueSessionIndexObservationForTest() => EnqueueSessionIndexObservation(_sessionIndexPath);
+
+    internal void EnqueueWatcherErrorForTest(string message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        Interlocked.Exchange(ref _watcherErrorInbox, message);
+        SignalWatcherInbox();
+    }
 
     internal (int UniquePaths, int WakeSignals) GetWatcherBufferMetricsForTest() =>
         (_watcherInbox.Count, Volatile.Read(ref _watcherWakeQueued));
@@ -747,10 +807,7 @@ public sealed class UsageCollector : IUsageCollector
     {
         var watcherError = Interlocked.Exchange(ref _watcherErrorInbox, null);
         if (watcherError is not null)
-        {
-            _watcherHealthy = false;
-            Degrade($"Watcher error: {watcherError}");
-        }
+            TransitionWatcherToFaulted($"Watcher error: {watcherError}");
         foreach (var item in _watcherInbox.ToArray())
         {
             if (_watcherInbox.TryRemove(item.Key, out var filePath)) QueueWatcherPath(filePath);
@@ -763,6 +820,93 @@ public sealed class UsageCollector : IUsageCollector
         Interlocked.Exchange(ref _watcherWakeQueued, 0);
         if (!_watcherInbox.IsEmpty || Volatile.Read(ref _watcherErrorInbox) is not null
             || Volatile.Read(ref _sessionIndexWatcherPending) != 0) SignalWatcherInbox();
+    }
+
+    private void TransitionWatcherToFaulted(string message)
+    {
+        if (!_options.EnableWatchers) return;
+        InvalidateWatcherReconciliation();
+        _watcherState = WatcherMonitorState.Faulted;
+        _watcherRecoveryGeneration = checked(_watcherRecoveryGeneration + 1);
+        Degrade(message);
+        AttemptWatcherRecovery();
+    }
+
+    private void AttemptWatcherRecovery()
+    {
+        if (!_options.EnableWatchers || _watcherState != WatcherMonitorState.Faulted) return;
+        _watcherState = WatcherMonitorState.Rebuilding;
+        StopWatchers();
+        if (!StartWatchers())
+        {
+            _watcherState = WatcherMonitorState.Faulted;
+            _watcherRecoveryFailures = checked(_watcherRecoveryFailures + 1);
+            Degrade("Watcher rebuild failed.");
+            ScheduleWatcherRecovery();
+            return;
+        }
+
+        _watcherRecoveryFailures = 0;
+        _watcherState = WatcherMonitorState.AwaitingInventory;
+        _message = "Watcher rebuilt; reconciliation is required before health can be restored";
+        PublishStatus();
+        if (!_commands.Writer.TryWrite(new InitialInventoryCommand()))
+            throw new ObjectDisposedException(nameof(UsageCollector));
+    }
+
+    private void ScheduleWatcherRecovery()
+    {
+        if (!_options.EnableWatchers || _stopping) return;
+        var generation = checked(_watcherRecoveryGeneration + 1);
+        _watcherRecoveryGeneration = generation;
+        var attempt = Math.Max(0, _watcherRecoveryFailures - 1);
+        var multiplier = 1L << Math.Min(attempt, 5);
+        var delayMilliseconds = Math.Min(_options.RetryBaseDelay.TotalMilliseconds * multiplier, 4_000);
+        _ = EnqueueAfterDelayAsync(
+            new WatcherRecoveryCommand(generation),
+            TimeSpan.FromMilliseconds(delayMilliseconds),
+            _lifetime.Token);
+    }
+
+    private void ScheduleWatcherReconciliation()
+    {
+        if (_watcherState != WatcherMonitorState.AwaitingInventory || _stopping || _watcherReconciliationQueued) return;
+        _watcherReconciliationFailures = checked(_watcherReconciliationFailures + 1);
+        var attempt = Math.Max(0, _watcherReconciliationFailures - 1);
+        var multiplier = 1L << Math.Min(attempt, 30);
+        var delayMilliseconds = Math.Min(
+            _options.RetryBaseDelay.TotalMilliseconds * multiplier,
+            _options.FullInventoryInterval.TotalMilliseconds);
+        var generation = checked(_watcherReconciliationGeneration + 1);
+        _watcherReconciliationGeneration = generation;
+        _watcherReconciliationQueued = true;
+        _ = EnqueueAfterDelayAsync(
+            new WatcherReconciliationCommand(generation),
+            TimeSpan.FromMilliseconds(delayMilliseconds),
+            _lifetime.Token);
+    }
+
+    private void InvalidateWatcherReconciliation()
+    {
+        _watcherReconciliationGeneration = checked(_watcherReconciliationGeneration + 1);
+        _watcherReconciliationFailures = 0;
+        _watcherReconciliationQueued = false;
+    }
+
+    private void CompleteWatcherRecoveryAfterInventory(
+        bool inventoryFullyCovered,
+        long conflicts,
+        int watcherRecoveryGenerationAtInventoryStart)
+    {
+        if (_watcherState != WatcherMonitorState.AwaitingInventory
+            || !inventoryFullyCovered
+            || conflicts > 0
+            || _retryStates.Count > 0
+            || watcherRecoveryGenerationAtInventoryStart != _watcherRecoveryGeneration
+            || Volatile.Read(ref _watcherErrorInbox) is not null) return;
+        _watcherState = WatcherMonitorState.Healthy;
+        InvalidateWatcherReconciliation();
+        AddDiagnostic(null, "watcher-recovered", "Watcher rebuilt and a full inventory completed without gaps.", DiagnosticSeverity.Info);
     }
 
     private void StartTimers()
@@ -812,6 +956,7 @@ public sealed class UsageCollector : IUsageCollector
         catch (Exception error) when (error is not OperationCanceledException)
         {
             Degrade(error.Message);
+            ScheduleWatcherReconciliation();
         }
     }
 
@@ -866,6 +1011,7 @@ public sealed class UsageCollector : IUsageCollector
         var inventorySucceeded = true;
         var usageChanged = false;
         long changedFiles = 0;
+        var watcherRecoveryGenerationAtInventoryStart = _watcherRecoveryGeneration;
         var fullBytesBefore = _fullReconcileBytesRead;
         var appendBytesBefore = _appendBytesRead;
         _conflictsAttempted.Clear();
@@ -899,6 +1045,7 @@ public sealed class UsageCollector : IUsageCollector
             if (source.IsPresent && !present.ContainsKey(NormalizeKey(source.FilePath)))
             {
                 MarkMissing(source.FilePath);
+                ClearSourceFailure(NormalizeKey(source.FilePath));
                 changedFiles++;
             }
             await slice.ItemProcessedAsync(cancellationToken).ConfigureAwait(false);
@@ -981,6 +1128,8 @@ public sealed class UsageCollector : IUsageCollector
             try
             {
                 var stat = GetFileStat(filePath);
+                var watcherRecoveryRequiresVerification = _watcherState == WatcherMonitorState.AwaitingInventory
+                    && _retryStates.ContainsKey(key);
                 var canonicalUnavailable = known?.RolloutId is { } rolloutId
                     && GetCanonical(rolloutId) is { } canonical
                     && !present.ContainsKey(NormalizeKey(canonical));
@@ -990,7 +1139,7 @@ public sealed class UsageCollector : IUsageCollector
                     || known.ModifiedAtEpochMs != stat.ModifiedAtEpochMs
                     || (known.CanonicalStatus == CanonicalStatus.Conflict && !_conflictsAttempted.Contains(key))
                     || (sourcesWithUnknownModels.Contains(key) && !_unknownModelsAttempted.Contains(key))
-                    || canonicalUnavailable || canonicalNeedsCheckpoint;
+                    || canonicalUnavailable || canonicalNeedsCheckpoint || watcherRecoveryRequiresVerification;
                 if (changed)
                 {
                     changedFiles++;
@@ -1032,21 +1181,24 @@ public sealed class UsageCollector : IUsageCollector
             JsonSerializer.Serialize(new { fullBytesRead, appendBytesRead, changedFiles }),
             NowEpochMs()));
         _diagnostics.CooperativeYieldCount += yields.Count;
-        var inventoryFullyCovered = inventorySucceeded && _partialSourceKeys.Count == 0;
+        var inventoryFullyCovered = inventorySucceeded;
         if (inventoryFullyCovered)
         {
             _lastSuccessfulInventoryEpochMs = NowEpochMs();
             store.SetCollectorState(LastInventoryStateKey, _lastSuccessfulInventoryEpochMs.Value.ToString(), _lastSuccessfulInventoryEpochMs.Value);
             store.SetCollectorState(InventoryYieldCountStateKey, yields.Count.ToString(), _lastSuccessfulInventoryEpochMs.Value);
         }
+        var conflicts = store.CountSourceConflicts();
+        CompleteWatcherRecoveryAfterInventory(inventoryFullyCovered, conflicts, watcherRecoveryGenerationAtInventoryStart);
+        if (_watcherState == WatcherMonitorState.AwaitingInventory
+            && Volatile.Read(ref _watcherErrorInbox) is null)
+            ScheduleWatcherReconciliation();
         _phase = ResolvePostInventoryPhase(
             inventorySucceeded,
             inventoryFullyCovered,
-            store.CountSourceConflicts());
+            conflicts);
         _message = !inventorySucceeded
             ? $"Inventory incomplete after processing {changedFiles} changed sources"
-            : _partialSourceKeys.Count > 0
-                ? $"Inventory current with {_partialSourceKeys.Count} partially parsed sources"
             : changedFiles == 0 ? "Inventory is current" : $"Processed {changedFiles} changed sources";
         AdvanceUsageRevision(usageChanged);
         ServiceInteractiveCommands();
@@ -1213,14 +1365,15 @@ public sealed class UsageCollector : IUsageCollector
             if (_pendingPaths.Count > 0) await YieldToMailboxAsync(cancellationToken).ConfigureAwait(false);
         }
         _changedFilesLastSync = processed;
+        if (_watcherState == WatcherMonitorState.AwaitingInventory && succeeded && _retryStates.Count == 0
+            && !_commands.Writer.TryWrite(new InitialInventoryCommand()))
+            throw new ObjectDisposedException(nameof(UsageCollector));
         _phase = ResolvePostWatcherPhase(RequireStore().CountSourceConflicts());
         _message = _phase == CollectorPhase.Retrying
             ? "Watcher is processing the latest change in the background"
             : !succeeded
                 ? $"Watcher could not process {processed} paths"
-            : _partialSourceKeys.Count > 0
-                ? $"Watcher current with {_partialSourceKeys.Count} partially parsed sources"
-                : processed == 0 ? "Watcher changes are current" : $"Processed {processed} watcher paths";
+            : processed == 0 ? "Watcher changes are current" : $"Processed {processed} watcher paths";
         AdvanceUsageRevision(usageChanged);
         if (processed > 0 || usageChanged || !succeeded) PublishStatus();
     }
@@ -1230,7 +1383,7 @@ public sealed class UsageCollector : IUsageCollector
         bool inventoryFullyCovered,
         long conflicts)
     {
-        if (!inventorySucceeded || !_watcherHealthy || conflicts > 0) return CollectorPhase.Degraded;
+        if (!inventorySucceeded || _watcherState != WatcherMonitorState.Healthy || conflicts > 0) return CollectorPhase.Degraded;
         if (HasScheduledRecoverableRetries()) return CollectorPhase.Retrying;
         if (_retryStates.Count > 0) return CollectorPhase.Degraded;
         return inventoryFullyCovered ? CollectorPhase.Watching : CollectorPhase.Partial;
@@ -1238,15 +1391,15 @@ public sealed class UsageCollector : IUsageCollector
 
     private CollectorPhase ResolvePostWatcherPhase(long conflicts)
     {
-        if (!_watcherHealthy || conflicts > 0) return CollectorPhase.Degraded;
+        if (_watcherState != WatcherMonitorState.Healthy || conflicts > 0) return CollectorPhase.Degraded;
         if (HasScheduledRecoverableRetries()) return CollectorPhase.Retrying;
         if (_retryStates.Count > 0) return CollectorPhase.Degraded;
-        return _partialSourceKeys.Count == 0 ? CollectorPhase.Watching : CollectorPhase.Partial;
+        return CollectorPhase.Watching;
     }
 
     private bool HasScheduledRecoverableRetries()
     {
-        return _watcherHealthy
+        return _watcherState == WatcherMonitorState.Healthy
             && _retryStates.Count > 0
             && _retryStates.Values.All(retry =>
                 (retry.Scheduled || retry.InFlight)
@@ -1426,10 +1579,7 @@ public sealed class UsageCollector : IUsageCollector
         {
             var partialSource = SourceFrom(
                 filePath, snapshot.Stat, runtime.ByteOffset, runtime.BoundaryHash,
-                CanonicalStatus.Canonical, PrefixStatus.Matches,
-                runtime.SafeOpaqueOversizedRecordsSkipped > 0 || runtime.SafeNullPaddingRecordsSkipped > 0
-                    ? PartialSourceMessage(runtime.SafeOpaqueOversizedRecordsSkipped, runtime.SafeNullPaddingRecordsSkipped)
-                    : null);
+                CanonicalStatus.Canonical, PrefixStatus.Matches, null);
             var partialCheckpoint = CreateCheckpoint(
                 filePath, snapshot.Stat, snapshot.SourceIdentity, runtime.ByteOffset, runtime.BoundaryHash,
                 result.State, runtime.SafeOpaqueOversizedRecordsSkipped, runtime.SafeNullPaddingRecordsSkipped,
@@ -1458,9 +1608,8 @@ public sealed class UsageCollector : IUsageCollector
             + result.Diagnostics.SafeOpaqueOversizedRecordsSkipped);
         var safeNullPaddingSkipped = checked(runtime.SafeNullPaddingRecordsSkipped
             + result.Diagnostics.SafeNullPaddingRecordsSkipped);
-        var isPartial = safeOpaqueSkipped > 0 || safeNullPaddingSkipped > 0;
         var source = SourceFrom(filePath, snapshot.Stat, newOffset, hash, CanonicalStatus.Canonical, PrefixStatus.Matches,
-            isPartial ? PartialSourceMessage(safeOpaqueSkipped, safeNullPaddingSkipped) : null);
+            null);
         var checkpoint = CreateCheckpoint(
             filePath, snapshot.Stat, snapshot.SourceIdentity, newOffset, hash, result.State,
             safeOpaqueSkipped, safeNullPaddingSkipped, snapshot.Stat.Size - newOffset);
@@ -1533,12 +1682,6 @@ public sealed class UsageCollector : IUsageCollector
         var parsed = (ParsedSnapshot)snapshot;
         var result = parsed.Result;
         var metadata = ApplyThreadPickerMetadata(result.Metadata);
-        var partialSourceMessage = result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
-                || result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
-            ? PartialSourceMessage(
-                result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
-                result.Diagnostics.SafeNullPaddingRecordsSkipped)
-            : null;
         AddDiagnostics(filePath, result.Diagnostics);
         if (known?.RolloutId is { } legacyRolloutId
             && legacyRolloutId != result.Metadata.RolloutId
@@ -1547,12 +1690,23 @@ public sealed class UsageCollector : IUsageCollector
             && context.Reason == ParseReason.ParserRevision
             && context.ExpectedRolloutId == legacyRolloutId
             && IsStrictLegacyIdentityChange(filePath, legacyRolloutId, result.Metadata.RolloutId)
-            && TryRekeyLegacyCanonical(filePath, legacyRolloutId, parsed, partialSourceMessage))
+            && TryRekeyLegacyCanonical(filePath, legacyRolloutId, parsed))
         {
             return true;
         }
         if (known?.RolloutId is { } previousRollout && previousRollout != result.Metadata.RolloutId && isKnownCanonical)
         {
+            if (result.Metadata.IsPaginatedContinuation
+                && known.CanonicalStatus == CanonicalStatus.Conflict
+                && context.Reason == ParseReason.ParserRevision
+                && context.ExpectedRolloutId == result.Metadata.RolloutId)
+            {
+                var baseRecovery = await TryRecoverConflictedCanonicalAsync(
+                    previousRollout, filePath, null, yields, cancellationToken).ConfigureAwait(false);
+                if (!baseRecovery.Recovered) return baseRecovery.UsageChanged;
+                var reclassified = await ProcessFullFileAsync(filePath, context, yields, cancellationToken).ConfigureAwait(false);
+                return baseRecovery.UsageChanged || reclassified;
+            }
             var confirmed = await ConfirmStableSnapshotAsync(filePath, parsed, yields, cancellationToken).ConfigureAwait(false);
             if (confirmed is not ParsedSnapshot confirmedParsed || confirmedParsed.Result.Metadata.RolloutId != result.Metadata.RolloutId)
                 throw new IOException("Canonical source identity changed between recovery snapshots.");
@@ -1563,7 +1717,7 @@ public sealed class UsageCollector : IUsageCollector
                 && context.ExpectedRolloutId == previousRollout
                 && known.CanonicalStatus == CanonicalStatus.Conflict
                 && IsStrictLegacyIdentityChange(filePath, previousRollout, result.Metadata.RolloutId)
-                && TryRekeyLegacyCanonical(filePath, previousRollout, confirmedParsed, partialSourceMessage))
+                && TryRekeyLegacyCanonical(filePath, previousRollout, confirmedParsed))
                 return true;
             var recovery = await TryRecoverConflictedCanonicalAsync(
                 previousRollout, filePath, null, yields, cancellationToken).ConfigureAwait(false);
@@ -1592,7 +1746,7 @@ public sealed class UsageCollector : IUsageCollector
             if (result.Metadata.RolloutId != context.ExpectedRolloutId)
                 throw new InvalidDataException($"Canonical source rollout changed from {context.ExpectedRolloutId} to {result.Metadata.RolloutId}.");
             var source = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
-                CanonicalStatus.Canonical, PrefixStatus.Matches, partialSourceMessage);
+                CanonicalStatus.Canonical, PrefixStatus.Matches, null);
             var parserRevisionCheckpoint = CreateCheckpoint(
                 filePath, parsed.Stat, parsed.SourceIdentity, result.StableByteLength, parsed.BoundaryHash,
                 result.State, result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
@@ -1647,7 +1801,7 @@ public sealed class UsageCollector : IUsageCollector
         if (relation == SignatureRelationship.Shorter)
         {
             UpsertSource(SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
-                CanonicalStatus.Candidate, PrefixStatus.Matches, partialSourceMessage), result.Metadata.RolloutId);
+                CanonicalStatus.Candidate, PrefixStatus.Matches, null), result.Metadata.RolloutId);
             _runtimeByPath.Remove(NormalizeKey(filePath));
             return false;
         }
@@ -1667,8 +1821,7 @@ public sealed class UsageCollector : IUsageCollector
             && _sourcesByPath.TryGetValue(NormalizeKey(canonicalPath), out var canonicalSource) && canonicalSource.IsPresent;
         var shouldPromote = relation == SignatureRelationship.Extension || canonicalPath is null || !canonicalPresent || isCurrentCanonical;
         var candidateSource = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
-            shouldPromote ? CanonicalStatus.Canonical : CanonicalStatus.Candidate, PrefixStatus.Matches,
-            partialSourceMessage);
+            shouldPromote ? CanonicalStatus.Canonical : CanonicalStatus.Candidate, PrefixStatus.Matches, null);
         if (!shouldPromote)
         {
             UpsertSource(candidateSource, result.Metadata.RolloutId);
@@ -1698,13 +1851,12 @@ public sealed class UsageCollector : IUsageCollector
     private bool TryRekeyLegacyCanonical(
         string filePath,
         string legacyRolloutId,
-        ParsedSnapshot parsed,
-        string? partialSourceMessage)
+        ParsedSnapshot parsed)
     {
         var result = parsed.Result;
         var metadata = ApplyThreadPickerMetadata(result.Metadata);
         var source = SourceFrom(filePath, parsed.Stat, result.StableByteLength, parsed.BoundaryHash,
-            CanonicalStatus.Canonical, PrefixStatus.Matches, partialSourceMessage);
+            CanonicalStatus.Canonical, PrefixStatus.Matches, null);
         var checkpoint = CreateCheckpoint(
             filePath, parsed.Stat, parsed.SourceIdentity, result.StableByteLength, parsed.BoundaryHash,
             result.State, result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
@@ -1778,13 +1930,7 @@ public sealed class UsageCollector : IUsageCollector
             observedAt,
             checkpoint));
         var source = SourceFrom(filePath, parsed.Stat, parsed.Result.StableByteLength, parsed.BoundaryHash,
-            CanonicalStatus.Canonical, PrefixStatus.Matches,
-            parsed.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
-                    || parsed.Result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
-                ? PartialSourceMessage(
-                    parsed.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
-                    parsed.Result.Diagnostics.SafeNullPaddingRecordsSkipped)
-                : null);
+            CanonicalStatus.Canonical, PrefixStatus.Matches, null);
         RequireStore().UpsertSourceFile(new SourceFileInput(
             source.FilePath, rolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
@@ -1870,12 +2016,7 @@ public sealed class UsageCollector : IUsageCollector
             selected.Snapshot.BoundaryHash,
             CanonicalStatus.Canonical,
             PrefixStatus.Matches,
-            selected.Snapshot.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped > 0
-                    || selected.Snapshot.Result.Diagnostics.SafeNullPaddingRecordsSkipped > 0
-                ? PartialSourceMessage(
-                    selected.Snapshot.Result.Diagnostics.SafeOpaqueOversizedRecordsSkipped,
-                    selected.Snapshot.Result.Diagnostics.SafeNullPaddingRecordsSkipped)
-                : null);
+            null);
         var checkpoint = CreateCheckpoint(
             selected.FilePath, selected.Snapshot.Stat, selected.Snapshot.SourceIdentity,
             selected.Snapshot.Result.StableByteLength, selected.Snapshot.BoundaryHash,
@@ -2035,7 +2176,7 @@ public sealed class UsageCollector : IUsageCollector
         var result = await ParseAsync(buffer, FallbackRolloutId(filePath), null, yields, cancellationToken).ConfigureAwait(false);
         var contentHash = await CooperativeSha256Async(buffer, yields, cancellationToken).ConfigureAwait(false);
         var unsafeContent = result.Diagnostics.MalformedLines > 0 || result.Diagnostics.NonObjectLines > 0
-            || result.Diagnostics.HasUnsafeOversizedRecords;
+            || result.Diagnostics.HasUnsafeOversizedRecords || result.Diagnostics.HasInvalidPaginatedHistoryMetadata;
         var hashLength = unsafeContent
             ? buffer.Length : result.StableByteLength;
         var boundaryHash = ComputeBoundaryHash(buffer, hashLength);
@@ -2226,7 +2367,10 @@ public sealed class UsageCollector : IUsageCollector
         if (snapshot is UnsafeSnapshot unsafeSnapshot) throw new InvalidDataException(unsafeSnapshot.Message);
         var parsed = (ParsedSnapshot)snapshot;
         _sourcesByPath.TryGetValue(NormalizeKey(filePath), out var known);
+        var isConflictedPaginatedContinuation = known?.CanonicalStatus == CanonicalStatus.Conflict
+            && parsed.Result.Metadata.IsPaginatedContinuation;
         if (known?.RolloutId is { } rolloutId && rolloutId != parsed.Result.Metadata.RolloutId
+            && !isConflictedPaginatedContinuation
             && !(GetCanonical(rolloutId) is { } designatedCanonical
                 && PathsEqual(designatedCanonical, known.FilePath)
                 && string.Equals(
@@ -2239,9 +2383,10 @@ public sealed class UsageCollector : IUsageCollector
                     parsed.Result.Metadata.RolloutId,
                     StringComparison.Ordinal)))
             throw new InvalidDataException($"Known source rollout changed from {rolloutId} to {parsed.Result.Metadata.RolloutId}.");
-        var viable = known?.CanonicalStatus != CanonicalStatus.Conflict
+        var viable = isConflictedPaginatedContinuation || known?.CanonicalStatus != CanonicalStatus.Conflict
             || (known?.RolloutId is { } knownRollout && GetCanonical(knownRollout) is { } canonical && PathsEqual(canonical, known.FilePath));
-        return new RevisionCandidate(known?.FilePath ?? filePath, known?.RolloutId ?? parsed.Result.Metadata.RolloutId,
+        return new RevisionCandidate(known?.FilePath ?? filePath,
+            isConflictedPaginatedContinuation ? parsed.Result.Metadata.RolloutId : known?.RolloutId ?? parsed.Result.Metadata.RolloutId,
             parsed.Result.StableByteLength, parsed.Stat.Size, parsed.Stat.ModifiedAtEpochMs, viable);
     }
 
@@ -2302,8 +2447,7 @@ public sealed class UsageCollector : IUsageCollector
             source.FilePath, source.RolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
             source.IsPresent, source.LastScannedAtEpochMs, source.LastError);
-        if (source.IsPresent && IsPartialSourceError(source.LastError)) _partialSourceKeys.Add(key);
-        else _partialSourceKeys.Remove(key);
+        _partialSourceKeys.Remove(key);
         if (source.RolloutId is { } rolloutId)
         {
             if (!_sourceKeysByRollout.TryGetValue(rolloutId, out var keys))
@@ -2365,7 +2509,7 @@ public sealed class UsageCollector : IUsageCollector
             {
                 IsPresent = true,
                 LastScannedAtEpochMs = NowEpochMs(),
-                LastError = IsPartialSourceError(known.LastError) ? known.LastError : error.Message,
+                LastError = error.Message,
             };
             RequireStore().UpsertSourceFile(ToInput(updated));
             _sourcesByPath[key] = updated;
@@ -2536,8 +2680,7 @@ public sealed class UsageCollector : IUsageCollector
         _stopping = true;
         _debounce?.Cancel();
         _debounce?.Dispose();
-        foreach (var watcher in _watchers) watcher.Dispose();
-        _watchers.Clear();
+        StopWatchers();
         _inventoryTimer?.Dispose();
         _heartbeatTimer?.Dispose();
         if (_inventoryTimerTask is not null) await _inventoryTimerTask.ConfigureAwait(false);
@@ -2800,7 +2943,7 @@ public sealed class UsageCollector : IUsageCollector
     private static void RejectInternalDamage(string filePath, RolloutChunkParseResult result)
     {
         if (result.Diagnostics.MalformedLines > 0 || result.Diagnostics.NonObjectLines > 0
-            || result.Diagnostics.HasUnsafeOversizedRecords)
+            || result.Diagnostics.HasUnsafeOversizedRecords || result.Diagnostics.HasInvalidPaginatedHistoryMetadata)
             throw new InvalidDataException($"Stable JSONL content is malformed: {filePath}");
     }
 
@@ -2808,8 +2951,7 @@ public sealed class UsageCollector : IUsageCollector
     {
         if (_failureDiagnostics.ContainsKey(key)
             && _sourcesByPath.TryGetValue(key, out var known)
-            && known.LastError is not null
-            && !IsPartialSourceError(known.LastError))
+            && known.LastError is not null)
         {
             var updated = known with { LastError = null, LastScannedAtEpochMs = NowEpochMs() };
             RequireStore().UpsertSourceFile(ToInput(updated));
@@ -2818,12 +2960,6 @@ public sealed class UsageCollector : IUsageCollector
         _retryStates.Remove(key);
         _failureDiagnostics.Remove(key);
     }
-
-    private static bool IsPartialSourceError(string? value) =>
-        value?.StartsWith(PartialSourceErrorPrefix, StringComparison.Ordinal) == true;
-
-    private static string PartialSourceMessage(int oversizedRecords, int nullPaddingRecords) =>
-        $"{PartialSourceErrorPrefix} safely skipped {oversizedRecords} opaque oversized records and {nullPaddingRecords} all-NUL padding records";
 
     private static string ComputeBoundaryHash(byte[] buffer, int stableByteLength)
     {
@@ -2938,6 +3074,10 @@ public sealed class UsageCollector : IUsageCollector
     private sealed record InitialInventoryCommand : CollectorCommand;
 
     private sealed record WatcherWakeCommand : CollectorCommand;
+
+    private sealed record WatcherRecoveryCommand(int Generation) : CollectorCommand;
+
+    private sealed record WatcherReconciliationCommand(int Generation) : CollectorCommand;
 
     private sealed record DrainWatcherCommand(long Generation) : CollectorCommand;
 
@@ -3063,6 +3203,14 @@ public sealed class UsageCollector : IUsageCollector
     private sealed record FullParseContext(ParseReason Reason, string? ExpectedRolloutId)
     {
         public static FullParseContext Inventory { get; } = new(ParseReason.Inventory, null);
+    }
+
+    private enum WatcherMonitorState
+    {
+        Healthy,
+        Faulted,
+        Rebuilding,
+        AwaitingInventory,
     }
 
     private enum ParseReason

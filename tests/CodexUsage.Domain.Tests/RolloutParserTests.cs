@@ -104,6 +104,71 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void PaginatedContinuationUsesTheStrictSegmentFallbackAndKeepsTheRootConversation()
+    {
+        const string rootId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string segmentId = "019fe0e0-dd64-7412-8fa0-ea96334569dd";
+        var result = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new
+            {
+                id = segmentId,
+                session_id = segmentId,
+                thread_source = "user",
+                history_mode = "paginated",
+                history_base = new { thread_id = rootId, end_ordinal_exclusive = 12, end_byte_offset = 4096 },
+            }),
+            Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])), segmentId);
+
+        Assert.Equal(rootId, result.Metadata.ConversationId);
+        Assert.Equal(segmentId, result.Metadata.RolloutId);
+        Assert.Equal(rootId, result.Metadata.ParentThreadId);
+        Assert.True(result.Metadata.IsPaginatedContinuation);
+        Assert.Equal(segmentId, Assert.Single(result.Events).RolloutId);
+        Assert.False(result.Diagnostics.HasInvalidPaginatedHistoryMetadata);
+    }
+
+    [Fact]
+    public void PaginatedContinuationRetainsTheLegacyRootIdentityShapeWhenItIsValidated()
+    {
+        const string rootId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string segmentId = "019fe0e0-dd64-7412-8fa0-ea96334569dd";
+        var result = RolloutParser.Parse(Jsonl(Line("session_meta", new
+        {
+            id = rootId,
+            session_id = rootId,
+            thread_source = "user",
+            history_mode = "paginated",
+            history_base = new { thread_id = rootId, end_ordinal_exclusive = 12, end_byte_offset = 4096 },
+        })), segmentId);
+
+        Assert.Equal(rootId, result.Metadata.ConversationId);
+        Assert.Equal(segmentId, result.Metadata.RolloutId);
+        Assert.Equal(rootId, result.Metadata.ParentThreadId);
+        Assert.True(result.Metadata.IsPaginatedContinuation);
+        Assert.False(result.Diagnostics.HasInvalidPaginatedHistoryMetadata);
+    }
+
+    [Fact]
+    public void InvalidPaginatedContinuationMetadataFailsClosed()
+    {
+        const string rootId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        var result = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new
+            {
+                id = rootId,
+                session_id = rootId,
+                thread_source = "user",
+                history_mode = "paginated",
+                history_base = new { thread_id = rootId, end_ordinal_exclusive = 12 },
+            }),
+            Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])), "not-a-segment-uuid");
+
+        Assert.Empty(result.Events);
+        Assert.Equal(1, result.Diagnostics.InvalidPaginatedHistoryMetadata);
+    }
+
+    [Fact]
     public void DoesNotTreatUserMessagesAsThreadTitlesAndTracksLatestAcceptedActivity()
     {
         var result = RolloutParser.Parse(Jsonl(
@@ -376,15 +441,23 @@ public sealed class RolloutParserTests
             type = "future_payload",
             padding = new string('x', 2 * 1024),
         })));
+        var unknownEvent = Encoding.UTF8.GetBytes(Jsonl(Line("event_msg", new
+        {
+            type = "future_event_payload",
+            padding = new string('x', 2 * 1024),
+        })));
         var malformed = Encoding.UTF8.GetBytes(
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\""
             + new string('x', 2 * 1024) + "\"}\n");
 
         var unknownResult = await ParseWithRecordLimitAsync(unknown, 1024);
+        var unknownEventResult = await ParseWithRecordLimitAsync(unknownEvent, 1024);
         var malformedResult = await ParseWithRecordLimitAsync(malformed, 1024);
 
         Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified,
             Assert.Single(unknownResult.Diagnostics.OversizedRecords).Disposition);
+        Assert.Equal(OversizedRecordDisposition.UnsafeUnclassified,
+            Assert.Single(unknownEventResult.Diagnostics.OversizedRecords).Disposition);
         Assert.Equal(OversizedRecordDisposition.Malformed,
             Assert.Single(malformedResult.Diagnostics.OversizedRecords).Disposition);
     }
@@ -393,6 +466,7 @@ public sealed class RolloutParserTests
     [InlineData("compacted", "ignored", OversizedRecordKind.Compacted)]
     [InlineData("event_msg", "image_generation_end", OversizedRecordKind.ImageGenerationEnd)]
     [InlineData("event_msg", "mcp_tool_call_end", OversizedRecordKind.McpToolCallEnd)]
+    [InlineData("event_msg", "item_completed", OversizedRecordKind.ItemCompleted)]
     public async Task KnownOpaqueOversizedRecordsAreSafe(
         string eventType,
         string payloadType,
@@ -427,6 +501,24 @@ public sealed class RolloutParserTests
         var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
         Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped, oversized.Disposition);
         Assert.Equal(OversizedRecordKind.McpToolCallEnd, oversized.Kind);
+    }
+
+    [Fact]
+    public async Task OversizedItemCompletedIsSafelySkippedAndFollowingTokenUsageIsParsed()
+    {
+        var input = Encoding.UTF8.GetBytes(Jsonl(
+            Line("session_meta", new { id = "item-completed-safe", thread_source = "user" }),
+            Line("turn_context", new { turn_id = "turn-item-completed", model = "gpt-5.6-sol" }),
+            Line("event_msg", new { type = "item_completed", item = new string('x', RolloutParser.CooperativeHardMaximumRecordBytes + 1) }),
+            Token([4, 1, 2, 1, 6], [4, 1, 2, 1, 6])));
+
+        var result = await ParseWithRecordLimitAsync(input, 1024);
+
+        var usage = Assert.Single(result.Events);
+        Assert.Equal("gpt-5.6-sol", usage.Model);
+        var oversized = Assert.Single(result.Diagnostics.OversizedRecords);
+        Assert.Equal(OversizedRecordDisposition.SafeOpaqueSkipped, oversized.Disposition);
+        Assert.Equal(OversizedRecordKind.ItemCompleted, oversized.Kind);
     }
 
     [Fact]

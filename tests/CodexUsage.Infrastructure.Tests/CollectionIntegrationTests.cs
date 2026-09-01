@@ -115,7 +115,7 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
-    public async Task SafeOversizedOpaqueRecordStillImportsMetadataAndTokenUsageAsPartial()
+    public async Task SafeOversizedOpaqueRecordStillImportsMetadataAndTokenUsageAsCovered()
     {
         using var temporary = new TemporaryDirectory();
         var codexHome = CreateCodexHome(temporary.Path);
@@ -143,15 +143,99 @@ public sealed class CollectionIntegrationTests
 
         Assert.Equal(10, usage.InputTokens);
         Assert.Equal("gpt-5.6-sol", usage.Model);
-        Assert.Equal(CollectorPhase.Partial, status.Phase);
-        Assert.Null(status.LastSuccessfulInventoryUtc);
-        Assert.Equal(1, status.Diagnostics.PartialSources);
+        Assert.Equal(CollectorPhase.Watching, status.Phase);
+        Assert.NotNull(status.LastSuccessfulInventoryUtc);
+        Assert.Equal(0, status.Diagnostics.PartialSources);
         Assert.Equal(2, status.Diagnostics.SafeOpaqueOversizedRecordsSkipped);
         using var store = new UsageStore(
             Path.Combine(temporary.Path, "usage.sqlite"),
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
-        Assert.StartsWith("partial-opaque-oversized:",
-            Assert.Single(store.ListSourceFiles()).LastError, StringComparison.Ordinal);
+        Assert.Null(Assert.Single(store.ListSourceFiles()).LastError);
+    }
+
+    [Fact]
+    public async Task ParserRevisionSeparatesValidatedPaginatedContinuationAndDeduplicatesArchiveCopy()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        const string rootId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string segmentId = "019fe0e0-dd64-7412-8fa0-ea96334569dd";
+        const string secondSegmentId = "019fe0f0-dd64-7412-8fa0-ea96334569dd";
+        var basePath = Path.Combine(codexHome, "sessions", $"rollout-2026-08-31T00-00-00-{rootId}.jsonl");
+        var continuationName = $"rollout-2026-08-31T00-01-00-{segmentId}.jsonl";
+        var continuationPath = Path.Combine(codexHome, "sessions", continuationName);
+        var archivedCopyPath = Path.Combine(codexHome, "archived_sessions", continuationName);
+        var secondContinuationName = $"rollout-2026-08-31T00-02-00-{secondSegmentId}.jsonl";
+        var secondContinuationPath = Path.Combine(codexHome, "sessions", secondContinuationName);
+        var secondArchivedCopyPath = Path.Combine(codexHome, "archived_sessions", secondContinuationName);
+        var baseContent = Rollout(rootId, Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        var continuationContent = string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                id = segmentId,
+                session_id = segmentId,
+                thread_source = "user",
+                history_mode = "paginated",
+                history_base = new { thread_id = rootId, end_ordinal_exclusive = 1, end_byte_offset = 512 },
+            }),
+            Line("turn_context", new { turn_id = "turn-continuation", model = "gpt-5.6-sol" }),
+            Token([5, 1, 2, 1, 7], [5, 1, 2, 1, 7], "2026-07-15T01:03:03.004Z"),
+        ]) + "\n";
+        var secondContinuationContent = string.Join('\n',
+        [
+            Line("session_meta", new
+            {
+                id = secondSegmentId,
+                session_id = secondSegmentId,
+                thread_source = "user",
+                history_mode = "paginated",
+                history_base = new { thread_id = segmentId, end_ordinal_exclusive = 2, end_byte_offset = 1024 },
+            }),
+            Line("turn_context", new { turn_id = "turn-second-continuation", model = "gpt-5.6-sol" }),
+            Token([3, 1, 2, 1, 5], [3, 1, 2, 1, 5], "2026-07-15T01:04:03.004Z"),
+        ]) + "\n";
+        WriteRollout(basePath, baseContent);
+        WriteRollout(continuationPath, continuationContent);
+        WriteRollout(archivedCopyPath, continuationContent);
+        WriteRollout(secondContinuationPath, secondContinuationContent);
+        WriteRollout(secondArchivedCopyPath, secondContinuationContent);
+        var continuationFile = new FileInfo(continuationPath);
+        using (var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome)))
+        {
+            store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
+                new RolloutMetadata(rootId, rootId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0),
+                [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
+                    "gpt-5.6-sol", 1, 0, 1, 0, "stale-continuation")],
+                new CanonicalSourceInput(
+                    continuationPath, continuationFile.Length,
+                    new DateTimeOffset(continuationFile.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+                    continuationFile.Length, HashBoundary(continuationContent), PrefixStatus.Matches, 1, null),
+                1,
+                null));
+            store.RecordSourceConflict(new SourceConflictInput(
+                null, continuationPath, "source-diverged", "Continuation was previously merged into its history base.", null, 2));
+            store.SetCollectorState("rollout_parser_revision", "17", 1);
+        }
+
+        await using var collector = CreateCollector(codexHome, temporary.Path);
+        var status = await StartAndWaitForInventoryAsync(collector);
+        var events = await collector.QueryEventsAsync(AllTimeQuery());
+        var filteredEvents = await collector.QueryEventsAsync(
+            new UsageEventQuery(0, 4_102_444_800_000, MainThreadConversationId: rootId));
+
+        Assert.Equal(CollectorPhase.Watching, status.Phase);
+        Assert.Equal(0, status.Conflicts);
+        Assert.Equal(3, events.Count);
+        Assert.Equal([rootId, segmentId, secondSegmentId], events.Select(value => value.RolloutId).OrderBy(value => value).ToArray());
+        Assert.Equal([rootId, segmentId, secondSegmentId], filteredEvents.Select(value => value.RolloutId).OrderBy(value => value).ToArray());
+        Assert.Equal(rootId, events.Single(value => value.RolloutId == segmentId).ConversationId);
+        Assert.Equal(segmentId, events.Single(value => value.RolloutId == secondSegmentId).ConversationId);
+        Assert.Equal([rootId], (await collector.QueryRecentMainThreadsAsync(20)).Select(value => value.ConversationId));
+        using var verified = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
+        Assert.Equal("19", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.DoesNotContain(verified.ListSourceFiles(), value => value.CanonicalStatus == CanonicalStatus.Conflict);
     }
 
     [Fact]
@@ -1160,6 +1244,151 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
+    public async Task WatcherErrorRebuildsThenRestoresHealthyOnlyAfterAFullInventory()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        WriteRollout(Path.Combine(codexHome, "sessions", "rollout-watcher-recovery.jsonl"),
+            Rollout("watcher-recovery", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])));
+        var phases = new List<CollectorPhase>();
+        var phaseLock = new object();
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromMilliseconds(5),
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        });
+        collector.StatusChanged += (_, status) =>
+        {
+            lock (phaseLock) phases.Add(status.Phase);
+        };
+        await StartAndWaitForInventoryAsync(collector);
+
+        collector.EnqueueWatcherErrorForTest("simulated watcher overflow");
+        CollectorStatus? recovered = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var status = await collector.GetStatusAsync();
+            lock (phaseLock)
+            {
+                if (phases.Contains(CollectorPhase.Degraded) && status.Phase == CollectorPhase.Watching)
+                {
+                    recovered = status;
+                    break;
+                }
+            }
+            await Task.Delay(10);
+        }
+
+        Assert.NotNull(recovered);
+        using var store = new UsageStore(
+            Path.Combine(temporary.Path, "usage.sqlite"),
+            protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
+        var inventoryRuns = long.Parse(store.GetCollectorState("full_inventory_run_count")
+            ?? throw new InvalidOperationException("Inventory run count is missing."));
+        Assert.True(inventoryRuns >= 2);
+        Assert.True(store.CountDiagnosticsForTest("watcher-recovered") >= 1);
+    }
+
+    [Fact]
+    public async Task WatcherReconciliationRetriesOnceThenHealsAnExhaustedRetryWithAnUnchangedSourceStat()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-watcher-exhausted-retry.jsonl");
+        var validPrefix = Rollout("watcher-exhausted-retry", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        const string malformedSuffix = "{not-json}\n";
+        const string correctedSuffix = "{\"a\":0}   \n";
+        Assert.Equal(Encoding.UTF8.GetByteCount(malformedSuffix), Encoding.UTF8.GetByteCount(correctedSuffix));
+        WriteRollout(rolloutPath, validPrefix);
+        var repairAfterFailedRecovery = 0;
+        var repaired = 0;
+        var unchangedModifiedAtUtc = DateTime.MinValue;
+        var hooks = new CollectorTestHooks(AfterInventoryCompleted: () =>
+        {
+            if (Volatile.Read(ref repairAfterFailedRecovery) == 0 || Interlocked.Exchange(ref repaired, 1) != 0)
+                return;
+            WriteRollout(rolloutPath, validPrefix + correctedSuffix);
+            File.SetLastWriteTimeUtc(rolloutPath, unchangedModifiedAtUtc);
+        });
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = Path.Combine(temporary.Path, "usage.sqlite"),
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromMilliseconds(10),
+            RetryAttempts = 1,
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromHours(1),
+        }, hooks);
+        await StartAndWaitForInventoryAsync(collector);
+
+        WriteRollout(rolloutPath, validPrefix + malformedSuffix);
+        unchangedModifiedAtUtc = File.GetLastWriteTimeUtc(rolloutPath);
+        collector.EnqueueWatcherObservationForTest(rolloutPath);
+        _ = await WaitForPhaseAsync(collector, CollectorPhase.Degraded);
+        var unchangedLength = new FileInfo(rolloutPath).Length;
+
+        Volatile.Write(ref repairAfterFailedRecovery, 1);
+        collector.EnqueueWatcherErrorForTest("simulated watcher overflow after an exhausted retry");
+        CollectorStatus? recovered = null;
+        for (var attempt = 0; attempt < 150; attempt++)
+        {
+            var status = await collector.GetStatusAsync();
+            if (Volatile.Read(ref repaired) != 0 && status.Phase == CollectorPhase.Watching)
+            {
+                recovered = status;
+                break;
+            }
+            await Task.Delay(10);
+        }
+
+        Assert.NotNull(recovered);
+        var corrected = new FileInfo(rolloutPath);
+        Assert.Equal(unchangedLength, corrected.Length);
+        Assert.Equal(unchangedModifiedAtUtc, corrected.LastWriteTimeUtc);
+        Assert.Single(await collector.QueryEventsAsync(AllTimeQuery()));
+    }
+
+    [Fact]
+    public async Task WatcherReconciliationBackoffStaysBoundedForAPersistentExhaustedRetry()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-watcher-persistent-retry.jsonl");
+        var valid = Rollout("watcher-persistent-retry", Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]));
+        WriteRollout(rolloutPath, valid);
+        await using var collector = new UsageCollector(new CollectorOptions
+        {
+            CodexHome = codexHome,
+            DatabasePath = databasePath,
+            WatcherDebounce = TimeSpan.FromMilliseconds(5),
+            RetryBaseDelay = TimeSpan.FromMilliseconds(20),
+            RetryAttempts = 1,
+            RecoverySnapshotDelay = TimeSpan.FromMilliseconds(1),
+            FullInventoryInterval = TimeSpan.FromMilliseconds(160),
+        });
+        await StartAndWaitForInventoryAsync(collector);
+
+        WriteRollout(rolloutPath, valid + "{not-json}\n");
+        collector.EnqueueWatcherObservationForTest(rolloutPath);
+        _ = await WaitForPhaseAsync(collector, CollectorPhase.Degraded);
+        collector.EnqueueWatcherErrorForTest("simulated watcher overflow with a persistent source failure");
+        await Task.Delay(300);
+
+        var status = await collector.GetStatusAsync();
+        using var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
+        var inventoryRuns = long.Parse(store.GetCollectorState("full_inventory_run_count")
+            ?? throw new InvalidOperationException("Inventory run count is missing."));
+        Assert.Equal(CollectorPhase.Degraded, status.Phase);
+        Assert.InRange(inventoryRuns, 3, 8);
+    }
+
+    [Fact]
     public async Task WatcherDebouncesRepeatedNotificationsAndProcessesAppendedUsage()
     {
         using var temporary = new TemporaryDirectory();
@@ -1577,8 +1806,8 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("17", verified.GetCollectorState("rollout_parser_revision"));
-        Assert.Equal(17, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+        Assert.Equal("19", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(19, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
     }
 
     [Fact]
@@ -1639,7 +1868,7 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.GuardianReview, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("17", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("19", verified.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -1730,9 +1959,9 @@ public sealed class CollectionIntegrationTests
             Assert.Equal(CanonicalStatus.Canonical, source.CanonicalStatus);
             var checkpoint = Assert.Single(verified.ListRolloutCheckpoints());
             Assert.Equal(actualId, checkpoint.RolloutId);
-            Assert.Equal(17, checkpoint.ParserRevision);
+            Assert.Equal(19, checkpoint.ParserRevision);
             Assert.Equal(1, checkpoint.SafeNullPaddingRecords);
-            Assert.Equal("17", verified.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal("19", verified.GetCollectorState("rollout_parser_revision"));
         }
 
         await using var restarted = CreateCollector(codexHome, temporary.Path);
@@ -1768,7 +1997,7 @@ public sealed class CollectionIntegrationTests
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Null(store.GetRolloutMetadata(legacyId));
         Assert.NotNull(store.GetRolloutMetadata(actualId));
-        Assert.Equal("17", store.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("19", store.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]

@@ -659,6 +659,7 @@ public sealed class UsageStore : IDisposable
                 FROM rollouts
                 WHERE thread_type = 'main'
                   AND is_realtime_voice = 0
+                  AND parent_thread_id = ''
             ),
             main_threads AS (
                 SELECT conversation_id, project_name, thread_title

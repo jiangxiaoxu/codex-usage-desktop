@@ -2,6 +2,13 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.26] - 2026-09-01
+
+- Restored complete collection after validated oversized `item_completed` records without weakening fail-closed handling for unknown or accounting-critical records.
+- Added paginated rollout segment identity and parent-chain attribution so every continuation is counted once under its root conversation.
+- Recovered watcher health through bounded source retries and backoff-controlled reconciliation instead of remaining permanently degraded.
+- Surfaced active source conflicts in dashboard health diagnostics.
+
 ## [0.3.25] - 2026-09-01
 
 - Fixed GPT-5.6 API-equivalent estimates to use the standard prices in OpenAI's 2026-07-30 price-performance announcement.

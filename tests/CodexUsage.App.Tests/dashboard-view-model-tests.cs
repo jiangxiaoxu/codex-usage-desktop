@@ -120,6 +120,29 @@ public sealed class DashboardViewModelTests
     }
 
     [Fact]
+    public async Task SnapshotSurfacesCollectorConflictsInHealthAndHeaderDiagnostics()
+    {
+        var service = new FakeUsageDashboardService(Snapshot(
+            "Watcher changes are current",
+            [],
+            phase: CollectorPhase.Degraded,
+            conflicts: 3));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Contains("冲突 3", viewModel.HealthStatusText);
+        Assert.Contains("冲突 3", viewModel.HeaderStatusText);
+        Assert.Contains(viewModel.Diagnostics, row =>
+            row.Label == "健康状态"
+            && row.Value.Contains("冲突 3", StringComparison.Ordinal)
+            && row.Detail.Contains("source conflict", StringComparison.Ordinal));
+        Assert.Contains(viewModel.Diagnostics, row =>
+            row.Label == "Watcher"
+            && row.Detail.Contains("3 个 source conflict", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task MainThreadFilterKeepsSelectionWhenAnOptionDisappearsAndReselectsRemainingOptionAfterClear()
     {
         var firstThread = MainThread(FirstCollidingMainThreadId, 100);
@@ -414,9 +437,11 @@ public sealed class DashboardViewModelTests
         IReadOnlyList<MainThreadOption> mainThreads,
         CostBreakdown? cost = null,
         IReadOnlyList<GroupRow>? byModel = null,
-        IReadOnlyList<RoleUsageRow>? byRole = null) => new(
+        IReadOnlyList<RoleUsageRow>? byRole = null,
+        CollectorPhase phase = CollectorPhase.Watching,
+        long conflicts = 0) => new(
         new CollectorStatus(
-            CollectorPhase.Watching,
+            phase,
             "usage.sqlite",
             null,
             null,
@@ -425,7 +450,7 @@ public sealed class DashboardViewModelTests
             0,
             0,
             0,
-            0,
+            conflicts,
             ObservationCoverage.Baseline,
             null,
             message,
