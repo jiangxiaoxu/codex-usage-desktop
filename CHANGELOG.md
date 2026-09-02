@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.27] - 2026-09-02
+
+- Fixed forked main task identity so paginated forks retain their own `ConversationId` and appear in the main-thread filter while remaining linked to the source task.
+- Bumped the rollout parser revision so existing rev19 ledgers automatically reparse fork metadata without duplicating usage accounting.
+
 ## [0.3.26] - 2026-09-01
 
 - Restored complete collection after validated oversized `item_completed` records without weakening fail-closed handling for unknown or accounting-critical records.

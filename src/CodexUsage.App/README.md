@@ -22,10 +22,10 @@ dotnet build .\src\CodexUsage.App\CodexUsage.App.csproj -c Debug -p:Platform=x64
 The production application is unpackaged and self-contained. From the repository root, the supported installer build publishes the x64 payload with the repository's release properties and then compiles the NSIS definition:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.26 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.27 -AutoDetectDependencies
 ```
 
-`-AutoDetectDependencies` finds the locally installed .NET 8 SDK, NSIS 3.x `makensis.exe`, and 7-Zip Extra `7za.exe` and `7zr.exe`; it does not download or install build tools. If 7-Zip Extra is in a non-standard directory, add `-DependencySearchDirectory 'D:\tools\7-Zip'`; pass multiple directories as an array separated by commas or as a semicolon-delimited string. It creates and validates a 7-Zip LZMA2 payload before compiling the NSIS installer. The result is `release\winui-installer\codex-usage-desktop-setup-0.3.26-x64.exe`. It is an all-users installer under `%ProgramFiles%` and therefore requires UAC. It stops the running application before replacing the current WinUI payload. Uninstalling the WinUI payload does not remove the LocalAppData ledger by default.
+`-AutoDetectDependencies` finds the locally installed .NET 8 SDK, NSIS 3.x `makensis.exe`, and 7-Zip Extra `7za.exe` and `7zr.exe`; it does not download or install build tools. If 7-Zip Extra is in a non-standard directory, add `-DependencySearchDirectory 'D:\tools\7-Zip'`; pass multiple directories as an array separated by commas or as a semicolon-delimited string. It creates and validates a 7-Zip LZMA2 payload before compiling the NSIS installer. The result is `release\winui-installer\codex-usage-desktop-setup-0.3.27-x64.exe`. It is an all-users installer under `%ProgramFiles%` and therefore requires UAC. It stops the running application before replacing the current WinUI payload. Uninstalling the WinUI payload does not remove the LocalAppData ledger by default.
 
 The SHA-256-only experimental GitHub Release metadata check runs at startup and every six hours; it requires a strict repository, SemVer tag, one x64 installer asset and a matching GitHub digest. Before launch, the user confirms a warning and the application rechecks both the local SHA-256 and current update generation; NSIS then closes the application and collector.
 

@@ -678,6 +678,7 @@ public static partial class RolloutParser
             && TryGetObject(source, "subagent", out var subagent)
             && TryGetObject(subagent, "thread_spawn", out spawn);
         var threadSource = payload is { } value ? GetNonEmptyString(value, "thread_source") : null;
+        var forkedFromId = payload is { } forkPayload ? GetNonEmptyString(forkPayload, "forked_from_id") : null;
         var threadType = threadSource == "guardian_review"
             ? ThreadType.GuardianReview
             : threadSource == "subagent" || hasSpawn
@@ -688,13 +689,22 @@ public static partial class RolloutParser
         string? Top(string name) => payload is { } topPayload ? GetNonEmptyString(topPayload, name) : null;
         string Field(string nestedName, string topName, string fallback) =>
             hasSpawn ? GetNonEmptyString(spawn, nestedName) ?? Top(topName) ?? fallback : Top(topName) ?? fallback;
+        var conversationId = paginatedContinuation.RootConversationId
+            ?? (payload is { } data ? GetNonEmptyString(data, "session_id") ?? rolloutId : rolloutId);
+        var parentThreadId = paginatedContinuation.RootConversationId
+            ?? Field("parent_thread_id", "parent_thread_id", string.Empty);
+        if (threadType == ThreadType.Main && forkedFromId is not null)
+        {
+            // A fork is a distinct user-facing main conversation even when its
+            // history is represented as a paginated continuation of the parent.
+            conversationId = rolloutId;
+            parentThreadId = forkedFromId;
+        }
         return new(
             new RolloutMetadata(
-                paginatedContinuation.RootConversationId
-                    ?? (payload is { } data ? GetNonEmptyString(data, "session_id") ?? rolloutId : rolloutId),
+                conversationId,
                 rolloutId,
-                paginatedContinuation.RootConversationId
-                    ?? Field("parent_thread_id", "parent_thread_id", string.Empty),
+                parentThreadId,
                 threadType,
                 threadType switch
                 {

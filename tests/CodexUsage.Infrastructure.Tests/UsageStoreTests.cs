@@ -805,6 +805,48 @@ public sealed class UsageStoreTests
     }
 
     [Fact]
+    public void QueryRecentMainThreadsIncludesForkMainConversationButExcludesPaginatedContinuation()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
+        const string parentId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string forkId = "019fe0e0-dd64-7412-8fa0-ea96334569dd";
+        const string continuationId = "019fe0f0-dd64-7412-8fa0-ea96334569dd";
+
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = parentId,
+            RolloutId = parentId,
+            ThreadTitle = "Parent",
+            LastActivityEpochMs = 100,
+        }, [Event(0, 100, "parent-event")], 100);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = forkId,
+            RolloutId = forkId,
+            ParentThreadId = parentId,
+            ThreadTitle = "Fork",
+            LastActivityEpochMs = 300,
+        }, [Event(0, 300, "fork-event")], 300);
+        store.AppendEvents(Metadata with
+        {
+            ConversationId = parentId,
+            RolloutId = continuationId,
+            ParentThreadId = parentId,
+            ThreadTitle = "Continuation",
+            LastActivityEpochMs = 200,
+        }, [], 200);
+
+        var threads = store.QueryRecentMainThreads(20);
+
+        Assert.Equal([forkId, parentId], threads.Select(value => value.ConversationId));
+        Assert.Equal("Fork", threads[0].Title);
+
+        var parentEvents = store.QueryEvents(new UsageEventQuery(0, 1_000, MainThreadConversationId: parentId));
+        Assert.Equal([parentId, forkId], parentEvents.Select(value => value.ConversationId));
+    }
+
+    [Fact]
     public void SynchronizeMainThreadTitlesOverridesExistingTitlesAndClearsMissingTitles()
     {
         using var temporary = new TemporaryDirectory();

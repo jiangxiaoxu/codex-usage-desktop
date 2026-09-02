@@ -150,6 +150,29 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void PaginatedMainForkKeepsOwnConversationIdentityAndLinksToParent()
+    {
+        const string parentId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        const string forkId = "019fe0e0-dd64-7412-8fa0-ea96334569dd";
+        var result = RolloutParser.Parse(Jsonl(
+            Line("session_meta", new
+            {
+                id = forkId,
+                session_id = forkId,
+                forked_from_id = parentId,
+                thread_source = "user",
+                history_mode = "paginated",
+                history_base = new { thread_id = parentId, end_ordinal_exclusive = 12, end_byte_offset = 4096 },
+            })), forkId);
+
+        Assert.Equal(forkId, result.Metadata.ConversationId);
+        Assert.Equal(forkId, result.Metadata.RolloutId);
+        Assert.Equal(parentId, result.Metadata.ParentThreadId);
+        Assert.Equal(ThreadType.Main, result.Metadata.ThreadType);
+        Assert.True(result.Metadata.IsPaginatedContinuation);
+    }
+
+    [Fact]
     public void InvalidPaginatedContinuationMetadataFailsClosed()
     {
         const string rootId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
