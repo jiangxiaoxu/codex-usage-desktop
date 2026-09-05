@@ -9,9 +9,10 @@ public static class UsageAccounting
     public const string OtherModelCategory = "Others";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
-    private static readonly string[] SupportedFamilies = ["gpt-5.6", "gpt-5.5", "gpt-5.4"];
+    private static readonly string[] SupportedFamilies = ["gpt-6-astra", "gpt-5.6", "gpt-5.5", "gpt-5.4"];
     private static readonly IReadOnlySet<string> LongContextEligibleModels = new HashSet<string>(StringComparer.Ordinal)
     {
+        "gpt-6-astra",
         "gpt-5.6",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
@@ -21,6 +22,8 @@ public static class UsageAccounting
     };
     private static readonly IReadOnlyDictionary<string, ModelRate> Rates = new Dictionary<string, ModelRate>(StringComparer.Ordinal)
     {
+        // Standard API prices for GPT-6 Astra, in USD per 1M tokens.
+        ["gpt-6-astra"] = new(10m, 1m, 50m),
         ["gpt-5.6"] = new(5m, 0.5m, 30m),
         ["gpt-5.6-sol"] = new(5m, 0.5m, 30m),
         // Standard API prices from the 2026-07-30 price-performance announcement, in USD per 1M tokens.

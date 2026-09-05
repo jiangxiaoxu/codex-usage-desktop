@@ -2,6 +2,13 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.28] - 2026-09-05
+
+- Added `gpt-6-astra` accounting with fixed Standard API rates of `$10/$1/$50` per 1M uncached input, cached input and output tokens.
+- Applied the existing full-request long-context multipliers to GPT-6 Astra and surfaced it before GPT-5.6 Sol in dashboard model views.
+- Migrated the application and supported build environment from .NET 8 to .NET 10.
+- Upgraded `Microsoft.Data.Sqlite` to `10.0.11` and resolved the SQLite native dependency audit blocker.
+
 ## [0.3.27] - 2026-09-02
 
 - Fixed forked main task identity so paginated forks retain their own `ConversationId` and appear in the main-thread filter while remaining linked to the source task.

@@ -1,6 +1,6 @@
 # Codex Usage Desktop
 
-`Codex Usage Desktop` 是一个纯 .NET 8 / WinUI 3 的本地 Windows 审计应用,用于统计 Codex token 用量并估算标准 API token 费用.界面使用 XAML 和 Windows App SDK,不嵌入 WebView2,也不加载 remote content.应用默认离线,rollout 数据不会被上传.费用按 OpenAI 2026-07-30 price-performance 公告的 GPT-5.6 standard API price 固定估算,不代表 Plus/Pro 订阅实际账单,也不会跟随后续促销或价格变动.
+`Codex Usage Desktop` 是一个纯 .NET 10 / WinUI 3 的本地 Windows 审计应用,用于统计 Codex token 用量并估算标准 API token 费用.界面使用 XAML 和 Windows App SDK,不嵌入 WebView2,也不加载 remote content.应用默认离线,rollout 数据不会被上传.费用按固定的 Standard API rates 估算,当前计费表包含 GPT-6 Astra (`$10/$1/$50`) 和 GPT-5.6 系列,不代表 Plus/Pro 订阅实际账单,也不会跟随后续促销或价格变动.
 
 ![顶部操作与筛选界面](assets/dashboard-preview.jpg)
 
@@ -26,7 +26,7 @@ CodexUsageDesktop.sln           solution entry
 - 每 5 分钟运行一次兜底 inventory reconciliation.目录枚举、解析和 hashing 被拆成小片并 cooperative yield,以降低后台 CPU 峰值.
 - canonical active/archive promotion 不重复计费.稳定候选只有在 metadata exact 且 semantic relation 为 `Equal` 或 `Extension` 时才可自动恢复;恢复只更新应用 ledger,不会修改 Codex source.
 - 按 model、实际 role、主线程和时间范围筛选并汇总 token 与费用.主线程 `AutoSuggestBox` 最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.也可手动输入完整 UUIDv7 session ID 或使用清空按钮取消筛选.合法输入会规范化;非空非法输入显示红色验证状态并保留已应用的筛选.筛选以精确的主线程 `ConversationId` 为根,归集其全部后代 event.
-- `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.`codex-auto-review` 与 GPT-5.4、GPT-5.5、GPT-5.6 之外的 model 归入未计费的 `Others`,`source_model=unknown` 保持独立 attribution.
+- `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.`codex-auto-review` 与 GPT-6 Astra、GPT-5.4、GPT-5.5、GPT-5.6 之外的 model 归入未计费的 `Others`,`source_model=unknown` 保持独立 attribution.
 
 ## 数据目录与安全边界
 
@@ -51,7 +51,7 @@ Override: %CODEX_USAGE_DATA_DIR%\usage.sqlite
 
 ## 构建与测试
 
-需要 Windows 11、.NET 8 SDK、Windows 10/11 SDK 和可 restore 的 Microsoft Windows App SDK.从仓库根目录运行:
+需要 Windows 11、.NET 10 SDK、Windows 10/11 SDK 和可 restore 的 Microsoft Windows App SDK.从仓库根目录运行:
 
 ```powershell
 dotnet restore CodexUsageDesktop.sln
@@ -64,10 +64,10 @@ git diff --check
 生成 x64 全用户安装包:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.27 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.28 -AutoDetectDependencies
 ```
 
-`-AutoDetectDependencies` 查找本机已有的 .NET 8 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.27-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+`-AutoDetectDependencies` 查找本机已有的 .NET 10 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.28-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
 安装器会在替换 payload 前终止正在运行的 Codex Usage Desktop process,并只删除当前 WinUI payload 的已知文件.卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 LocalAppData ledger.
 

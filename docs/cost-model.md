@@ -20,10 +20,11 @@ The parser rejects events where cached input exceeds input or reasoning output e
 
 ## Model categories
 
-The supported priced families are `gpt-5.6`, `gpt-5.5` and `gpt-5.4`. Exact configured models are priced as follows, in USD per 1M tokens.
+The supported priced families are `gpt-6-astra`, `gpt-5.6`, `gpt-5.5` and `gpt-5.4`. Exact configured models are priced as follows, in USD per 1M tokens.
 
 | Source model | Uncached input | Cached input | Output |
 | --- | ---: | ---: | ---: |
+| `gpt-6-astra` | 10 | 1 | 50 |
 | `gpt-5.6` | 5 | 0.5 | 30 |
 | `gpt-5.6-sol` | 5 | 0.5 | 30 |
 | `gpt-5.6-terra` | 2 | 0.2 | 12 |
@@ -35,7 +36,7 @@ The supported priced families are `gpt-5.6`, `gpt-5.5` and `gpt-5.4`. Exact conf
 
 The `gpt-5.6` alias is priced as GPT-5.6 Sol. The exact source model `codex-auto-review` is preserved as its own category. Because no rate is configured, its tokens remain visible, are included in `unpricedTokens`, and have no estimated cost. Models outside the supported families are grouped as `Others`. `Others` remains visible in token statistics but has a zero token-cost estimate. The exact source model value `unknown` is grouped as `Unknown attribution`; its tokens are included in `unpricedTokens` and are not represented as a zero-cost priced model. A newly observed source model within a supported family but missing from the exact rate table is also unpriced.
 
-The configured GPT-5.6 prices are the standard API prices in OpenAI's 2026-07-30 price-performance announcement. They are intentionally fixed to that rate card and do not follow later promotions or price changes.
+The configured GPT-6 Astra prices are fixed Standard API rates of `$10/$1/$50` per 1M uncached input, cached input and output tokens. The GPT-5.6 prices remain the standard API prices in OpenAI's 2026-07-30 price-performance announcement. All configured rates are intentionally fixed and do not follow later promotions or price changes.
 
 ## Cost calculation
 
@@ -55,7 +56,7 @@ The UI shows the four actual-cost components separately. The dashboard summary s
 
 ## Codex subscription context policy
 
-This application treats every observed rollout as Codex activity. The long-context rule above applies only to `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4`. `gpt-5.4-mini` and `gpt-5.4-nano` always use their base rates. The Codex rate card has no separate cache-write surcharge, so observed `cache_write_input_tokens` are not stored or added as another cost component. Tool-call charges, subscription charges, taxes, discounts and credits are also excluded. These API-equivalent estimates are not Plus/Pro subscription charges or a provider invoice.
+This application treats every observed rollout as Codex activity. The long-context rule above applies only to `gpt-6-astra`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4`. `gpt-5.4-mini` and `gpt-5.4-nano` always use their base rates. The Codex rate card has no separate cache-write surcharge, so observed `cache_write_input_tokens` are not stored or added as another cost component. Tool-call charges, subscription charges, taxes, discounts and credits are also excluded. These API-equivalent estimates are not Plus/Pro subscription charges or a provider invoice.
 
 ## Time, filters and percentages
 

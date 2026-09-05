@@ -7,7 +7,7 @@ Continue the unpackaged, self-contained WinUI 3 application. The immediate accep
 Repository state at handoff:
 
 - Branch: `main`.
-- The production runtime is .NET 8 / WinUI 3.
+- The production runtime is .NET 10 / WinUI 3.
 - Runtime solution: `CodexUsageDesktop.sln`, containing App, Application, Domain, Infrastructure, and test projects.
 - Delivery: x64 all-users NSIS setup containing a self-contained unpackaged WinUI 3 publish.
 - Local changes were intentionally committed for transfer before final installed-machine validation.
@@ -17,7 +17,7 @@ Repository state at handoff:
 - Native WinUI 3 dashboard target is the confirmed Figma Page 2 product candidate. Page 1 is unrelated and was not modified.
 - Final layout node: `90:2`. Responsive contract node: `90:329`.
 - Minimum window is `900 x 720 DIP`. Wide is `>=1280`,Medium is `1000-1279`,and Compact is `<1000`; detail tables are side by side at `>=1440`.
-- The four top-level filters each occupy one row: time,model,subject and main thread. The main-thread editable dropdown shows at most 20 recent choices by activity as `project name - ID prefix - title`; the project name is the main session `session_meta.cwd` directory name and the title is the authoritative `thread_name` in `session_index.jsonl`. Manual input accepts a complete UUIDv7 session ID,uses an exact main `ConversationId` as its root,and includes every descendant-agent event. The page owns the only vertical scroll; each table owns horizontal scrolling only. Model order is Sol,Terra,Luna,codex-auto-review,Others.
+- The four top-level filters each occupy one row: time,model,subject and main thread. The main-thread editable dropdown shows at most 20 recent choices by activity as `project name - ID prefix - title`; the project name is the main session `session_meta.cwd` directory name and the title is the authoritative `thread_name` in `session_index.jsonl`. Manual input accepts a complete UUIDv7 session ID,uses an exact main `ConversationId` as its root,and includes every descendant-agent event. The page owns the only vertical scroll; each table owns horizontal scrolling only. Model order is Astra,Sol,Terra,Luna,Others.
 - AppInstance single instance, tray residency, hidden `--startup`, HKCU Run startup, ledger mutex, bounded shutdown and DPI handling.
 - Focus-aware Efficiency Mode and process-priority work is deferred and must not be treated as implemented acceptance scope.
 - The multi-size product icon is embedded in the EXE and reused by AppWindow/taskbar, tray, setup, uninstaller, shortcuts, and Apps & features.

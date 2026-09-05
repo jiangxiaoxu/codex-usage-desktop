@@ -234,7 +234,7 @@ function Resolve-ExplicitSevenZipExecutable {
     return $executablePath
 }
 
-function Get-DotnetEightSdkVersion {
+function Get-DotnetTenSdkVersion {
     param(
         [Parameter(Mandatory)]
         [string]$Path
@@ -254,7 +254,7 @@ function Get-DotnetEightSdkVersion {
     foreach ($line in $sdkLines) {
         $match = [System.Text.RegularExpressions.Regex]::Match(
             [string]$line,
-            '^\s*(?<version>8\.\d+\.\d+(?:[-+][^\s]+)?)\s+\[')
+            '^\s*(?<version>10\.\d+\.\d+(?:[-+][^\s]+)?)\s+\[')
         if ($match.Success) {
             $versions.Add($match.Groups['version'].Value)
         }
@@ -290,7 +290,7 @@ function Get-DotnetAvailability {
             $firstAvailablePath = $executablePath
         }
 
-        $sdkVersion = Get-DotnetEightSdkVersion -Path $executablePath
+        $sdkVersion = Get-DotnetTenSdkVersion -Path $executablePath
         if ($null -ne $sdkVersion) {
             return [pscustomobject]@{
                 Path = $executablePath
@@ -388,7 +388,7 @@ if ($null -eq $dotnetPath) {
     $missing.Add('dotnet.exe')
 }
 elseif ($null -eq $dotnetSdkVersion) {
-    $missing.Add('.NET 8 SDK')
+    $missing.Add('.NET 10 SDK')
 }
 if ($null -eq $makeNsis.Path) {
     $missing.Add('makensis.exe (NSIS 3.x)')

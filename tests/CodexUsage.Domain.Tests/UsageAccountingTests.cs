@@ -109,6 +109,31 @@ public sealed class UsageAccountingTests
     }
 
     [Fact]
+    public void AstraUsesOfficialRatesAndLongContextMultipliers()
+    {
+        var shortContext = UsageAccounting.CostFor(Event with
+        {
+            Model = "gpt-6-astra",
+            InputTokens = 272_000,
+            CachedInputTokens = 0,
+        });
+        var longContext = UsageAccounting.CostFor(Event with { Model = "gpt-6-astra" });
+
+        Assert.Equal(2.72m, shortContext.UncachedInput);
+        Assert.Equal(3.5m, shortContext.ReasoningOutput);
+        Assert.Equal(1.5m, shortContext.OtherOutput);
+        Assert.Equal(7.72m, shortContext.Total);
+        Assert.Equal(shortContext.Total, shortContext.BaselineTotal);
+        Assert.Equal(4m, longContext.UncachedInput);
+        Assert.Equal(1.6m, longContext.CachedInput);
+        Assert.Equal(5.25m, longContext.ReasoningOutput);
+        Assert.Equal(2.25m, longContext.OtherOutput);
+        Assert.Equal(13.1m, longContext.Total);
+        Assert.Equal(7.8m, longContext.BaselineTotal);
+        Assert.Equal(5.3m, longContext.LongContextPremium);
+    }
+
+    [Fact]
     public void SummaryAggregatesMixedRequestsWithoutPricingOthersOrUnknownAttribution()
     {
         var shortRequest = Event with
@@ -145,6 +170,8 @@ public sealed class UsageAccountingTests
     [InlineData("gpt-5.4-mini", "gpt-5.4-mini")]
     [InlineData("gpt-5.5", "gpt-5.5")]
     [InlineData("gpt-5.6-preview", "gpt-5.6-preview")]
+    [InlineData("gpt-6-astra", "gpt-6-astra")]
+    [InlineData("gpt-6-astra-preview", "gpt-6-astra-preview")]
     [InlineData("codex-auto-review", "Others")]
     [InlineData("codex-auto-review-preview", "Others")]
     [InlineData("unknown", "Unknown attribution")]
@@ -168,6 +195,8 @@ public sealed class UsageAccountingTests
         Assert.Equal(3_300_000, UsageAccounting.Summarize([other, unknown, variant]).UnpricedTokens);
         Assert.Equal(1_100_000, UsageAccounting.Summarize([autoReview]).CanonicalTotalTokens);
         Assert.Equal(1_100_000, UsageAccounting.Summarize([autoReview]).UnpricedTokens);
+
+        Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-astra-preview" }).Priced);
     }
 
     [Fact]

@@ -2,7 +2,7 @@
 
 ## Scope
 
-Codex Usage Desktop 是本地 .NET 8 / WinUI 3 application.它只读观察 `%USERPROFILE%\.codex` 下的 rollout JSONL,将 normalized usage records 写入应用自己的 SQLite ledger,并显示 token 与标准 API 费用估算.应用不使用 WebView2,不加载 remote content,也不上传观测数据.
+Codex Usage Desktop 是本地 .NET 10 / WinUI 3 application.它只读观察 `%USERPROFILE%\.codex` 下的 rollout JSONL,将 normalized usage records 写入应用自己的 SQLite ledger,并显示 token 与标准 API 费用估算.应用不使用 WebView2,不加载 remote content,也不上传观测数据.
 
 ## Process and data flow
 
@@ -84,4 +84,4 @@ data directory 与 Program Files install location 解耦,并且不得 resolve �
 
 ## Presentation contract
 
-窗口最小值为 `900 x 720 DIP`;Wide 为 `>=1280`,Medium 为 `1000-1279`,Compact 为 `<1000`.两张明细表在 `>=1440` 时并排显示.时间、model、执行主体和主线程四个顶层筛选各占一行.主线程使用可编辑下拉,最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.可手动输入完整 UUIDv7 session ID,并可清空以取消筛选.匹配以精确的主线程 `ConversationId` 为根,归集全部子代理 event.model 顺序为 Sol、Terra、Luna、codex-auto-review、Others.页面只有一个纵向 scroll owner,各 table 仅在宽度不足时拥有独立横向 scroll owner.
+窗口最小值为 `900 x 720 DIP`;Wide 为 `>=1280`,Medium 为 `1000-1279`,Compact 为 `<1000`.两张明细表在 `>=1440` 时并排显示.时间、model、执行主体和主线程四个顶层筛选各占一行.主线程使用可编辑下拉,最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.可手动输入完整 UUIDv7 session ID,并可清空以取消筛选.匹配以精确的主线程 `ConversationId` 为根,归集全部子代理 event.model 顺序为 Astra、Sol、Terra、Luna、Others.页面只有一个纵向 scroll owner,各 table 仅在宽度不足时拥有独立横向 scroll owner.

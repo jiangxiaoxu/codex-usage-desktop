@@ -96,6 +96,34 @@ public sealed class DashboardViewModelTests
     }
 
     [Fact]
+    public async Task SnapshotOrdersAstraBeforeOtherPricedModels()
+    {
+        var modelCost = new CostBreakdown(1m, 1m, 1m, 0m, 3m, 3m, 0m, Priced: true);
+        var service = new FakeUsageDashboardService(Snapshot(
+            "model-order",
+            [],
+            modelCost,
+            [
+                new GroupRow(["gpt-5.6-luna"], Summary(modelCost)),
+                new GroupRow(["Others"], Summary(CostBreakdown.UnpricedZero, unpricedTokens: 2)),
+                new GroupRow(["gpt-5.6-sol"], Summary(modelCost)),
+                new GroupRow(["gpt-6-astra"], Summary(modelCost)),
+                new GroupRow(["gpt-5.6-terra"], Summary(modelCost)),
+            ]));
+        using var viewModel = CreateViewModel(service);
+
+        await viewModel.InitializeAsync();
+
+        Assert.Collection(
+            viewModel.Models,
+            row => Assert.Equal("gpt-6-astra", row.Model),
+            row => Assert.Equal("gpt-5.6-sol", row.Model),
+            row => Assert.Equal("gpt-5.6-terra", row.Model),
+            row => Assert.Equal("gpt-5.6-luna", row.Model),
+            row => Assert.Equal("Others", row.Model));
+    }
+
+    [Fact]
     public async Task SnapshotPresentsGuardianReviewAsItsOwnThreadType()
     {
         var service = new FakeUsageDashboardService(Snapshot(
