@@ -1203,11 +1203,13 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private static int ModelDisplayOrder(string model) => model switch
     {
         "gpt-6-astra" => 0,
-        "gpt-5.6-sol" => 1,
-        "gpt-5.6-terra" => 2,
-        "gpt-5.6-luna" => 3,
-        "Others" => 4,
-        _ => 5,
+        "gpt-6-sol" => 1,
+        "gpt-6-luna" => 2,
+        "gpt-5.6-sol" => 3,
+        "gpt-5.6-terra" => 4,
+        "gpt-5.6-luna" => 5,
+        "Others" => 6,
+        _ => 7,
     };
 
     private static string SubjectTypeLabel(string threadType) => threadType switch

@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.29] - 2026-09-23
+
+- Added GPT-6 Sol and GPT-6 Luna to API-equivalent token cost estimates and dashboard model views with fixed Standard API rates of `$2/$0.2/$10` and `$0.1/$0.01/$0.5` per 1M uncached input, cached input and output tokens.
+
 ## [0.3.28] - 2026-09-05
 
 - Added `gpt-6-astra` accounting with fixed Standard API rates of `$10/$1/$50` per 1M uncached input, cached input and output tokens.

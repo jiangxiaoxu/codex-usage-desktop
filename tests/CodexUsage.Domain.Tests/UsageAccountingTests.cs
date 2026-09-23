@@ -134,6 +134,49 @@ public sealed class UsageAccountingTests
     }
 
     [Fact]
+    public void SolAndLunaUseStandardRatesAndLongContextMultipliers()
+    {
+        foreach (var (model, inputRate, cachedRate, outputRate) in new[]
+        {
+            ("gpt-6-sol", 2m, 0.2m, 10m),
+            ("gpt-6-luna", 0.1m, 0.01m, 0.5m),
+        })
+        {
+            var atThreshold = UsageAccounting.CostFor(Event with
+            {
+                Model = model,
+                InputTokens = 272_000,
+                CachedInputTokens = 0,
+            });
+            var aboveThreshold = UsageAccounting.CostFor(Event with
+            {
+                Model = model,
+                InputTokens = 272_001,
+                CachedInputTokens = 0,
+            });
+            var longContext = UsageAccounting.CostFor(Event with { Model = model });
+
+            Assert.Equal(272_000m * inputRate / 1_000_000m, atThreshold.UncachedInput);
+            Assert.Equal(outputRate * 70_000m / 1_000_000m, atThreshold.ReasoningOutput);
+            Assert.Equal(outputRate * 30_000m / 1_000_000m, atThreshold.OtherOutput);
+            Assert.Equal(atThreshold.Total, atThreshold.BaselineTotal);
+            Assert.Equal(0m, atThreshold.LongContextPremium);
+
+            Assert.Equal(272_001m * inputRate * 2m / 1_000_000m, aboveThreshold.UncachedInput);
+            Assert.Equal(outputRate * 70_000m * 1.5m / 1_000_000m, aboveThreshold.ReasoningOutput);
+            Assert.Equal(outputRate * 30_000m * 1.5m / 1_000_000m, aboveThreshold.OtherOutput);
+            Assert.True(aboveThreshold.LongContextPremium > 0m);
+
+            Assert.Equal(200_000m * inputRate * 2m / 1_000_000m, longContext.UncachedInput);
+            Assert.Equal(800_000m * cachedRate * 2m / 1_000_000m, longContext.CachedInput);
+            Assert.Equal(outputRate * 70_000m * 1.5m / 1_000_000m, longContext.ReasoningOutput);
+            Assert.Equal(outputRate * 30_000m * 1.5m / 1_000_000m, longContext.OtherOutput);
+            Assert.Equal(longContext.UncachedInput + longContext.CachedInput + longContext.ReasoningOutput + longContext.OtherOutput, longContext.Total);
+            Assert.Equal(longContext.Total - longContext.BaselineTotal, longContext.LongContextPremium);
+        }
+    }
+
+    [Fact]
     public void SummaryAggregatesMixedRequestsWithoutPricingOthersOrUnknownAttribution()
     {
         var shortRequest = Event with
@@ -172,6 +215,9 @@ public sealed class UsageAccountingTests
     [InlineData("gpt-5.6-preview", "gpt-5.6-preview")]
     [InlineData("gpt-6-astra", "gpt-6-astra")]
     [InlineData("gpt-6-astra-preview", "gpt-6-astra-preview")]
+    [InlineData("gpt-6-sol", "gpt-6-sol")]
+    [InlineData("gpt-6-luna", "gpt-6-luna")]
+    [InlineData("gpt-6-sol-preview", "gpt-6-sol-preview")]
     [InlineData("codex-auto-review", "Others")]
     [InlineData("codex-auto-review-preview", "Others")]
     [InlineData("unknown", "Unknown attribution")]
@@ -197,6 +243,7 @@ public sealed class UsageAccountingTests
         Assert.Equal(1_100_000, UsageAccounting.Summarize([autoReview]).UnpricedTokens);
 
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-astra-preview" }).Priced);
+        Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-sol-preview" }).Priced);
     }
 
     [Fact]
