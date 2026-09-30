@@ -138,6 +138,7 @@ public sealed class UsageAccountingTests
     {
         foreach (var (model, inputRate, cachedRate, outputRate) in new[]
         {
+            ("gpt-6.1-sol", 2m, 0.1m, 10m),
             ("gpt-6-sol", 2m, 0.2m, 10m),
             ("gpt-6-luna", 0.1m, 0.01m, 0.5m),
         })
@@ -218,6 +219,11 @@ public sealed class UsageAccountingTests
     [InlineData("gpt-6-sol", "gpt-6-sol")]
     [InlineData("gpt-6-luna", "gpt-6-luna")]
     [InlineData("gpt-6-sol-preview", "gpt-6-sol-preview")]
+    [InlineData("gpt-6.1-sol", "gpt-6.1-sol")]
+    [InlineData("gpt-6.1-sol-preview", "gpt-6.1-sol-preview")]
+    [InlineData("gpt-6.1-solstice", "Others")]
+    [InlineData("gpt-6.1-astra", "Others")]
+    [InlineData("GPT-6.1-sol", "Others")]
     [InlineData("codex-auto-review", "Others")]
     [InlineData("codex-auto-review-preview", "Others")]
     [InlineData("unknown", "Unknown attribution")]
@@ -244,6 +250,7 @@ public sealed class UsageAccountingTests
 
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-astra-preview" }).Priced);
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-sol-preview" }).Priced);
+        Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6.1-sol-preview" }).Priced);
     }
 
     [Fact]
@@ -296,19 +303,21 @@ public sealed class UsageAccountingTests
         Assert.Equal(2, unknown.Summary.Calls);
     }
 
-    [Fact]
-    public void FacetsUseOnlyDateRangeAndIgnoreActiveSelections()
+    [Theory]
+    [InlineData("gpt-5.6-sol")]
+    [InlineData("gpt-6.1-sol")]
+    public void FacetsUseOnlyDateRangeAndIgnoreActiveSelections(string selectedModel)
     {
         var events = new[]
         {
-            Event,
+            Event with { Model = selectedModel },
             Event with { RolloutId = "other", Model = "o3" },
             Event with { RolloutId = "auto-review", Model = "codex-auto-review" },
             Event with { RolloutId = "unknown", Model = "unknown" },
             Event with { RolloutId = "outside", TimestampUtc = "2026-07-16T00:00:00.000Z", Model = "gpt-5.4" },
         };
-        var result = UsageAccounting.Query(events, ScanDiagnostics.Empty, Filter with { Models = ["gpt-5.6-sol"] });
-        Assert.Single(result.ByModel);
+        var result = UsageAccounting.Query(events, ScanDiagnostics.Empty, Filter with { Models = [selectedModel] });
+        Assert.Equal(selectedModel, Assert.Single(result.ByModel).Key[0]);
         Assert.Equal(3, result.Facets.Models.Length);
         Assert.DoesNotContain(result.Facets.Models, value => value.Model == "gpt-5.4");
         Assert.Contains(result.Facets.Models, value =>

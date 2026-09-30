@@ -22,10 +22,10 @@ Unicode true
   !error "PAYLOAD_SIZE_KB is required"
 !endif
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.3.29"
+  !define PRODUCT_VERSION "0.3.30"
 !endif
 !ifndef PRODUCT_FILE_VERSION
-  !define PRODUCT_FILE_VERSION "0.3.29.0"
+  !define PRODUCT_FILE_VERSION "0.3.30.0"
 !endif
 
 !define PRODUCT_NAME "Codex Usage Desktop"
