@@ -16,7 +16,8 @@ public sealed class RolloutParserTests
             Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])), "fallback");
         Assert.Equal(new(
             "conversation-a", "rollout-a", "", ThreadType.Main, "main", "/root", "", false, "Codex", "",
-            DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds()), main.Metadata);
+            DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds())
+        { ThreadId = "rollout-a" }, main.Metadata);
         Assert.Equal("gpt-main", Assert.Single(main.Events).Model);
 
         var child = RolloutParser.Parse(Jsonl(Line("session_meta", new
@@ -27,7 +28,8 @@ public sealed class RolloutParserTests
         })), "fallback");
         Assert.Equal(new(
             "parent", "child", "parent", ThreadType.Subagent, "worker", "/root/worker", "worker-a", false, "Codex", "",
-            DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds()), child.Metadata);
+            DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds())
+        { ThreadId = "child" }, child.Metadata);
     }
 
     [Fact]
@@ -117,6 +119,7 @@ public sealed class RolloutParserTests
                 history_mode = "paginated",
                 history_base = new { thread_id = rootId, end_ordinal_exclusive = 12, end_byte_offset = 4096 },
             }),
+            TierSettings("fast", segmentId), TierSettings("standard", rootId),
             Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
             Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14])), segmentId);
 
@@ -125,6 +128,7 @@ public sealed class RolloutParserTests
         Assert.Equal(rootId, result.Metadata.ParentThreadId);
         Assert.True(result.Metadata.IsPaginatedContinuation);
         Assert.Equal(segmentId, Assert.Single(result.Events).RolloutId);
+        Assert.Equal(ServiceTier.Fast, result.Events[0].ServiceTier);
         Assert.False(result.Diagnostics.HasInvalidPaginatedHistoryMetadata);
     }
 
@@ -140,8 +144,11 @@ public sealed class RolloutParserTests
             thread_source = "user",
             history_mode = "paginated",
             history_base = new { thread_id = rootId, end_ordinal_exclusive = 12, end_byte_offset = 4096 },
-        })), segmentId);
+        }),
+            TierSettings("fast", rootId), TierSettings("standard", segmentId),
+            TaskStarted("live"), Token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2])), segmentId);
 
+        Assert.Equal(ServiceTier.Fast, Assert.Single(result.Events).ServiceTier);
         Assert.Equal(rootId, result.Metadata.ConversationId);
         Assert.Equal(segmentId, result.Metadata.RolloutId);
         Assert.Equal(rootId, result.Metadata.ParentThreadId);
@@ -834,6 +841,67 @@ public sealed class RolloutParserTests
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
             await RolloutParser.ParseChunkCooperativelyAsync(ReadOnlyMemory<byte>.Empty, "fallback", options));
     }
+
+    [Fact]
+    public void ServiceTierFreezesAtTurnStartAndSettingsApplyToFollowingTurns()
+    {
+        var result = RolloutParser.Parse(Jsonl(
+            TierSettings("priority"), TaskStarted("a"),
+            TierSettings("standard"), Line("turn_context", new { turn_id = "a", model = "gpt-5.6-sol" }),
+            Token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2]),
+            TaskStarted("b"), Token([1, 0, 1, 0, 2], [2, 0, 2, 0, 4]),
+            TierSettings("fast"), Line("turn_context", new { turn_id = "c", model = "gpt-5.6-sol" }),
+            Token([1, 0, 1, 0, 2], [3, 0, 3, 0, 6])), "rollout");
+        Assert.Equal([ServiceTier.Fast, ServiceTier.Standard, ServiceTier.Fast], result.Events.Select(value => value.ServiceTier));
+        Assert.Equal(ServiceTier.Fast, result.Events[0].ToUsageEvent().ServiceTier);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("unrecognized")]
+    [InlineData(42)]
+    public void MissingNullOrInvalidServiceTierClearsPreviousFastSetting(object? tier)
+    {
+        var result = RolloutParser.Parse(Jsonl(
+            TierSettings("fast"), TaskStarted("a"), Token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2]),
+            TierSettings(tier), TaskStarted("b"), Token([1, 0, 1, 0, 2], [2, 0, 2, 0, 4]),
+            TierSettings("fast"), ThreadSettings("gpt-5.6-sol"), TaskStarted("c"),
+            Token([1, 0, 1, 0, 2], [3, 0, 3, 0, 6])), "rollout");
+        Assert.Equal([ServiceTier.Fast, ServiceTier.Unknown, ServiceTier.Unknown], result.Events.Select(value => value.ServiceTier));
+    }
+
+    [Fact]
+    public void ForkCopiedSettingsCannotReplaceChildOwnedSettingsAndReplayStartIsFrozen()
+    {
+        var first = RolloutParser.ParseChunk(Jsonl(
+            Line("session_meta", new { id = "child", session_id = "root", forked_from_id = "root", source = new { subagent = new { thread_spawn = new { agent_path = "/root/worker" } } } }),
+            TierSettings("fast", "child"), TierSettings("standard", "root"), TierSettings("standard"),
+            TaskStarted("child-turn"),
+            TierSettings("standard", "child"),
+            Line("turn_context", new { turn_id = "child-turn", model = "gpt-5.6-sol" })), "rollout");
+        Assert.True(RolloutParserStateCodec.TryDeserialize(RolloutParserStateCodec.Serialize(first.State), out var state, out _));
+        var second = RolloutParser.ParseChunk(Jsonl(
+            Line("inter_agent_communication_metadata", new { trigger_turn = true }),
+            Line("response_item", new { type = "agent_message", recipient = "/root/worker" }),
+            Token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2]),
+            TaskStarted("next"), Token([1, 0, 1, 0, 2], [2, 0, 2, 0, 4])), "rollout", state);
+        Assert.Equal([ServiceTier.Fast, ServiceTier.Standard], second.Events.Select(value => value.ServiceTier));
+    }
+
+    [Fact]
+    public void PersistedServiceTierKeepsActiveTurnAndNextTurnSettingsDistinct()
+    {
+        var first = RolloutParser.ParseChunk(Jsonl(TierSettings("fast"), TaskStarted("active"), TierSettings("default")), "rollout");
+        Assert.True(RolloutParserStateCodec.TryDeserialize(RolloutParserStateCodec.Serialize(first.State), out var state, out _));
+        var second = RolloutParser.ParseChunk(Jsonl(
+            Line("turn_context", new { turn_id = "active", model = "gpt-5.6-sol" }),
+            Token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2]),
+            TaskStarted("next"), Token([1, 0, 1, 0, 2], [2, 0, 2, 0, 4])), "rollout", state);
+        Assert.Equal([ServiceTier.Fast, ServiceTier.Standard], second.Events.Select(value => value.ServiceTier));
+    }
+
+    private static string TierSettings(object? tier, string? owner = null) =>
+        Line("event_msg", new { type = "thread_settings_applied", thread_id = owner, thread_settings = new { service_tier = tier } });
 
     private static string Line(string type, object payload, string timestamp = "2026-07-15T01:02:03.004Z") =>
         JsonSerializer.Serialize(new { timestamp, type, payload });

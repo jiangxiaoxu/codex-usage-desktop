@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.3.30',
+    [string]$Version = '0.3.31',
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -822,7 +822,7 @@ function Invoke-PublishedSmokeTest {
     param([Parameter(Mandatory)][string]$ExecutablePath)
 
     Write-Host "Running bounded WinUI smoke test: $ExecutablePath --smoke-test"
-    $process = Start-Process -FilePath $ExecutablePath -ArgumentList '--smoke-test' -PassThru
+    $process = Start-Process -FilePath $ExecutablePath -ArgumentList '--smoke-test' -WindowStyle Hidden -PassThru
     if (-not $process.WaitForExit(30000)) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         throw 'Published WinUI smoke test exceeded the 30 second budget.'

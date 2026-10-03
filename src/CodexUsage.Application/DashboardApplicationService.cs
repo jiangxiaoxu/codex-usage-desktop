@@ -287,7 +287,8 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         value.InputTokens,
         value.CachedInputTokens,
         value.OutputTokens,
-        value.ReasoningOutputTokens);
+        value.ReasoningOutputTokens,
+        value.ServiceTier);
 
     private static ScanDiagnostics ToScanDiagnostics(CollectorDiagnostics value) => new(
         checked((int)Math.Min(value.FilesScanned, int.MaxValue)),

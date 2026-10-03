@@ -406,7 +406,8 @@ public sealed class DashboardApplicationServiceTests
                     5,
                     0,
                     DateTimeOffset.Parse("2026-07-30T03:30:00Z").ToUnixTimeMilliseconds(),
-                    "signature"),
+                    "signature",
+                    ServiceTier.Unknown),
             ];
             return ValueTask.FromResult(events);
         }

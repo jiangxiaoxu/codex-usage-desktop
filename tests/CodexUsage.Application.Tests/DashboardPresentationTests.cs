@@ -279,7 +279,7 @@ public sealed class DashboardPresentationTests
     [Fact]
     public void CostCompositionUsesTheFourPricedCategoriesAndPercentageOnlyDetails()
     {
-        var slices = DashboardCostComposition.From(new CostBreakdown(20, 60, 15, 5, 100, 100, 0, Priced: true));
+        var slices = DashboardCostComposition.From(new CostBreakdown(20, 60, 15, 5, 100, 100, 0, FastModePremium: 0, Priced: true));
 
         Assert.Collection(
             slices,
@@ -370,7 +370,8 @@ public sealed class DashboardPresentationTests
         Assert.Equal("cached-second", model.CachedInput);
         Assert.Equal("output-second", model.Output);
         Assert.Equal("reasoning-second", model.ReasoningOutput);
-        Assert.Equal("model-rate-second", model.LongContextRate);
+        Assert.Equal("model-rate-second", model.LongContextCostMultiplier);
+        Assert.Equal("model-fast-second", model.FastModeCostMultiplier);
         Assert.Equal("model-share-second", model.Share);
         Assert.Equal("subject-count-second", subject.ThreadCount);
         Assert.Equal("subject-total-second", subject.TotalTokens);
@@ -378,7 +379,8 @@ public sealed class DashboardPresentationTests
         Assert.Equal("subject-cached-second", subject.CachedInput);
         Assert.Equal("subject-output-second", subject.Output);
         Assert.Equal("subject-reasoning-second", subject.ReasoningOutput);
-        Assert.Equal("subject-rate-second", subject.LongContextRate);
+        Assert.Equal("subject-rate-second", subject.LongContextCostMultiplier);
+        Assert.Equal("subject-fast-second", subject.FastModeCostMultiplier);
         Assert.Equal("subject-share-second", subject.Share);
         Assert.Equal("diagnostic-value-second", diagnostic.Value);
         Assert.Equal("diagnostic-detail-second", diagnostic.Detail);
@@ -746,23 +748,26 @@ public sealed class DashboardPresentationTests
     }
 
     [Fact]
-    public void UnpricedLongContextRateUsesMissingValueLabels()
+    public void UnpricedCostMultipliersUseMissingValueLabels()
     {
-        var presentation = DashboardLongContextRatePresentation.From(0, 205.6m, null, priced: false);
+        var presentation = DashboardCostMultiplierPresentation.From(0, 205.6m, null, null, priced: false);
 
-        Assert.Equal("—", presentation.LongContextRate);
+        Assert.Equal("—", presentation.LongContextCostMultiplier);
+        Assert.Equal("—", presentation.FastModeCostMultiplier);
         Assert.Equal("—", presentation.Share);
     }
 
     [Fact]
-    public void PricedLongContextRateAndMissingBaselineUseAccuratePresentation()
+    public void PricedCostMultipliersAndMissingBaselineUseAccuratePresentation()
     {
-        var priced = DashboardLongContextRatePresentation.From(194.4m, 205.6m, 1.25m, priced: true);
-        var others = DashboardLongContextRatePresentation.From(0, 205.6m, null, priced: true);
+        var priced = DashboardCostMultiplierPresentation.From(194.4m, 205.6m, 1.25m, 2.5m, priced: true);
+        var others = DashboardCostMultiplierPresentation.From(0, 205.6m, null, null, priced: true);
 
-        Assert.Equal("×1.25", priced.LongContextRate);
+        Assert.Equal("×1.25", priced.LongContextCostMultiplier);
+        Assert.Equal("×2.50", priced.FastModeCostMultiplier);
         Assert.Equal("94.6%", priced.Share);
-        Assert.Equal("—", others.LongContextRate);
+        Assert.Equal("—", others.LongContextCostMultiplier);
+        Assert.Equal("—", others.FastModeCostMultiplier);
         Assert.Equal("0.0%", others.Share);
     }
 
@@ -933,18 +938,18 @@ public sealed class DashboardPresentationTests
         var worker = new SubjectFilter(ThreadType.Subagent, "worker");
         var models = new List<ModelUsageRow>
         {
-            new("gpt-5.6-sol", $"total-{marker}", $"uncached-{marker}", $"cached-{marker}", $"output-{marker}", $"reasoning-{marker}", $"model-rate-{marker}", $"model-share-{marker}"),
+            new("gpt-5.6-sol", $"total-{marker}", $"uncached-{marker}", $"cached-{marker}", $"output-{marker}", $"reasoning-{marker}", $"model-rate-{marker}", $"model-fast-{marker}", $"model-share-{marker}"),
         };
         var subjects = new List<SubjectUsageRow>
         {
-            new("主线程", "root", $"subject-count-{marker}", $"subject-total-{marker}", $"subject-uncached-{marker}", $"subject-cached-{marker}", $"subject-output-{marker}", $"subject-reasoning-{marker}", $"subject-rate-{marker}", $"subject-share-{marker}"),
+            new("主线程", "root", $"subject-count-{marker}", $"subject-total-{marker}", $"subject-uncached-{marker}", $"subject-cached-{marker}", $"subject-output-{marker}", $"subject-reasoning-{marker}", $"subject-rate-{marker}", $"subject-fast-{marker}", $"subject-share-{marker}"),
         };
         var modelOptions = new List<ModelFilterOption> { new("gpt-5.6-sol") };
         var agentOptions = new List<SubjectFilterOption> { new(root) };
         if (includeAdditionalFacet)
         {
-            models.Add(new("gpt-5.6-terra", "total-terra", "uncached-terra", "cached-terra", "output-terra", "reasoning-terra", "model-rate-terra", "model-share-terra"));
-            subjects.Add(new("子代理", "worker", "subject-count-worker", "subject-total-worker", "subject-uncached-worker", "subject-cached-worker", "subject-output-worker", "subject-reasoning-worker", "subject-rate-worker", "subject-share-worker"));
+            models.Add(new("gpt-5.6-terra", "total-terra", "uncached-terra", "cached-terra", "output-terra", "reasoning-terra", "model-rate-terra", "model-fast-terra", "model-share-terra"));
+            subjects.Add(new("子代理", "worker", "subject-count-worker", "subject-total-worker", "subject-uncached-worker", "subject-cached-worker", "subject-output-worker", "subject-reasoning-worker", "subject-rate-worker", "subject-fast-worker", "subject-share-worker"));
             modelOptions.Add(new("gpt-5.6-terra"));
             agentOptions.Add(new(worker));
         }
@@ -1010,7 +1015,11 @@ public sealed class DashboardPresentationTests
             OtherOutputTokens: 0,
             CanonicalTotalTokens: 0,
             UnpricedTokens: 0,
-            Cost: new CostBreakdown(0, 0, 0, 0, totalCost, totalCost, 0, Priced: true)));
+            Cost: new CostBreakdown(0, 0, 0, 0, totalCost, totalCost, 0, FastModePremium: 0, Priced: true),
+            FastCalls: 0,
+            FastTokens: 0,
+            UnknownServiceTierCalls: 0,
+            UnknownServiceTierTokens: 0));
 
     private sealed class TestDashboardRow(string id, string value)
     {

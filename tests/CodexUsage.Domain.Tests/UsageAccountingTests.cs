@@ -8,10 +8,81 @@ public sealed class UsageAccountingTests
 {
     private static readonly UsageEvent Event = new(
         "2026-07-15T01:00:00.000Z", 0, "conversation", "rollout", "", ThreadType.Main, "main", "/root", "",
-        "gpt-5.6-sol", 1_000_000, 800_000, 100_000, 70_000);
+        "gpt-5.6-sol", 1_000_000, 800_000, 100_000, 70_000, ServiceTier.Standard);
 
     private static readonly FilterSpec Filter = new(
         DateTimeOffset.Parse("2026-07-15T00:00:00.000Z"), DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"), null, null);
+
+    [Fact]
+    public void FastPricingMultipliesAllComponentsAfterLongContextPricing()
+    {
+        var fastEvent = Event with { ServiceTier = ServiceTier.Fast };
+        var cost = UsageAccounting.CostFor(fastEvent);
+
+        Assert.Equal(5m, cost.UncachedInput);
+        Assert.Equal(2m, cost.CachedInput);
+        Assert.Equal(7.875m, cost.ReasoningOutput);
+        Assert.Equal(3.375m, cost.OtherOutput);
+        Assert.Equal(18.25m, cost.Total);
+        Assert.Equal(4.4m, cost.BaselineTotal);
+        Assert.Equal(2.9m, cost.LongContextPremium);
+        Assert.Equal(10.95m, cost.FastModePremium);
+        Assert.Equal(7.3m / 4.4m, cost.LongContextCostMultiplier);
+        Assert.Equal(2.5m, cost.FastModeCostMultiplier);
+        Assert.Equal(cost.Total, cost.BaselineTotal + cost.LongContextPremium + cost.FastModePremium);
+        Assert.Equal(1_100_000, UsageAccounting.Summarize([fastEvent]).CanonicalTotalTokens);
+    }
+
+    [Theory]
+    [InlineData(272_000, 4, 0, 6, 10)]
+    [InlineData(272_001, 4.000005, 2.500005, 9.750015, 16.250025)]
+    public void FastPricingPreservesTheLongContextBoundary(
+        long inputTokens, decimal baseline, decimal longPremium, decimal fastPremium, decimal total)
+    {
+        var cost = UsageAccounting.CostFor(Event with
+        {
+            InputTokens = inputTokens,
+            CachedInputTokens = 80_000,
+            ServiceTier = ServiceTier.Fast,
+        });
+
+        Assert.Equal(baseline, cost.BaselineTotal);
+        Assert.Equal(longPremium, cost.LongContextPremium);
+        Assert.Equal(fastPremium, cost.FastModePremium);
+        Assert.Equal(total, cost.Total);
+        Assert.Equal((baseline + longPremium) / baseline, cost.LongContextCostMultiplier);
+        Assert.Equal(2.5m, cost.FastModeCostMultiplier);
+    }
+
+    [Fact]
+    public void SummaryTracksConfiguredFastAndUnknownUsageIncludingUnpricedModels()
+    {
+        var summary = UsageAccounting.Summarize(
+        [
+            Event,
+            Event with { InputTokens = 272_000, CachedInputTokens = 0, ServiceTier = ServiceTier.Fast },
+            Event with { ServiceTier = ServiceTier.Unknown },
+            Event with { Model = "o3", ServiceTier = ServiceTier.Fast },
+            Event with { Model = "unknown", ServiceTier = ServiceTier.Unknown },
+        ]);
+
+        Assert.Equal(5, summary.Calls);
+        Assert.Equal(4_772_000, summary.CanonicalTotalTokens);
+        Assert.Equal(2, summary.FastCalls);
+        Assert.Equal(1_472_000, summary.FastTokens);
+        Assert.Equal(2, summary.UnknownServiceTierCalls);
+        Assert.Equal(2_200_000, summary.UnknownServiceTierTokens);
+        Assert.Equal(2_200_000, summary.UnpricedTokens);
+        Assert.Equal(13.16m, summary.Cost.BaselineTotal);
+        Assert.Equal(5.8m, summary.Cost.LongContextPremium);
+        Assert.Equal(6.54m, summary.Cost.FastModePremium);
+        Assert.Equal(25.5m, summary.Cost.Total);
+        Assert.Equal(18.96m / 13.16m, summary.Cost.LongContextCostMultiplier);
+        Assert.Equal(25.5m / 18.96m, summary.Cost.FastModeCostMultiplier);
+        Assert.InRange(summary.Cost.FastModeCostMultiplier!.Value, 1m, 2.5m);
+        Assert.Equal(CostBreakdown.UnpricedZero, UsageAccounting.CostFor(Event with { Model = "o3", ServiceTier = ServiceTier.Fast }));
+        Assert.Equal(UsageAccounting.CostFor(Event), UsageAccounting.CostFor(Event with { ServiceTier = ServiceTier.Unknown }));
+    }
 
     [Fact]
     public void LongContextPricingAppliesToTheFullRequestWithoutDoubleChargingReasoning()
@@ -25,6 +96,8 @@ public sealed class UsageAccountingTests
         Assert.Equal(4.4m, cost.BaselineTotal);
         Assert.Equal(2.9m, cost.LongContextPremium);
         Assert.Equal(73m / 44m, cost.ActualToBaselineMultiplier);
+        Assert.Equal(73m / 44m, cost.LongContextCostMultiplier);
+        Assert.Equal(1m, cost.FastModeCostMultiplier);
         Assert.Equal(1_100_000, UsageAccounting.Summarize([Event]).CanonicalTotalTokens);
 
         Assert.Equal(5m, UsageAccounting.CostFor(Event with { Model = "gpt-5.4", CachedInputTokens = 0 }).UncachedInput);
@@ -207,6 +280,8 @@ public sealed class UsageAccountingTests
         Assert.Equal(0m, zeroBaseline.Cost.Total);
         Assert.Equal(0m, zeroBaseline.Cost.LongContextPremium);
         Assert.Null(zeroBaseline.Cost.ActualToBaselineMultiplier);
+        Assert.Null(zeroBaseline.Cost.LongContextCostMultiplier);
+        Assert.Null(zeroBaseline.Cost.FastModeCostMultiplier);
         Assert.Equal(2_200_000, zeroBaseline.UnpricedTokens);
     }
 

@@ -161,6 +161,8 @@ public static partial class RolloutParser
         private readonly MutableDiagnostics _diagnostics = new();
         private readonly ImmutableDictionary<string, string>.Builder _turnModels;
         private readonly List<TokenCandidate> _candidates = [];
+        private readonly ImmutableDictionary<string, ServiceTier>.Builder _turnServiceTiers;
+        private ServiceTier _currentServiceTier;
         private bool _hasMetadata;
         private bool _hasInvalidPaginatedHistoryMetadata;
         private RolloutMetadata _metadata;
@@ -174,6 +176,8 @@ public static partial class RolloutParser
         {
             _priorState = priorState;
             _turnModels = priorState?.TurnModels.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, string>(StringComparer.Ordinal);
+            _turnServiceTiers = priorState?.TurnServiceTiers.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, ServiceTier>(StringComparer.Ordinal);
+            _currentServiceTier = priorState?.CurrentServiceTier ?? ServiceTier.Unknown;
             _hasMetadata = priorState?.HasMetadata ?? false;
             _metadata = priorState?.Metadata ?? MetadataFrom(null, fallbackRolloutId).Metadata;
             _currentTurnId = priorState?.CurrentTurnId ?? string.Empty;
@@ -258,7 +262,7 @@ public static partial class RolloutParser
                 if (eventType == "inter_agent_communication_metadata" && hasPayload && GetBoolean(payload, "trigger_turn") == true)
                 {
                     if (_forkReplay.Status == ForkReplayStatus.AwaitingTrigger)
-                        _forkReplay = new(ForkReplayStatus.AwaitingRecipient, TurnId: _forkReplay.TurnId, Model: _forkReplay.Model);
+                        _forkReplay = new(ForkReplayStatus.AwaitingRecipient, TurnId: _forkReplay.TurnId, Model: _forkReplay.Model, ServiceTier: _forkReplay.ServiceTier);
                     return;
                 }
 
@@ -291,12 +295,13 @@ public static partial class RolloutParser
             if (_forkReplay.Status == ForkReplayStatus.AwaitingTurnContext)
             {
                 if (turnId == _forkReplay.TurnId)
-                    _forkReplay = new(ForkReplayStatus.AwaitingTrigger, TurnId: _forkReplay.TurnId, Model: model);
+                    _forkReplay = new(ForkReplayStatus.AwaitingTrigger, TurnId: _forkReplay.TurnId, Model: model, ServiceTier: _forkReplay.ServiceTier);
                 return;
             }
             if (_forkReplay.Status != ForkReplayStatus.Inactive) return;
             if (turnId is null) return;
             if (turnId != _currentTurnId) _currentTurnModelOverridden = false;
+            CaptureTurnServiceTier(turnId);
             _currentTurnId = turnId;
             if (model is not null) _turnModels[turnId] = model;
         }
@@ -309,6 +314,7 @@ public static partial class RolloutParser
             if (GetNonEmptyString(payload, "recipient") != _metadata.AgentPath
                 || (internalTurnId is not null && internalTurnId != _forkReplay.TurnId)) return;
             _currentTurnId = _forkReplay.TurnId!;
+            _turnServiceTiers[_currentTurnId] = _forkReplay.ServiceTier ?? ServiceTier.Unknown;
             if (_forkReplay.Model is not null) _turnModels[_currentTurnId] = _forkReplay.Model;
             _forkReplay = RolloutForkReplayState.Inactive;
         }
@@ -323,6 +329,9 @@ public static partial class RolloutParser
 
             if (payloadType == "thread_settings_applied")
             {
+                if (SettingsBelongToCurrentThread(payload))
+                    _currentServiceTier = TryGetObject(payload, "thread_settings", out var tierSettings)
+                        ? ServiceTierFrom(tierSettings) : ServiceTier.Unknown;
                 if (TryGetObject(payload, "thread_settings", out var settings) && GetNonEmptyString(settings, "model") is { } model)
                 {
                     _currentModel = model;
@@ -373,11 +382,34 @@ public static partial class RolloutParser
             }
             else if (_forkReplay.Status != ForkReplayStatus.Inactive)
             {
-                if (turnId is not null) _forkReplay = new(ForkReplayStatus.AwaitingTurnContext, TurnId: turnId);
+                if (turnId is not null) _forkReplay = new(ForkReplayStatus.AwaitingTurnContext, TurnId: turnId, ServiceTier: _currentServiceTier);
                 return;
             }
-            if (turnId is not null) _currentTurnId = turnId;
+            if (turnId is not null)
+            {
+                CaptureTurnServiceTier(turnId);
+                _currentTurnId = turnId;
+            }
             _currentTurnModelOverridden = false;
+        }
+
+        private bool SettingsBelongToCurrentThread(JsonElement payload)
+        {
+            if (payload.TryGetProperty("thread_id", out var owner) && owner.ValueKind != JsonValueKind.Null)
+                return owner.ValueKind == JsonValueKind.String && owner.GetString() == _metadata.ThreadId;
+            return _forkReplay.Status == ForkReplayStatus.Inactive;
+        }
+
+        private static ServiceTier ServiceTierFrom(JsonElement settings) => GetNonEmptyString(settings, "service_tier") switch
+        {
+            "priority" or "fast" => ServiceTier.Fast,
+            "default" or "standard" => ServiceTier.Standard,
+            _ => ServiceTier.Unknown,
+        };
+
+        private void CaptureTurnServiceTier(string turnId)
+        {
+            if (!_turnServiceTiers.ContainsKey(turnId)) _turnServiceTiers[turnId] = _currentServiceTier;
         }
 
         private void ProcessTokenCount(JsonElement root, JsonElement payload)
@@ -422,7 +454,7 @@ public static partial class RolloutParser
             var fallbackSetting = !activeSetting && !_turnModels.ContainsKey(candidateTurnId) && _currentModel != "unknown";
             _candidates.Add(new(timestamp, candidateTurnId, activeSetting ? _currentModel : fallbackSetting ? _currentModel : null,
                 activeSetting ? ModelSource.ActiveTurnSetting : fallbackSetting ? ModelSource.SettingsFallback : ModelSource.None,
-                usage, snapshot));
+                usage, snapshot, _turnServiceTiers.TryGetValue(candidateTurnId, out var tier) ? tier : ServiceTier.Unknown));
         }
 
         public RolloutChunkParseResult Complete(int stableLineCount, int stableByteLength, bool trailingPartialLine)
@@ -490,7 +522,8 @@ public static partial class RolloutParser
             var firstOrdinal = _priorState?.NextTokenEventOrdinal ?? 0;
             var state = new RolloutParserState(
                 _hasMetadata, _metadata, _turnModels.ToImmutable(), _currentTurnId, _currentTurnModelOverridden, _currentModel,
-                _forkReplay, _previousSnapshot, checked(firstOrdinal + immutableEvents.Length), unresolved.ToImmutable(), provisional.ToImmutable());
+                _forkReplay, _previousSnapshot, checked(firstOrdinal + immutableEvents.Length), unresolved.ToImmutable(), provisional.ToImmutable(),
+                _currentServiceTier, _turnServiceTiers.ToImmutable());
             return new(_metadata, immutableEvents, _diagnostics.ToImmutable(), state, stableLineCount, stableByteLength, trailingPartialLine);
         }
 
@@ -511,7 +544,7 @@ public static partial class RolloutParser
                 _metadata.ConversationId, _metadata.RolloutId, _metadata.ParentThreadId, _metadata.ThreadType, _metadata.AgentRole,
                 _metadata.AgentPath, _metadata.AgentNickname, candidate.Timestamp, ordinal, candidate.TurnId, model,
                 candidate.Usage.InputTokens, candidate.Usage.CachedInputTokens, candidate.Usage.OutputTokens,
-                candidate.Usage.ReasoningOutputTokens, candidate.Snapshot, signature);
+                candidate.Usage.ReasoningOutputTokens, candidate.Snapshot, signature, candidate.ServiceTier);
         }
 
         private RolloutChunkParseResult BuildResult(
@@ -535,7 +568,8 @@ public static partial class RolloutParser
             var firstOrdinal = _priorState?.NextTokenEventOrdinal ?? 0;
             var state = new RolloutParserState(
                 _hasMetadata, _metadata, _turnModels.ToImmutable(), _currentTurnId, _currentTurnModelOverridden, _currentModel,
-                _forkReplay, _previousSnapshot, checked(firstOrdinal + events.Length), unresolved.ToImmutable(), provisional.ToImmutable());
+                _forkReplay, _previousSnapshot, checked(firstOrdinal + events.Length), unresolved.ToImmutable(), provisional.ToImmutable(),
+                _currentServiceTier, _turnServiceTiers.ToImmutable());
             return new(_metadata, events, _diagnostics.ToImmutable(), state, stableLineCount, stableByteLength, trailingPartialLine);
         }
     }
@@ -720,6 +754,7 @@ public static partial class RolloutParser
                 0)
             {
                 IsPaginatedContinuation = paginatedContinuation.SegmentRolloutId is not null,
+                ThreadId = Top("id"),
             },
             paginatedContinuation.Invalid);
     }
@@ -867,7 +902,7 @@ public static partial class RolloutParser
         public string Snapshot => $"{InputTokens}:{CachedInputTokens}:{OutputTokens}:{ReasoningOutputTokens}:{TotalTokens}";
     }
     private enum ModelSource { None, ActiveTurnSetting, SettingsFallback }
-    private sealed record TokenCandidate(string Timestamp, string TurnId, string? Model, ModelSource Source, TokenTuple Usage, string Snapshot);
+    private sealed record TokenCandidate(string Timestamp, string TurnId, string? Model, ModelSource Source, TokenTuple Usage, string Snapshot, ServiceTier ServiceTier);
     private sealed class MutableDiagnostics
     {
         public int BlankLines { get; set; }

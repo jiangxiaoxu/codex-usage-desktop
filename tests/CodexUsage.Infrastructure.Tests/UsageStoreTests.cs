@@ -15,17 +15,17 @@ public sealed class UsageStoreTests
         "main", "/root", string.Empty, false, "Codex", string.Empty, 0);
 
     [Fact]
-    public void EmptyDatabaseMigratesToExactSchemaV8AndRequiredPragmas()
+    public void EmptyDatabaseMigratesToExactSchemaV9AndRequiredPragmas()
     {
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(8, store.CurrentSchemaVersion);
+            Assert.Equal(9, store.CurrentSchemaVersion);
         }
 
         using var connection = Open(databasePath);
-        Assert.Equal(8L, ScalarLong(connection, "PRAGMA user_version"));
+        Assert.Equal(9L, ScalarLong(connection, "PRAGMA user_version"));
         Assert.Equal(1L, ScalarLong(connection, "PRAGMA foreign_keys"));
         Assert.Equal("wal", ScalarString(connection, "PRAGMA journal_mode"));
         Assert.Equal(
@@ -87,6 +87,7 @@ public sealed class UsageStoreTests
                 INSERT INTO rollouts VALUES (
                     'rollout-1', 'conversation-1', '', 'main', 'main', '/root', '', NULL, 1, 1
                 );
+                CREATE TABLE usage_events (rollout_id TEXT NOT NULL) STRICT;
                 PRAGMA user_version = 1;
                 """;
             command.ExecuteNonQuery();
@@ -94,7 +95,7 @@ public sealed class UsageStoreTests
 
         using var store = new UsageStore(databasePath);
 
-        Assert.Equal(8, store.CurrentSchemaVersion);
+        Assert.Equal(9, store.CurrentSchemaVersion);
         Assert.False(store.GetRolloutMetadata("rollout-1")!.IsRealtimeVoice);
     }
 
@@ -105,7 +106,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(8, store.CurrentSchemaVersion);
+            Assert.Equal(9, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var command = connection.CreateCommand())
@@ -119,7 +120,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(8, migrated.CurrentSchemaVersion);
+        Assert.Equal(9, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("safe_null_padding_records",
             ReadStrings(verified, "SELECT name FROM pragma_table_info('rollout_checkpoints')"));
@@ -146,7 +147,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(8, migrated.CurrentSchemaVersion);
+        Assert.Equal(9, migrated.CurrentSchemaVersion);
         Assert.Equal("Codex", migrated.GetRolloutMetadata("rollout-1")!.ProjectName);
     }
 
@@ -171,7 +172,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(8, migrated.CurrentSchemaVersion);
+        Assert.Equal(9, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("rollouts_parent_thread_idx", ReadStrings(verified, """
             SELECT name FROM sqlite_schema
@@ -221,7 +222,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(8, migrated.CurrentSchemaVersion);
+        Assert.Equal(9, migrated.CurrentSchemaVersion);
         Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
         migrated.AppendEvents(Metadata with
         {
@@ -230,6 +231,65 @@ public sealed class UsageStoreTests
             AgentRole = "guardian",
         }, [], 1_000);
         Assert.Equal(ThreadType.GuardianReview, migrated.GetRolloutMetadata("guardian-rollout")!.ThreadType);
+    }
+
+    [Theory]
+    [InlineData(ServiceTier.Unknown)]
+    [InlineData(ServiceTier.Standard)]
+    [InlineData(ServiceTier.Fast)]
+    public void ServiceTierPersistsWithoutChangingTokenIdentity(ServiceTier tier)
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        var usage = Event(0, 1_000) with { ServiceTier = tier };
+        using (var store = new UsageStore(databasePath))
+        {
+            store.AppendEvents(Metadata, [usage], 1_000);
+            var identity = Assert.Single(store.GetRolloutEventIdentities(Metadata.RolloutId));
+            var semantic = Assert.Single(store.GetRolloutSemanticSignatures(Metadata.RolloutId));
+            store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
+                Metadata, [usage with { ServiceTier = ServiceTier.Fast }],
+                CanonicalSource("canonical.jsonl"), 1_000, null));
+            Assert.Equal(identity, Assert.Single(store.GetRolloutEventIdentities(Metadata.RolloutId)));
+            if (tier != ServiceTier.Fast)
+                Assert.NotEqual(semantic, Assert.Single(store.GetRolloutSemanticSignatures(Metadata.RolloutId)));
+            store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
+                Metadata, [usage], CanonicalSource("canonical.jsonl"), 1_000, null));
+        }
+
+        using var reopened = new UsageStore(databasePath);
+        Assert.Equal(tier, Assert.Single(reopened.QueryEvents(new UsageEventQuery(0, 2_000))).ServiceTier);
+        Assert.Throws<ArgumentOutOfRangeException>(() => reopened.AppendEvents(
+            Metadata, [usage with { ServiceTier = (ServiceTier)99 }], 1_000));
+    }
+
+    [Fact]
+    public void SchemaV8MigrationPreservesUsageWithUnknownTierAndRolloutTriggers()
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using (var store = new UsageStore(databasePath))
+            store.AppendEvents(Metadata, [Event(0, 1_000)], 1_000);
+        using (var connection = Open(databasePath))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                ALTER TABLE usage_events DROP COLUMN service_tier;
+                CREATE TRIGGER preserve_rollout_trigger AFTER UPDATE ON rollouts BEGIN SELECT 1; END;
+                PRAGMA user_version = 8;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        using var migrated = new UsageStore(databasePath);
+        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        var usage = Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
+        Assert.Equal(ServiceTier.Unknown, usage.ServiceTier);
+        Assert.Equal(100, usage.InputTokens);
+        using var verified = Open(databasePath);
+        Assert.Equal(1, ScalarLong(verified,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND name = 'preserve_rollout_trigger'"));
+        Assert.Equal(0, ScalarLong(verified, "SELECT COUNT(*) FROM pragma_foreign_key_check"));
     }
 
     [Fact]
@@ -935,7 +995,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(8, store.CurrentSchemaVersion);
+            Assert.Equal(9, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var transaction = connection.BeginTransaction())
@@ -976,7 +1036,7 @@ public sealed class UsageStoreTests
 
     private static UsageEventInput Event(long ordinal, long timestamp, string? signature = null) => new(
         ordinal, timestamp, "gpt-5.6-sol", 100 + ordinal, 20, 30, 10,
-        signature ?? $"signature-{ordinal}");
+        signature ?? $"signature-{ordinal}", ServiceTier.Unknown);
 
     private static CandidateSourceInput Source(string path) => new(
         path, 1_000, 2_000, 1_000, "prefix", PrefixStatus.Matches,
@@ -1005,7 +1065,9 @@ public sealed class UsageStoreTests
             "[1,0,0,0,1]",
             nextOrdinal,
             ImmutableSortedSet<string>.Empty,
-            ImmutableSortedSet<string>.Empty);
+            ImmutableSortedSet<string>.Empty,
+            ServiceTier.Unknown,
+            ImmutableDictionary<string, ServiceTier>.Empty);
         var json = RolloutParserStateCodec.Serialize(state);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
         return new RolloutCheckpointInput(

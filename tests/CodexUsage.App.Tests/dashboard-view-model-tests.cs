@@ -16,9 +16,9 @@ public sealed class DashboardViewModelTests
     private const string SecondCollidingMainThreadId = "019fe0d7-dd66-7412-8fa0-ea96334569dd";
 
     [Fact]
-    public async Task SnapshotPresentsBaselineActualCostAndLongContextRateMetrics()
+    public async Task SnapshotPresentsSeparateFastAndLongContextCostMultiplierMetrics()
     {
-        var cost = new CostBreakdown(2m, 0.8m, 3.15m, 1.35m, 7.3m, 4.4m, 2.9m, Priced: true);
+        var cost = new CostBreakdown(5m, 2m, 7.875m, 3.375m, 18.25m, 4.4m, 2.9m, FastModePremium: 10.95m, Priced: true);
         var service = new FakeUsageDashboardService(Snapshot("priced", [], cost));
         using var viewModel = CreateViewModel(service);
 
@@ -30,8 +30,9 @@ public sealed class DashboardViewModelTests
             metric => Assert.Equal(("输入", "0"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("输出", "0"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("基准费用", "$4.4"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("实际费用", "$7.3"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("长上下文费用率", "×1.66"), (metric.Label, metric.Value)));
+            metric => Assert.Equal(("实际费用", "$18.3"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("长上下文费用倍率", "×1.66"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("Fast 费用倍率", "×2.50"), (metric.Label, metric.Value)));
     }
 
     [Fact]
@@ -44,19 +45,20 @@ public sealed class DashboardViewModelTests
 
         Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "基准费用").Value);
         Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "实际费用").Value);
-        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "长上下文费用率").Value);
+        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "长上下文费用倍率").Value);
+        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "Fast 费用倍率").Value);
     }
 
     [Fact]
-    public async Task SnapshotPresentsLongContextRateAndActualShareForModelAndRoleRows()
+    public async Task SnapshotPresentsWeightedFastAndLongContextMultipliersForModelAndRoleRows()
     {
-        var modelCost = new CostBreakdown(1m, 1m, 1m, 0m, 6m, 4m, 2m, Priced: true);
+        var modelCost = new CostBreakdown(2m, 2m, 2m, 0m, 6m, 4m, 0.4m, FastModePremium: 1.6m, Priced: true);
         var unpricedCost = CostBreakdown.UnpricedZero;
-        var roleCost = new CostBreakdown(1m, 1m, 1m, 0m, 4m, 4m, 0m, Priced: true);
+        var roleCost = new CostBreakdown(1m, 1m, 2m, 0m, 4m, 2m, 0.4m, FastModePremium: 1.6m, Priced: true);
         var service = new FakeUsageDashboardService(Snapshot(
             "rows",
             [],
-            new CostBreakdown(2m, 2m, 2m, 0m, 10m, 8m, 2m, Priced: true),
+            new CostBreakdown(3m, 3m, 4m, 0m, 10m, 6m, 0.8m, FastModePremium: 3.2m, Priced: true),
             [
                 new GroupRow(["gpt-5.6-sol"], Summary(modelCost)),
                 new GroupRow(["unknown"], Summary(unpricedCost, unpricedTokens: 2)),
@@ -73,24 +75,28 @@ public sealed class DashboardViewModelTests
             viewModel.Models,
             row =>
             {
-                Assert.Equal("×1.50", row.LongContextRate);
+                Assert.Equal("×1.10", row.LongContextCostMultiplier);
+                Assert.Equal("×1.36", row.FastModeCostMultiplier);
                 Assert.Equal("60.0%", row.Share);
             },
             row =>
             {
-                Assert.Equal("—", row.LongContextRate);
+                Assert.Equal("—", row.LongContextCostMultiplier);
+                Assert.Equal("—", row.FastModeCostMultiplier);
                 Assert.Equal("—", row.Share);
             });
         Assert.Collection(
             viewModel.Subjects,
             row =>
             {
-                Assert.Equal("×1.00", row.LongContextRate);
+                Assert.Equal("×1.20", row.LongContextCostMultiplier);
+                Assert.Equal("×1.67", row.FastModeCostMultiplier);
                 Assert.Equal("40.0%", row.Share);
             },
             row =>
             {
-                Assert.Equal("—", row.LongContextRate);
+                Assert.Equal("—", row.LongContextCostMultiplier);
+                Assert.Equal("—", row.FastModeCostMultiplier);
                 Assert.Equal("—", row.Share);
             });
     }
@@ -98,7 +104,7 @@ public sealed class DashboardViewModelTests
     [Fact]
     public async Task SnapshotOrdersGpt6ModelsBeforeOlderPricedModels()
     {
-        var modelCost = new CostBreakdown(1m, 1m, 1m, 0m, 3m, 3m, 0m, Priced: true);
+        var modelCost = new CostBreakdown(1m, 1m, 1m, 0m, 3m, 3m, 0m, FastModePremium: 0, Priced: true);
         var service = new FakeUsageDashboardService(Snapshot(
             "model-order",
             [],
@@ -491,7 +497,7 @@ public sealed class DashboardViewModelTests
             new CollectorDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0),
             0),
         new QueryResult(
-            new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, cost ?? CostBreakdown.PricedZero),
+            new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, cost ?? CostBreakdown.PricedZero, 0, 0, 0, 0),
             byModel?.ToImmutableArray() ?? ImmutableArray<GroupRow>.Empty,
             byRole?.ToImmutableArray() ?? ImmutableArray<RoleUsageRow>.Empty,
             ImmutableArray<GroupRow>.Empty,
@@ -510,7 +516,11 @@ public sealed class DashboardViewModelTests
         OtherOutputTokens: 1,
         CanonicalTotalTokens: 2,
         UnpricedTokens: unpricedTokens,
-        Cost: cost);
+        Cost: cost,
+        FastCalls: 0,
+        FastTokens: 0,
+        UnknownServiceTierCalls: 0,
+        UnknownServiceTierTokens: 0);
 
     private sealed class InlineUiDispatcher : IUiDispatcher
     {

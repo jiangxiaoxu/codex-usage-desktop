@@ -207,7 +207,7 @@ public sealed class CollectionIntegrationTests
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
                 new RolloutMetadata(rootId, rootId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0),
                 [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
-                    "gpt-5.6-sol", 1, 0, 1, 0, "stale-continuation")],
+                    "gpt-5.6-sol", 1, 0, 1, 0, "stale-continuation", ServiceTier.Unknown)],
                 new CanonicalSourceInput(
                     continuationPath, continuationFile.Length,
                     new DateTimeOffset(continuationFile.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
@@ -234,7 +234,7 @@ public sealed class CollectionIntegrationTests
         Assert.Equal(segmentId, events.Single(value => value.RolloutId == secondSegmentId).ConversationId);
         Assert.Equal([rootId], (await collector.QueryRecentMainThreadsAsync(20)).Select(value => value.ConversationId));
         using var verified = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
-        Assert.Equal("20", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
         Assert.DoesNotContain(verified.ListSourceFiles(), value => value.CanonicalStatus == CanonicalStatus.Conflict);
     }
 
@@ -1706,7 +1706,7 @@ public sealed class CollectionIntegrationTests
                 file.Length, "old-prefix", PrefixStatus.Matches, CanonicalStatus.Canonical, true, 1, null);
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(metadata,
                 [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
-                    "unknown", 1, 0, 1, 0, "old-signature")],
+                    "unknown", 1, 0, 1, 0, "old-signature", ServiceTier.Unknown)],
                 new CanonicalSourceInput(
                     source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
                     source.PrefixHash, source.PrefixStatus, source.LastScannedAtEpochMs, source.LastError),
@@ -1764,7 +1764,7 @@ public sealed class CollectionIntegrationTests
                 [new UsageEventInput(
                     0,
                     DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
-                    "gpt-5.6-sol", 10, 2, 4, 1, "stale-agent-created")],
+                    "gpt-5.6-sol", 10, 2, 4, 1, "stale-agent-created", ServiceTier.Unknown)],
                 new CanonicalSourceInput(
                     rolloutPath,
                     file.Length,
@@ -1806,8 +1806,8 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("20", verified.GetCollectorState("rollout_parser_revision"));
-        Assert.Equal(20, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(21, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
     }
 
     [Fact]
@@ -1863,7 +1863,7 @@ public sealed class CollectionIntegrationTests
                 [new UsageEventInput(
                     0,
                     DateTimeOffset.Parse("2026-07-15T01:03:03.004Z").ToUnixTimeMilliseconds(),
-                    "gpt-5.6-sol", 6, 2, 2, 1, "stale-fork")],
+                    "gpt-5.6-sol", 6, 2, 2, 1, "stale-fork", ServiceTier.Unknown)],
                 new CanonicalSourceInput(
                     rolloutPath, file.Length, new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
                     file.Length, HashBoundary(content), PrefixStatus.Matches, 1, null),
@@ -1905,8 +1905,8 @@ public sealed class CollectionIntegrationTests
         using var verified = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(forkId)!.ThreadType);
         Assert.Equal(parentId, verified.GetRolloutMetadata(forkId)!.ParentThreadId);
-        Assert.Equal("20", verified.GetCollectorState("rollout_parser_revision"));
-        Assert.Equal(20, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(21, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
     }
 
     [Fact]
@@ -1941,7 +1941,7 @@ public sealed class CollectionIntegrationTests
                 [new UsageEventInput(
                     0,
                     DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
-                    "codex-auto-review", 10, 2, 4, 1, "stale-guardian")],
+                    "codex-auto-review", 10, 2, 4, 1, "stale-guardian", ServiceTier.Unknown)],
                 new CanonicalSourceInput(
                     rolloutPath,
                     file.Length,
@@ -1967,7 +1967,7 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.GuardianReview, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("20", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -2017,7 +2017,7 @@ public sealed class CollectionIntegrationTests
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
                 new RolloutMetadata(legacyId, legacyId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0),
                 [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
-                    "gpt-5.6-sol", 1, 0, 1, 0, "legacy")],
+                    "gpt-5.6-sol", 1, 0, 1, 0, "legacy", ServiceTier.Unknown)],
                 source,
                 1,
                 null,
@@ -2058,9 +2058,9 @@ public sealed class CollectionIntegrationTests
             Assert.Equal(CanonicalStatus.Canonical, source.CanonicalStatus);
             var checkpoint = Assert.Single(verified.ListRolloutCheckpoints());
             Assert.Equal(actualId, checkpoint.RolloutId);
-            Assert.Equal(20, checkpoint.ParserRevision);
+            Assert.Equal(21, checkpoint.ParserRevision);
             Assert.Equal(1, checkpoint.SafeNullPaddingRecords);
-            Assert.Equal("20", verified.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
         }
 
         await using var restarted = CreateCollector(codexHome, temporary.Path);
@@ -2096,7 +2096,7 @@ public sealed class CollectionIntegrationTests
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Null(store.GetRolloutMetadata(legacyId));
         Assert.NotNull(store.GetRolloutMetadata(actualId));
-        Assert.Equal("20", store.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("21", store.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -2132,6 +2132,82 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
+    public async Task ParserRevisionBackfillsFastTierAndAdvancesUsageRevisionForTierOnlyChange()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-fast.jsonl");
+        var token = Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]);
+        WriteRollout(rolloutPath, string.Join('\n', new[]
+        {
+            Line("session_meta", new { session_id = "rollout-fast", id = "rollout-fast", thread_source = "user" }),
+            Line("event_msg", new { type = "thread_settings_applied", thread_settings = new { service_tier = "fast" } }),
+            Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
+            token,
+        }) + "\n");
+        string identity;
+        await using (var collector = CreateCollector(codexHome, temporary.Path))
+        {
+            await StartAndWaitForInventoryAsync(collector);
+            Assert.Equal(ServiceTier.Fast, Assert.Single(await collector.QueryEventsAsync(AllTimeQuery())).ServiceTier);
+        }
+        using (var store = new UsageStore(
+                   databasePath,
+                   protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome)))
+        {
+            identity = Assert.Single(store.GetRolloutEventIdentities("rollout-fast"));
+            store.SetCollectorState("rollout_parser_revision", "20", 1);
+        }
+        using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE usage_events SET service_tier = 'unknown'";
+            command.ExecuteNonQuery();
+        }
+
+        await using var reparsingCollector = CreateCollector(codexHome, temporary.Path);
+        var status = await StartAndWaitForInventoryAsync(reparsingCollector);
+        var usage = Assert.Single(await reparsingCollector.QueryEventsAsync(AllTimeQuery()));
+        Assert.Equal(ServiceTier.Fast, usage.ServiceTier);
+        Assert.Equal(1, status.UsageRevision);
+        Assert.Equal(10, usage.InputTokens);
+        using var verified = new UsageStore(databasePath,
+            protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
+        Assert.Equal(identity, Assert.Single(verified.GetRolloutEventIdentities("rollout-fast")));
+        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+    }
+
+    [Fact]
+    public async Task CanonicalRewriteAdvancesUsageRevisionForServiceTierOnlyChange()
+    {
+        using var temporary = new TemporaryDirectory();
+        var codexHome = CreateCodexHome(temporary.Path);
+        var rolloutPath = Path.Combine(codexHome, "sessions", "rollout-fast-rewrite.jsonl");
+        var token = Token([10, 2, 4, 1, 14], [10, 2, 4, 1, 14]);
+        var original = string.Join('\n', new[]
+        {
+            Line("session_meta", new { session_id = "rollout-fast", id = "rollout-fast", thread_source = "user" }),
+            Line("event_msg", new { type = "thread_settings_applied", thread_settings = new { service_tier = "default" } }),
+            Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
+            token,
+        }) + "\n";
+        WriteRollout(rolloutPath, original);
+        await using var collector = CreateCollector(codexHome, temporary.Path);
+        var initial = await StartAndWaitForInventoryAsync(collector);
+        Assert.Equal(ServiceTier.Standard, Assert.Single(await collector.QueryEventsAsync(AllTimeQuery())).ServiceTier);
+        WriteRollout(rolloutPath, original.Replace("default", "fast", StringComparison.Ordinal));
+
+        var sync = await collector.RefreshAsync();
+        var usage = Assert.Single(await collector.QueryEventsAsync(AllTimeQuery()));
+        Assert.True(sync.UsageChanged);
+        Assert.Equal(initial.UsageRevision + 1, sync.Status.UsageRevision);
+        Assert.Equal(ServiceTier.Fast, usage.ServiceTier);
+        Assert.Equal(10, usage.InputTokens);
+    }
+
+    [Fact]
     public async Task ParserRevisionAdvancesUsageRevisionForAttributionOnlyChange()
     {
         using var temporary = new TemporaryDirectory();
@@ -2159,7 +2235,7 @@ public sealed class CollectionIntegrationTests
                     2,
                     4,
                     1,
-                    "same-visible-usage")],
+                    "same-visible-usage", ServiceTier.Unknown)],
                 new CanonicalSourceInput(
                     rolloutPath,
                     file.Length,
@@ -2617,7 +2693,7 @@ public sealed class CollectionIntegrationTests
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             metadata,
             [new UsageEventInput(0, DateTimeOffset.Parse("2026-07-15T01:02:03.004Z").ToUnixTimeMilliseconds(),
-                "gpt-5.6-sol", inputTokens, 2, 3, 1, $"seed-{rolloutId}")],
+                "gpt-5.6-sol", inputTokens, 2, 3, 1, $"seed-{rolloutId}", ServiceTier.Unknown)],
             new CanonicalSourceInput(
                 rolloutPath,
                 file.Length,
@@ -2643,7 +2719,7 @@ public sealed class CollectionIntegrationTests
         using var store = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             new RolloutMetadata(legacyId, legacyId, "", ThreadType.Main, "main", "/root", "", false, "Codex", "", 0),
-            [new UsageEventInput(0, 1, "gpt-5.6-sol", 1, 0, 1, 0, "seed-legacy-conflict")],
+            [new UsageEventInput(0, 1, "gpt-5.6-sol", 1, 0, 1, 0, "seed-legacy-conflict", ServiceTier.Unknown)],
             new CanonicalSourceInput(
                 rolloutPath, file.Length, new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
                 file.Length, HashBoundary(File.ReadAllText(rolloutPath)), PrefixStatus.Matches, 1, null),

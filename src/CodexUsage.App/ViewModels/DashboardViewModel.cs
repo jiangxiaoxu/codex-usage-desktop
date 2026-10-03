@@ -766,7 +766,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
                 new("输出", FormatTokens(summary.OutputTokens)), new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
                 new("实际费用", FormatCost(summary.Cost.Total)),
-                new("长上下文费用率", FormatMultiplier(summary.Cost.ActualToBaselineMultiplier)),
+                new("长上下文费用倍率", FormatMultiplier(summary.Cost.LongContextCostMultiplier)),
+                new("Fast 费用倍率", FormatMultiplier(summary.Cost.FastModeCostMultiplier)),
             ],
             DashboardCostComposition.From(summary.Cost),
             snapshot.Result.ByModel
@@ -774,31 +775,33 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 .ThenBy(row => row.Key[0], StringComparer.Ordinal)
                 .Select(row =>
                 {
-                    var presentation = DashboardLongContextRatePresentation.From(
+                    var presentation = DashboardCostMultiplierPresentation.From(
                         row.Summary.Cost.Total,
                         totalCost,
-                        row.Summary.Cost.ActualToBaselineMultiplier,
+                        row.Summary.Cost.LongContextCostMultiplier,
+                        row.Summary.Cost.FastModeCostMultiplier,
                         row.Summary.UnpricedTokens < row.Summary.CanonicalTotalTokens);
                     return new ModelUsageRow(
                         row.Key[0], FormatTokens(row.Summary.CanonicalTotalTokens), FormatTokens(row.Summary.UncachedInputTokens),
                         FormatTokens(row.Summary.CachedInputTokens), FormatTokens(row.Summary.OutputTokens),
-                        FormatTokens(row.Summary.ReasoningOutputTokens), presentation.LongContextRate, presentation.Share);
+                        FormatTokens(row.Summary.ReasoningOutputTokens), presentation.LongContextCostMultiplier, presentation.FastModeCostMultiplier, presentation.Share);
                 })
                 .ToArray(),
             DashboardSubjectOrdering.SortByDescendingCost(snapshot.Result.ByRole)
                 .Select(row =>
                 {
-                    var presentation = DashboardLongContextRatePresentation.From(
+                    var presentation = DashboardCostMultiplierPresentation.From(
                         row.Summary.Cost.Total,
                         totalCost,
-                        row.Summary.Cost.ActualToBaselineMultiplier,
+                        row.Summary.Cost.LongContextCostMultiplier,
+                        row.Summary.Cost.FastModeCostMultiplier,
                         row.Summary.UnpricedTokens < row.Summary.CanonicalTotalTokens);
                     return new SubjectUsageRow(
                         SubjectTypeLabel(UsageAccounting.ThreadTypeText(row.ThreadType)), row.AgentRole,
                         row.ThreadCount.ToString("N0", CultureInfo.CurrentCulture), FormatTokens(row.Summary.CanonicalTotalTokens),
                         FormatTokens(row.Summary.UncachedInputTokens), FormatTokens(row.Summary.CachedInputTokens),
                         FormatTokens(row.Summary.OutputTokens), FormatTokens(row.Summary.ReasoningOutputTokens),
-                        presentation.LongContextRate, presentation.Share);
+                        presentation.LongContextCostMultiplier, presentation.FastModeCostMultiplier, presentation.Share);
                 })
                 .ToArray(),
             [

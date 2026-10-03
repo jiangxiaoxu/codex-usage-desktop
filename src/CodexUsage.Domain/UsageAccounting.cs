@@ -6,6 +6,7 @@ namespace CodexUsage.Domain;
 public static class UsageAccounting
 {
     public const long LongContextInputTokenThreshold = 272_000;
+    public const decimal FastModeCostMultiplier = 2.5m;
     public const string OtherModelCategory = "Others";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
@@ -69,19 +70,25 @@ public static class UsageAccounting
             && LongContextEligibleModels.Contains(usageEvent.Model);
         var inputMultiplier = isLongContext ? 2m : 1m;
         var outputMultiplier = isLongContext ? 1.5m : 1m;
-        var uncached = baselineUncached * inputMultiplier;
-        var cached = baselineCached * inputMultiplier;
-        var reasoning = baselineReasoning * outputMultiplier;
-        var other = baselineOther * outputMultiplier;
+        var longAdjustedTotal = (baselineUncached + baselineCached) * inputMultiplier
+            + (baselineReasoning + baselineOther) * outputMultiplier;
+        var fastMultiplier = usageEvent.ServiceTier == ServiceTier.Fast ? FastModeCostMultiplier : 1m;
+        var uncached = baselineUncached * inputMultiplier * fastMultiplier;
+        var cached = baselineCached * inputMultiplier * fastMultiplier;
+        var reasoning = baselineReasoning * outputMultiplier * fastMultiplier;
+        var other = baselineOther * outputMultiplier * fastMultiplier;
         var total = uncached + cached + reasoning + other;
-        return new(uncached, cached, reasoning, other, total, baselineTotal, total - baselineTotal, true);
+        return new(uncached, cached, reasoning, other, total, baselineTotal,
+            longAdjustedTotal - baselineTotal, total - longAdjustedTotal, true);
     }
 
     public static UsageSummary Summarize(IEnumerable<UsageEvent> events)
     {
         var calls = 0;
-        long input = 0, cached = 0, output = 0, reasoning = 0, unpriced = 0;
-        decimal uncachedCost = 0, cachedCost = 0, reasoningCost = 0, otherCost = 0, totalCost = 0, baselineCost = 0, longContextPremium = 0;
+        var fastCalls = 0;
+        var unknownServiceTierCalls = 0;
+        long input = 0, cached = 0, output = 0, reasoning = 0, unpriced = 0, fastTokens = 0, unknownServiceTierTokens = 0;
+        decimal uncachedCost = 0, cachedCost = 0, reasoningCost = 0, otherCost = 0, totalCost = 0, baselineCost = 0, longContextPremium = 0, fastModePremium = 0;
         foreach (var usageEvent in events)
         {
             var cost = CostFor(usageEvent);
@@ -92,6 +99,16 @@ public static class UsageAccounting
             output = checked(output + usageEvent.OutputTokens);
             reasoning = checked(reasoning + usageEvent.ReasoningOutputTokens);
             if (!cost.Priced) unpriced = checked(unpriced + canonical);
+            if (usageEvent.ServiceTier == ServiceTier.Fast)
+            {
+                fastCalls = checked(fastCalls + 1);
+                fastTokens = checked(fastTokens + canonical);
+            }
+            if (usageEvent.ServiceTier == ServiceTier.Unknown)
+            {
+                unknownServiceTierCalls = checked(unknownServiceTierCalls + 1);
+                unknownServiceTierTokens = checked(unknownServiceTierTokens + canonical);
+            }
             uncachedCost += cost.UncachedInput;
             cachedCost += cost.CachedInput;
             reasoningCost += cost.ReasoningOutput;
@@ -99,12 +116,14 @@ public static class UsageAccounting
             totalCost += cost.Total;
             baselineCost += cost.BaselineTotal;
             longContextPremium += cost.LongContextPremium;
+            fastModePremium += cost.FastModePremium;
         }
 
         return new(
             calls, input, cached, checked(input - cached), output, reasoning, checked(output - reasoning),
             checked(input + output), unpriced,
-            new(uncachedCost, cachedCost, reasoningCost, otherCost, totalCost, baselineCost, longContextPremium, true));
+            new(uncachedCost, cachedCost, reasoningCost, otherCost, totalCost, baselineCost, longContextPremium, fastModePremium, true),
+            fastCalls, fastTokens, unknownServiceTierCalls, unknownServiceTierTokens);
     }
 
     public static bool MatchesFilter(UsageEvent usageEvent, FilterSpec filter)

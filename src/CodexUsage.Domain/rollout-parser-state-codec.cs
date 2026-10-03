@@ -6,7 +6,7 @@ namespace CodexUsage.Domain;
 
 public static class RolloutParserStateCodec
 {
-    public const int FormatRevision = 2;
+    public const int FormatRevision = 3;
 
     public static string Serialize(RolloutParserState state)
     {
@@ -25,7 +25,10 @@ public static class RolloutParserStateCodec
             state.PreviousSnapshot,
             state.NextTokenEventOrdinal,
             state.UnresolvedTurnIds.ToArray(),
-            state.ProvisionalTurnIds.ToArray());
+            state.ProvisionalTurnIds.ToArray(),
+            state.CurrentServiceTier,
+            state.TurnServiceTiers.OrderBy(value => value.Key, StringComparer.Ordinal)
+                .Select(value => new TurnServiceTierDocument(value.Key, value.Value)).ToArray());
         return JsonSerializer.Serialize(document, RolloutParserStateJsonContext.Default.RolloutParserStateDocument);
     }
 
@@ -47,7 +50,8 @@ public static class RolloutParserStateCodec
                 error = "Parser state format revision is unsupported.";
                 return false;
             }
-            if (document.TurnModels is null || document.UnresolvedTurnIds is null || document.ProvisionalTurnIds is null)
+            if (document.TurnModels is null || document.UnresolvedTurnIds is null || document.ProvisionalTurnIds is null || document.TurnServiceTiers is null
+                || document.CurrentServiceTier is null)
             {
                 error = "Parser state collections are missing.";
                 return false;
@@ -60,6 +64,17 @@ public static class RolloutParserStateCodec
                     || !turnModels.TryAdd(item.TurnId, item.Model))
                 {
                     error = "Parser state contains an invalid or duplicate turn model.";
+                    return false;
+                }
+            }
+
+            var turnServiceTiers = ImmutableDictionary.CreateBuilder<string, ServiceTier>(StringComparer.Ordinal);
+            foreach (var item in document.TurnServiceTiers)
+            {
+                if (item is null || string.IsNullOrEmpty(item.TurnId) || item.ServiceTier is null || !Enum.IsDefined(item.ServiceTier.Value)
+                    || !turnServiceTiers.TryAdd(item.TurnId, item.ServiceTier.Value))
+                {
+                    error = "Parser state contains an invalid or duplicate turn service tier.";
                     return false;
                 }
             }
@@ -82,7 +97,9 @@ public static class RolloutParserStateCodec
                 document.PreviousSnapshot,
                 document.NextTokenEventOrdinal,
                 unresolved,
-                provisional);
+                provisional,
+                document.CurrentServiceTier.Value,
+                turnServiceTiers.ToImmutable());
             ValidateState(candidate);
             state = candidate;
             return true;
@@ -113,13 +130,17 @@ public static class RolloutParserStateCodec
     {
         ArgumentNullException.ThrowIfNull(state.Metadata);
         ArgumentNullException.ThrowIfNull(state.TurnModels);
+        ArgumentNullException.ThrowIfNull(state.TurnServiceTiers);
         ArgumentNullException.ThrowIfNull(state.ForkReplay);
         ArgumentNullException.ThrowIfNull(state.UnresolvedTurnIds);
         ArgumentNullException.ThrowIfNull(state.ProvisionalTurnIds);
-        if (!Enum.IsDefined(state.Metadata.ThreadType) || !Enum.IsDefined(state.ForkReplay.Status))
+        if (!Enum.IsDefined(state.Metadata.ThreadType) || !Enum.IsDefined(state.ForkReplay.Status)
+            || !Enum.IsDefined(state.CurrentServiceTier)
+            || (state.ForkReplay.ServiceTier is { } replayTier && !Enum.IsDefined(replayTier)))
             throw new ArgumentException("Parser state contains an unknown enum value.", nameof(state));
         RequireText(state.Metadata.ConversationId, nameof(state.Metadata.ConversationId));
         RequireText(state.Metadata.RolloutId, nameof(state.Metadata.RolloutId));
+        RequireOptionalText(state.Metadata.ThreadId, nameof(state.Metadata.ThreadId));
         RequireNotNull(state.Metadata.ParentThreadId, nameof(state.Metadata.ParentThreadId));
         RequireText(state.Metadata.AgentRole, nameof(state.Metadata.AgentRole));
         RequireText(state.Metadata.AgentPath, nameof(state.Metadata.AgentPath));
@@ -142,6 +163,11 @@ public static class RolloutParserStateCodec
             RequireText(pair.Key, "turn model key");
             RequireText(pair.Value, "turn model value");
         }
+        foreach (var pair in state.TurnServiceTiers)
+        {
+            RequireText(pair.Key, "turn service tier key");
+            if (!Enum.IsDefined(pair.Value)) throw new ArgumentException("Parser state contains an unknown service tier.", nameof(state));
+        }
         foreach (var turnId in state.UnresolvedTurnIds) RequireText(turnId, "unresolved turn id");
         foreach (var turnId in state.ProvisionalTurnIds) RequireText(turnId, "provisional turn id");
     }
@@ -162,6 +188,8 @@ public static class RolloutParserStateCodec
     }
 }
 
+internal sealed record TurnServiceTierDocument(string TurnId, ServiceTier? ServiceTier);
+
 internal sealed record TurnModelDocument(string TurnId, string Model);
 
 internal sealed record RolloutParserStateDocument(
@@ -176,7 +204,9 @@ internal sealed record RolloutParserStateDocument(
     string? PreviousSnapshot,
     long NextTokenEventOrdinal,
     string[] UnresolvedTurnIds,
-    string[] ProvisionalTurnIds);
+    string[] ProvisionalTurnIds,
+    ServiceTier? CurrentServiceTier,
+    TurnServiceTierDocument[] TurnServiceTiers);
 
 [JsonSourceGenerationOptions(
     GenerationMode = JsonSourceGenerationMode.Metadata,

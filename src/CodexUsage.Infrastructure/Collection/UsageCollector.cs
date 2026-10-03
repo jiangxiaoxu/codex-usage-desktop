@@ -17,7 +17,7 @@ public sealed class UsageCollector : IUsageCollector
 {
     private const int BoundaryWindowBytes = 64 * 1024;
     private const long ReverseReconciliationMaximumBytes = 64L * 1024 * 1024;
-    private const int ParserRevision = 20;
+    private const int ParserRevision = 21;
     private static readonly TimeSpan RepeatedFailureDiagnosticInterval = TimeSpan.FromMinutes(5);
     private const string ParserRevisionStateKey = "rollout_parser_revision";
     private const string LastInventoryStateKey = "last_successful_inventory_epoch_ms";
@@ -2860,7 +2860,8 @@ public sealed class UsageCollector : IUsageCollector
             value.CachedInputTokens,
             value.OutputTokens,
             value.ReasoningOutputTokens,
-            value.DeterministicSignature)).ToArray();
+            value.DeterministicSignature,
+            value.ServiceTier)).ToArray();
 
     private static RolloutCheckpointInput CreateCheckpoint(
         string filePath,
@@ -2911,6 +2912,7 @@ public sealed class UsageCollector : IUsageCollector
         value.CachedInputTokens,
         value.OutputTokens,
         value.ReasoningOutputTokens,
+        value.ServiceTier.ToString().ToLowerInvariant(),
     });
 
     private static SignatureRelationship SignatureRelation(

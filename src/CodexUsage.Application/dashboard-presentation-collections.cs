@@ -55,7 +55,8 @@ public sealed class ModelUsageRow(
     string cachedInput,
     string output,
     string reasoningOutput,
-    string longContextRate,
+    string longContextCostMultiplier,
+    string fastModeCostMultiplier,
     string share) : DashboardPresentationItem
 {
     private string _totalTokens = totalTokens;
@@ -63,7 +64,8 @@ public sealed class ModelUsageRow(
     private string _cachedInput = cachedInput;
     private string _output = output;
     private string _reasoningOutput = reasoningOutput;
-    private string _longContextRate = longContextRate;
+    private string _longContextCostMultiplier = longContextCostMultiplier;
+    private string _fastModeCostMultiplier = fastModeCostMultiplier;
     private string _share = share;
 
     public string Model { get; } = model;
@@ -72,7 +74,8 @@ public sealed class ModelUsageRow(
     public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
     public string Output { get => _output; private set => SetValue(ref _output, value); }
     public string ReasoningOutput { get => _reasoningOutput; private set => SetValue(ref _reasoningOutput, value); }
-    public string LongContextRate { get => _longContextRate; private set => SetValue(ref _longContextRate, value); }
+    public string LongContextCostMultiplier { get => _longContextCostMultiplier; private set => SetValue(ref _longContextCostMultiplier, value); }
+    public string FastModeCostMultiplier { get => _fastModeCostMultiplier; private set => SetValue(ref _fastModeCostMultiplier, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
 
     public void UpdateFrom(ModelUsageRow source)
@@ -82,7 +85,8 @@ public sealed class ModelUsageRow(
         CachedInput = source.CachedInput;
         Output = source.Output;
         ReasoningOutput = source.ReasoningOutput;
-        LongContextRate = source.LongContextRate;
+        LongContextCostMultiplier = source.LongContextCostMultiplier;
+        FastModeCostMultiplier = source.FastModeCostMultiplier;
         Share = source.Share;
     }
 }
@@ -96,7 +100,8 @@ public sealed class SubjectUsageRow(
     string cachedInput,
     string output,
     string reasoningOutput,
-    string longContextRate,
+    string longContextCostMultiplier,
+    string fastModeCostMultiplier,
     string share) : DashboardPresentationItem
 {
     private string _threadCount = threadCount;
@@ -105,7 +110,8 @@ public sealed class SubjectUsageRow(
     private string _cachedInput = cachedInput;
     private string _output = output;
     private string _reasoningOutput = reasoningOutput;
-    private string _longContextRate = longContextRate;
+    private string _longContextCostMultiplier = longContextCostMultiplier;
+    private string _fastModeCostMultiplier = fastModeCostMultiplier;
     private string _share = share;
 
     public string ThreadType { get; } = threadType;
@@ -116,7 +122,8 @@ public sealed class SubjectUsageRow(
     public string CachedInput { get => _cachedInput; private set => SetValue(ref _cachedInput, value); }
     public string Output { get => _output; private set => SetValue(ref _output, value); }
     public string ReasoningOutput { get => _reasoningOutput; private set => SetValue(ref _reasoningOutput, value); }
-    public string LongContextRate { get => _longContextRate; private set => SetValue(ref _longContextRate, value); }
+    public string LongContextCostMultiplier { get => _longContextCostMultiplier; private set => SetValue(ref _longContextCostMultiplier, value); }
+    public string FastModeCostMultiplier { get => _fastModeCostMultiplier; private set => SetValue(ref _fastModeCostMultiplier, value); }
     public string Share { get => _share; private set => SetValue(ref _share, value); }
 
     public void UpdateFrom(SubjectUsageRow source)
@@ -127,7 +134,8 @@ public sealed class SubjectUsageRow(
         CachedInput = source.CachedInput;
         Output = source.Output;
         ReasoningOutput = source.ReasoningOutput;
-        LongContextRate = source.LongContextRate;
+        LongContextCostMultiplier = source.LongContextCostMultiplier;
+        FastModeCostMultiplier = source.FastModeCostMultiplier;
         Share = source.Share;
     }
 }
@@ -242,7 +250,8 @@ public sealed class DashboardPresentationCollections
             new("输出", "0"),
             new("基准费用", "$0.0"),
             new("实际费用", "$0.0"),
-            new("长上下文费用率", "—"),
+            new("长上下文费用倍率", "—"),
+            new("Fast 费用倍率", "—"),
         };
         CostSlices = new ObservableCollection<CostSlice>
         {

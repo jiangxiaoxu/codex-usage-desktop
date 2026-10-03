@@ -267,7 +267,7 @@
                     Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1">
-                    <Grid RowDefinitions="Auto,1,Auto">
+                    <Grid RowDefinitions="Auto,1,Auto,1,Auto">
                         <Grid Grid.Row="0" ColumnDefinitions="*,1,*,1,*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[0].Label}" />
@@ -285,7 +285,7 @@
                             </StackPanel>
                         </Grid>
                         <Rectangle Grid.Row="1" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="2" ColumnDefinitions="*,1,*,1,*">
+                        <Grid Grid.Row="2" ColumnDefinitions="*,1,*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[3].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[3].Value}" />
@@ -295,10 +295,17 @@
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[4].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[4].Value}" />
                             </StackPanel>
-                            <Rectangle Grid.Column="3" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
-                            <StackPanel Grid.Column="4" Margin="14,10" Spacing="2">
+                        </Grid>
+                        <Rectangle Grid.Row="3" Fill="{StaticResource TableDividerBrush}" />
+                        <Grid Grid.Row="4" ColumnDefinitions="*,1,*">
+                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[5].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[5].Value}" />
+                            </StackPanel>
+                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
+                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
+                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[6].Label}" />
+                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[6].Value}" />
                             </StackPanel>
                         </Grid>
                     </Grid>
@@ -310,7 +317,7 @@
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1"
                     Visibility="Collapsed">
-                    <Grid RowDefinitions="Auto,1,Auto,1,Auto">
+                    <Grid RowDefinitions="Auto,1,Auto,1,Auto,1,Auto">
                         <Grid Grid.Row="0" ColumnDefinitions="*,1,*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[0].Label}" />
@@ -323,27 +330,34 @@
                             </StackPanel>
                         </Grid>
                         <Rectangle Grid.Row="1" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="2" ColumnDefinitions="*,1,*">
+                        <Grid Grid.Row="2" ColumnDefinitions="*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[2].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[2].Value}" />
-                            </StackPanel>
-                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
-                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[3].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[3].Value}" />
                             </StackPanel>
                         </Grid>
                         <Rectangle Grid.Row="3" Fill="{StaticResource TableDividerBrush}" />
                         <Grid Grid.Row="4" ColumnDefinitions="*,1,*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[4].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[4].Value}" />
+                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[3].Label}" />
+                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[3].Value}" />
                             </StackPanel>
                             <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
                             <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
+                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[4].Label}" />
+                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[4].Value}" />
+                            </StackPanel>
+                        </Grid>
+                        <Rectangle Grid.Row="5" Fill="{StaticResource TableDividerBrush}" />
+                        <Grid Grid.Row="6" ColumnDefinitions="*,1,*">
+                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[5].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[5].Value}" />
+                            </StackPanel>
+                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
+                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
+                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[6].Label}" />
+                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[6].Value}" />
                             </StackPanel>
                         </Grid>
                     </Grid>
@@ -355,6 +369,7 @@
                     BorderThickness="0,1">
                     <StackPanel Spacing="8">
                         <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
+                        <TextBlock Style="{StaticResource CaptionStyle}" Text="费用包含长上下文和 Fast (2.5x) 加价, 按可识别的模式估算." TextWrapping="Wrap" ToolTipService.ToolTip="长上下文费用倍率 = (基准费用 + 长上下文加价) / 基准费用. Fast 费用倍率 = 估算费用 / (基准费用 + 长上下文加价). 两倍率相乘为总费用倍率. Fast 按 2.5x 估算, 模式未知不加 Fast 费用; 日志仅反映所选模式, 不代表实际响应模式." />
                         <controls:CostCompositionBar
                             Height="10"
                             Background="{StaticResource ProgressTrackBrush}"
@@ -446,14 +461,15 @@
                                             VerticalScrollBarVisibility="Disabled"
                                             VerticalScrollMode="Disabled">
                                             <Border Background="{StaticResource TableHeaderBrush}" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1">
-                                                <Grid MinWidth="740" Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
+                                                <Grid MinWidth="840" Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.75*,.75*,.65*" Loaded="OnTableCellLoaded">
                                                     <TextBlock Style="{StaticResource TableHeaderTextStyle}" Text="总 tokens" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="1" Style="{StaticResource TableHeaderTextStyle}" Text="无缓存输入" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="2" Style="{StaticResource TableHeaderTextStyle}" Text="缓存输入" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="3" Style="{StaticResource TableHeaderTextStyle}" Text="输出" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="4" Style="{StaticResource TableHeaderTextStyle}" Text="思考输出" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderTextStyle}" Text="长上下文费用率" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderTextStyle}" Text="价格占比" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderTextStyle}" Text="长上下文费用倍率" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderTextStyle}" Text="Fast 费用倍率" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Column="7" Style="{StaticResource TableHeaderTextStyle}" Text="价格占比" TextWrapping="Wrap" />
                                                 </Grid>
                                             </Border>
                                         </ScrollViewer>
@@ -490,18 +506,19 @@
                                     VerticalScrollBarVisibility="Disabled"
                                     VerticalScrollMode="Disabled"
                                     ViewChanged="OnModelValuesViewChanged">
-                                    <ItemsControl MinWidth="740" HorizontalContentAlignment="Stretch" ItemsSource="{Binding Models}">
+                                    <ItemsControl MinWidth="840" HorizontalContentAlignment="Stretch" ItemsSource="{Binding Models}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,0,1">
-                                                    <Grid Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
+                                                    <Grid Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.75*,.75*,.65*" Loaded="OnTableCellLoaded">
                                                         <TextBlock Style="{StaticResource TableCellTextStyle}" Text="{Binding TotalTokens}" />
                                                         <TextBlock Grid.Column="1" Style="{StaticResource TableCellTextStyle}" Text="{Binding UncachedInput}" />
                                                         <TextBlock Grid.Column="2" Style="{StaticResource TableCellTextStyle}" Text="{Binding CachedInput}" />
                                                         <TextBlock Grid.Column="3" Style="{StaticResource TableCellTextStyle}" Text="{Binding Output}" />
                                                         <TextBlock Grid.Column="4" Style="{StaticResource TableCellTextStyle}" Text="{Binding ReasoningOutput}" />
-                                                        <TextBlock Grid.Column="5" Style="{StaticResource PriceCellTextStyle}" Text="{Binding LongContextRate}" />
-                                                        <TextBlock Grid.Column="6" Style="{StaticResource TableCellTextStyle}" Text="{Binding Share}" />
+                                                        <TextBlock Grid.Column="5" Style="{StaticResource PriceCellTextStyle}" Text="{Binding LongContextCostMultiplier}" />
+                                                        <TextBlock Grid.Column="6" Style="{StaticResource PriceCellTextStyle}" Text="{Binding FastModeCostMultiplier}" />
+                                                        <TextBlock Grid.Column="7" Style="{StaticResource TableCellTextStyle}" Text="{Binding Share}" />
                                                     </Grid>
                                                 </Border>
                                             </DataTemplate>
@@ -558,14 +575,15 @@
                                             VerticalScrollBarVisibility="Disabled"
                                             VerticalScrollMode="Disabled">
                                             <Border Background="{StaticResource TableHeaderBrush}" BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,1">
-                                                <Grid MinWidth="800" Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
+                                                <Grid MinWidth="900" Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.75*,.75*,.65*" Loaded="OnTableCellLoaded">
                                                     <TextBlock Style="{StaticResource TableHeaderTextStyle}" Text="总 tokens" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="1" Style="{StaticResource TableHeaderTextStyle}" Text="无缓存输入" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="2" Style="{StaticResource TableHeaderTextStyle}" Text="缓存输入" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="3" Style="{StaticResource TableHeaderTextStyle}" Text="输出" TextWrapping="Wrap" />
                                                     <TextBlock Grid.Column="4" Style="{StaticResource TableHeaderTextStyle}" Text="思考输出" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderTextStyle}" Text="长上下文费用率" TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderTextStyle}" Text="价格占比" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Column="5" Style="{StaticResource TableHeaderTextStyle}" Text="长上下文费用倍率" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Column="6" Style="{StaticResource TableHeaderTextStyle}" Text="Fast 费用倍率" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Column="7" Style="{StaticResource TableHeaderTextStyle}" Text="价格占比" TextWrapping="Wrap" />
                                                 </Grid>
                                             </Border>
                                         </ScrollViewer>
@@ -615,18 +633,19 @@
                                     VerticalScrollBarVisibility="Disabled"
                                     VerticalScrollMode="Disabled"
                                     ViewChanged="OnRoleValuesViewChanged">
-                                    <ItemsControl MinWidth="800" HorizontalContentAlignment="Stretch" ItemsSource="{Binding Subjects}">
+                                    <ItemsControl MinWidth="900" HorizontalContentAlignment="Stretch" ItemsSource="{Binding Subjects}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Border BorderBrush="{StaticResource TableDividerBrush}" BorderThickness="0,0,0,1">
-                                                    <Grid Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.65*,.65*" Loaded="OnTableCellLoaded">
+                                                    <Grid Padding="12,7" ColumnDefinitions=".85*,.95*,.95*,.7*,.85*,.75*,.75*,.65*" Loaded="OnTableCellLoaded">
                                                         <TextBlock Style="{StaticResource TableCellTextStyle}" Text="{Binding TotalTokens}" />
                                                         <TextBlock Grid.Column="1" Style="{StaticResource TableCellTextStyle}" Text="{Binding UncachedInput}" />
                                                         <TextBlock Grid.Column="2" Style="{StaticResource TableCellTextStyle}" Text="{Binding CachedInput}" />
                                                         <TextBlock Grid.Column="3" Style="{StaticResource TableCellTextStyle}" Text="{Binding Output}" />
                                                         <TextBlock Grid.Column="4" Style="{StaticResource TableCellTextStyle}" Text="{Binding ReasoningOutput}" />
-                                                        <TextBlock Grid.Column="5" Style="{StaticResource PriceCellTextStyle}" Text="{Binding LongContextRate}" />
-                                                        <TextBlock Grid.Column="6" Style="{StaticResource TableCellTextStyle}" Text="{Binding Share}" />
+                                                        <TextBlock Grid.Column="5" Style="{StaticResource PriceCellTextStyle}" Text="{Binding LongContextCostMultiplier}" />
+                                                        <TextBlock Grid.Column="6" Style="{StaticResource PriceCellTextStyle}" Text="{Binding FastModeCostMultiplier}" />
+                                                        <TextBlock Grid.Column="7" Style="{StaticResource TableCellTextStyle}" Text="{Binding Share}" />
                                                     </Grid>
                                                 </Border>
                                             </DataTemplate>

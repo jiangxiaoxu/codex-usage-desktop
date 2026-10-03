@@ -38,7 +38,8 @@ public sealed record UsageEventInput(
     long CachedInputTokens,
     long OutputTokens,
     long ReasoningOutputTokens,
-    string EventSignature);
+    string EventSignature,
+    ServiceTier ServiceTier);
 
 public sealed record SourceFileInput(
     string FilePath,
@@ -196,7 +197,8 @@ public sealed record StoredUsageEvent(
     long ReasoningOutputTokens,
     long TokenEventOrdinal,
     long TimestampEpochMs,
-    string EventSignature);
+    string EventSignature,
+    ServiceTier ServiceTier);
 
 public sealed record UsageEventQuery(
     long StartEpochMs,

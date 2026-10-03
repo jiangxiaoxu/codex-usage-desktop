@@ -10,6 +10,13 @@ public enum ThreadType
     Unknown,
 }
 
+public enum ServiceTier
+{
+    Unknown,
+    Standard,
+    Fast,
+}
+
 public sealed record SubjectFilter(ThreadType ThreadType, string AgentRole);
 
 public sealed record UsageEvent(
@@ -26,7 +33,8 @@ public sealed record UsageEvent(
     long InputTokens,
     long CachedInputTokens,
     long OutputTokens,
-    long ReasoningOutputTokens);
+    long ReasoningOutputTokens,
+    ServiceTier ServiceTier);
 
 public sealed record ScanDiagnostics(
     int FilesScanned,
@@ -52,12 +60,15 @@ public sealed record CostBreakdown(
     decimal Total,
     decimal BaselineTotal,
     decimal LongContextPremium,
+    decimal FastModePremium,
     bool Priced)
 {
     public decimal? ActualToBaselineMultiplier => BaselineTotal > 0 ? Total / BaselineTotal : null;
+    public decimal? LongContextCostMultiplier => BaselineTotal > 0 ? (BaselineTotal + LongContextPremium) / BaselineTotal : null;
+    public decimal? FastModeCostMultiplier => BaselineTotal + LongContextPremium > 0 ? Total / (BaselineTotal + LongContextPremium) : null;
 
-    public static CostBreakdown PricedZero { get; } = new(0, 0, 0, 0, 0, 0, 0, true);
-    public static CostBreakdown UnpricedZero { get; } = new(0, 0, 0, 0, 0, 0, 0, false);
+    public static CostBreakdown PricedZero { get; } = new(0, 0, 0, 0, 0, 0, 0, 0, true);
+    public static CostBreakdown UnpricedZero { get; } = new(0, 0, 0, 0, 0, 0, 0, 0, false);
 }
 
 public sealed record UsageSummary(
@@ -70,7 +81,11 @@ public sealed record UsageSummary(
     long OtherOutputTokens,
     long CanonicalTotalTokens,
     long UnpricedTokens,
-    CostBreakdown Cost);
+    CostBreakdown Cost,
+    int FastCalls,
+    long FastTokens,
+    int UnknownServiceTierCalls,
+    long UnknownServiceTierTokens);
 
 public sealed record GroupRow(ImmutableArray<string> Key, UsageSummary Summary);
 public sealed record RoleUsageRow(ThreadType ThreadType, string AgentRole, int ThreadCount, UsageSummary Summary);

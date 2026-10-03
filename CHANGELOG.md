@@ -2,6 +2,12 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.31] - 2026-10-03
+
+- 新增 Fast 模式用量记录和费用估算. 按本应用约定使用 Standard 基准费率的 2.5x, 与长上下文加价叠加, 原始 token 数保持不变.
+- 汇总, 模型和执行主体明细分别显示长上下文费用倍率与 Fast 费用倍率, 混合模式按费用加权显示.
+- 升级后自动重解析可读的历史 rollout, 保留正确的子线程设置归属并避免重复计费. 缺失或无法识别的模式不推断, 不统计 credits.
+
 ## [0.3.30] - 2026-09-30
 
 - Added GPT-6.1 Sol to API-equivalent token cost estimates, model filters and dashboard model views with fixed Standard API rates of `$2/$0.1/$10` per 1M uncached input, cached input and output tokens.

@@ -265,19 +265,25 @@ public sealed record CoveragePresentation(
         };
 }
 
-public readonly record struct DashboardLongContextRatePresentation(string LongContextRate, string Share)
+public readonly record struct DashboardCostMultiplierPresentation(
+    string LongContextCostMultiplier,
+    string FastModeCostMultiplier,
+    string Share)
 {
-    public static DashboardLongContextRatePresentation From(
+    public static DashboardCostMultiplierPresentation From(
         decimal cost,
         decimal totalCost,
-        decimal? actualToBaselineMultiplier,
+        decimal? longContextCostMultiplier,
+        decimal? fastModeCostMultiplier,
         bool priced)
     {
-        var rate = actualToBaselineMultiplier is { } multiplier ? $"×{multiplier:N2}" : "—";
-        if (!priced && actualToBaselineMultiplier is null) return new(rate, "—");
+        var longContextRate = longContextCostMultiplier is { } longMultiplier ? $"×{longMultiplier:N2}" : "—";
+        var fastRate = fastModeCostMultiplier is { } fastMultiplier ? $"×{fastMultiplier:N2}" : "—";
+        if (!priced && longContextCostMultiplier is null && fastModeCostMultiplier is null)
+            return new(longContextRate, fastRate, "—");
 
         var share = totalCost > 0 ? $"{cost / totalCost:P1}" : "0.0%";
-        return new(rate, share);
+        return new(longContextRate, fastRate, share);
     }
 }
 

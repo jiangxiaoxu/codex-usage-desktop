@@ -12,7 +12,8 @@ public sealed class RolloutParserStateCodecTests
         var state = new RolloutParserState(
             true,
             new RolloutMetadata("conversation", "rollout", "parent", ThreadType.Subagent,
-                "worker", "/root/worker", "worker-a", false, "Codex", "", 42),
+                "worker", "/root/worker", "worker-a", false, "Codex", "", 42)
+            { ThreadId = "worker-thread" },
             ImmutableDictionary.CreateRange(StringComparer.Ordinal,
             [
                 new KeyValuePair<string, string>("turn-b", "gpt-5.6-terra"),
@@ -21,11 +22,13 @@ public sealed class RolloutParserStateCodecTests
             "turn-b",
             true,
             "gpt-5.6-terra",
-            new RolloutForkReplayState(ForkReplayStatus.AwaitingRecipient, 123, "turn-b", "gpt-5.6-terra"),
+            new RolloutForkReplayState(ForkReplayStatus.AwaitingRecipient, 123, "turn-b", "gpt-5.6-terra", ServiceTier.Fast),
             "[10,2,3,1,13]",
             42,
             ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-c"),
-            ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-d"));
+            ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-d"),
+            ServiceTier.Standard,
+            ImmutableDictionary<string, ServiceTier>.Empty.Add("turn-b", ServiceTier.Fast));
 
         var json = RolloutParserStateCodec.Serialize(state);
         var succeeded = RolloutParserStateCodec.TryDeserialize(json, out var restored, out var error);
@@ -38,6 +41,8 @@ public sealed class RolloutParserStateCodecTests
         Assert.Equal(state.CurrentTurnModelOverridden, restored.CurrentTurnModelOverridden);
         Assert.Equal(state.CurrentModel, restored.CurrentModel);
         Assert.Equal(state.ForkReplay, restored.ForkReplay);
+        Assert.Equal(state.CurrentServiceTier, restored.CurrentServiceTier);
+        Assert.Equal(state.TurnServiceTiers.OrderBy(value => value.Key), restored.TurnServiceTiers.OrderBy(value => value.Key));
         Assert.Equal(state.PreviousSnapshot, restored.PreviousSnapshot);
         Assert.Equal(state.NextTokenEventOrdinal, restored.NextTokenEventOrdinal);
         Assert.Equal(state.UnresolvedTurnIds, restored.UnresolvedTurnIds);
@@ -49,10 +54,23 @@ public sealed class RolloutParserStateCodecTests
     public void RejectsUnknownFormatRevisionAndDuplicateTurnModels()
     {
         const string metadata = "\"metadata\":{\"conversationId\":\"c\",\"rolloutId\":\"r\",\"parentThreadId\":\"\",\"threadType\":0,\"agentRole\":\"main\",\"agentPath\":\"/root\",\"agentNickname\":\"\",\"isRealtimeVoice\":false}";
-        var duplicate = $"{{\"formatRevision\":1,\"hasMetadata\":true,{metadata},\"turnModels\":[{{\"turnId\":\"t\",\"model\":\"m\"}},{{\"turnId\":\"t\",\"model\":\"m\"}}],\"currentTurnId\":\"\",\"currentTurnModelOverridden\":false,\"currentModel\":\"unknown\",\"forkReplay\":{{\"status\":0}},\"previousSnapshot\":null,\"nextTokenEventOrdinal\":0,\"unresolvedTurnIds\":[],\"provisionalTurnIds\":[]}}";
-        var unknownRevision = duplicate.Replace("\"formatRevision\":1", "\"formatRevision\":99", StringComparison.Ordinal);
+        var duplicate = $"{{\"formatRevision\":3,\"hasMetadata\":true,{metadata},\"turnModels\":[{{\"turnId\":\"t\",\"model\":\"m\"}},{{\"turnId\":\"t\",\"model\":\"m\"}}],\"currentTurnId\":\"\",\"currentTurnModelOverridden\":false,\"currentModel\":\"unknown\",\"forkReplay\":{{\"status\":0}},\"previousSnapshot\":null,\"nextTokenEventOrdinal\":0,\"unresolvedTurnIds\":[],\"provisionalTurnIds\":[],\"currentServiceTier\":0,\"turnServiceTiers\":[]}}";
+        var unknownRevision = duplicate.Replace("\"formatRevision\":3", "\"formatRevision\":99", StringComparison.Ordinal);
 
         Assert.False(RolloutParserStateCodec.TryDeserialize(duplicate, out _, out _));
         Assert.False(RolloutParserStateCodec.TryDeserialize(unknownRevision, out _, out _));
+    }
+
+    [Theory]
+    [InlineData("{\"turnId\":\"t\",\"serviceTier\":99}")]
+    [InlineData("{\"turnId\":\"t\"}")]
+    [InlineData("{\"turnId\":\"t\",\"serviceTier\":2},{\"turnId\":\"t\",\"serviceTier\":1}")]
+    public void RejectsInvalidOrDuplicatePersistedServiceTiers(string entries)
+    {
+        var initial = RolloutParser.ParseChunk("", "rollout").State;
+        var json = RolloutParserStateCodec.Serialize(initial).Replace("\"turnServiceTiers\":[]", $"\"turnServiceTiers\":[{entries}]", StringComparison.Ordinal);
+        Assert.False(RolloutParserStateCodec.TryDeserialize(json, out _, out _));
+        Assert.False(RolloutParserStateCodec.TryDeserialize(
+            RolloutParserStateCodec.Serialize(initial).Replace("\"currentServiceTier\":0,", "", StringComparison.Ordinal), out _, out _));
     }
 }

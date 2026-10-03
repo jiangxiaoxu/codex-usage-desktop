@@ -16,6 +16,7 @@ public sealed record RolloutMetadata(
     long LastActivityEpochMs)
 {
     public bool IsPaginatedContinuation { get; init; }
+    public string? ThreadId { get; init; }
 }
 
 public sealed record MainThreadOption(
@@ -41,11 +42,12 @@ public sealed record ParsedRolloutUsageEvent(
     long OutputTokens,
     long ReasoningOutputTokens,
     string CumulativeSnapshot,
-    string DeterministicSignature)
+    string DeterministicSignature,
+    ServiceTier ServiceTier)
 {
     public UsageEvent ToUsageEvent() => new(
         TimestampUtc, TokenEventOrdinal, ConversationId, RolloutId, ParentThreadId, ThreadType,
-        AgentRole, AgentPath, AgentNickname, Model, InputTokens, CachedInputTokens, OutputTokens, ReasoningOutputTokens);
+        AgentRole, AgentPath, AgentNickname, Model, InputTokens, CachedInputTokens, OutputTokens, ReasoningOutputTokens, ServiceTier);
 }
 
 public sealed record RolloutParseDiagnostics(
@@ -115,7 +117,8 @@ public sealed record RolloutForkReplayState(
     ForkReplayStatus Status,
     long? ForkBoundaryEpochMilliseconds = null,
     string? TurnId = null,
-    string? Model = null)
+    string? Model = null,
+    ServiceTier? ServiceTier = null)
 {
     public static RolloutForkReplayState Inactive { get; } = new(ForkReplayStatus.Inactive);
 }
@@ -131,7 +134,9 @@ public sealed record RolloutParserState(
     string? PreviousSnapshot,
     long NextTokenEventOrdinal,
     ImmutableSortedSet<string> UnresolvedTurnIds,
-    ImmutableSortedSet<string> ProvisionalTurnIds);
+    ImmutableSortedSet<string> ProvisionalTurnIds,
+    ServiceTier CurrentServiceTier,
+    ImmutableDictionary<string, ServiceTier> TurnServiceTiers);
 
 public sealed record RolloutChunkParseResult(
     RolloutMetadata Metadata,

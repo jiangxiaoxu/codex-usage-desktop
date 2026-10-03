@@ -6,7 +6,7 @@ namespace CodexUsage.Infrastructure;
 
 public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 8;
+    private const int SchemaVersion = 9;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -622,7 +622,7 @@ public sealed class UsageStore : IDisposable
                    e.model, e.input_tokens, e.cached_input_tokens, e.output_tokens,
                    e.reasoning_output_tokens, r.conversation_id, r.rollout_id,
                    r.parent_thread_id, r.thread_type, r.agent_role, r.agent_path,
-                   r.agent_nickname
+                   r.agent_nickname, e.service_tier
             FROM usage_events AS e
             JOIN rollouts AS r ON r.rollout_id = e.rollout_id
             WHERE {string.Join(" AND ", conditions)}
@@ -639,7 +639,7 @@ public sealed class UsageStore : IDisposable
                 ParseThreadType(reader.GetString(11)), reader.GetString(12),
                 reader.GetString(13), reader.GetString(14), reader.GetString(3),
                 reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6),
-                reader.GetInt64(7), reader.GetInt64(1), epoch, reader.GetString(2)));
+                reader.GetInt64(7), reader.GetInt64(1), epoch, reader.GetString(2), ParseServiceTier(reader.GetString(15))));
         }
 
         return result;
@@ -940,7 +940,7 @@ public sealed class UsageStore : IDisposable
             return;
         }
 
-        var requiresRolloutsRebuild = currentVersion is > 0 and < SchemaVersion;
+        var requiresRolloutsRebuild = currentVersion is > 0 and < 8;
         if (requiresRolloutsRebuild) ExecuteNonQuery(null, "PRAGMA foreign_keys = OFF");
         try
         {
@@ -976,6 +976,7 @@ public sealed class UsageStore : IDisposable
                         output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
                         reasoning_output_tokens INTEGER NOT NULL CHECK (reasoning_output_tokens >= 0 AND reasoning_output_tokens <= output_tokens),
                         event_signature TEXT NOT NULL,
+                        service_tier TEXT NOT NULL CHECK (service_tier IN ('unknown', 'standard', 'fast')),
                         PRIMARY KEY (rollout_id, token_event_ordinal),
                         UNIQUE (rollout_id, event_signature)
                     ) WITHOUT ROWID, STRICT;
@@ -1153,6 +1154,16 @@ public sealed class UsageStore : IDisposable
                         """);
                 }
 
+                if (currentVersion > 0
+                    && ExecuteScalarLong(transaction, "SELECT COUNT(*) FROM pragma_table_info('usage_events') WHERE name = 'service_tier'") == 0)
+                {
+                    ExecuteNonQuery(transaction, """
+                        ALTER TABLE usage_events
+                        ADD COLUMN service_tier TEXT NOT NULL DEFAULT 'unknown'
+                        CHECK (service_tier IN ('unknown', 'standard', 'fast'));
+                        """);
+                }
+
                 ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
                 return 0;
             });
@@ -1177,15 +1188,15 @@ public sealed class UsageStore : IDisposable
                 INSERT INTO usage_events (
                     rollout_id, token_event_ordinal, timestamp_epoch_ms, model,
                     input_tokens, cached_input_tokens, output_tokens,
-                    reasoning_output_tokens, event_signature
-                ) VALUES ($rolloutId, $ordinal, $timestamp, $model, $input, $cached, $output, $reasoning, $signature)
+                    reasoning_output_tokens, event_signature, service_tier
+                ) VALUES ($rolloutId, $ordinal, $timestamp, $model, $input, $cached, $output, $reasoning, $signature, $serviceTier)
                 ON CONFLICT(rollout_id, token_event_ordinal) DO NOTHING
                 """,
                 ("$rolloutId", metadata.RolloutId), ("$ordinal", item.TokenEventOrdinal),
                 ("$timestamp", item.TimestampEpochMs), ("$model", item.Model),
                 ("$input", item.InputTokens), ("$cached", item.CachedInputTokens),
                 ("$output", item.OutputTokens), ("$reasoning", item.ReasoningOutputTokens),
-                ("$signature", item.EventSignature));
+                ("$signature", item.EventSignature), ("$serviceTier", ServiceTierToDb(item.ServiceTier)));
             if (changes == 1)
             {
                 inserted++;
@@ -1221,14 +1232,14 @@ public sealed class UsageStore : IDisposable
                 INSERT INTO usage_events (
                     rollout_id, token_event_ordinal, timestamp_epoch_ms, model,
                     input_tokens, cached_input_tokens, output_tokens,
-                    reasoning_output_tokens, event_signature
-                ) VALUES ($rolloutId, $ordinal, $timestamp, $model, $input, $cached, $output, $reasoning, $signature)
+                    reasoning_output_tokens, event_signature, service_tier
+                ) VALUES ($rolloutId, $ordinal, $timestamp, $model, $input, $cached, $output, $reasoning, $signature, $serviceTier)
                 """,
                 ("$rolloutId", rolloutId), ("$ordinal", item.TokenEventOrdinal),
                 ("$timestamp", item.TimestampEpochMs), ("$model", item.Model),
                 ("$input", item.InputTokens), ("$cached", item.CachedInputTokens),
                 ("$output", item.OutputTokens), ("$reasoning", item.ReasoningOutputTokens),
-                ("$signature", item.EventSignature));
+                ("$signature", item.EventSignature), ("$serviceTier", ServiceTierToDb(item.ServiceTier)));
         }
     }
 
@@ -1478,7 +1489,7 @@ public sealed class UsageStore : IDisposable
         var sql = includeModel
             ? """
               SELECT timestamp_epoch_ms, model, input_tokens, cached_input_tokens,
-                     output_tokens, reasoning_output_tokens
+                     output_tokens, reasoning_output_tokens, service_tier
               FROM usage_events WHERE rollout_id = $rolloutId ORDER BY token_event_ordinal
               """
             : """
@@ -1686,6 +1697,7 @@ public sealed class UsageStore : IDisposable
             RequireNonNegative(item.OutputTokens, nameof(item.OutputTokens));
             RequireNonNegative(item.ReasoningOutputTokens, nameof(item.ReasoningOutputTokens));
             RequireText(item.EventSignature, nameof(item.EventSignature));
+            if (!Enum.IsDefined(item.ServiceTier)) throw new ArgumentOutOfRangeException(nameof(item.ServiceTier));
             if (item.CachedInputTokens > item.InputTokens)
             {
                 throw new ArgumentOutOfRangeException(nameof(item.CachedInputTokens));
@@ -1787,6 +1799,22 @@ public sealed class UsageStore : IDisposable
         0 => false,
         1 => true,
         _ => throw new InvalidDataException("SQLite boolean value must be 0 or 1."),
+    };
+
+    private static string ServiceTierToDb(ServiceTier value) => value switch
+    {
+        ServiceTier.Unknown => "unknown",
+        ServiceTier.Standard => "standard",
+        ServiceTier.Fast => "fast",
+        _ => throw new ArgumentOutOfRangeException(nameof(value)),
+    };
+
+    private static ServiceTier ParseServiceTier(string value) => value switch
+    {
+        "unknown" => ServiceTier.Unknown,
+        "standard" => ServiceTier.Standard,
+        "fast" => ServiceTier.Fast,
+        _ => throw new InvalidDataException($"Unknown service tier: {value}"),
     };
 
     private static string ThreadTypeToDb(ThreadType value) => value switch
