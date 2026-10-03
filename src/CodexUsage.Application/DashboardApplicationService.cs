@@ -128,9 +128,15 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         CancellationToken cancellationToken)
     {
         var storedEventsTask = QueryStoredEventsAsync(request, cancellationToken).AsTask();
+        var activityQuery = new UsageEventQuery(
+            request.StartUtc.ToUnixTimeMilliseconds(),
+            request.EndUtc.ToUnixTimeMilliseconds(),
+            MainThreadConversationId: request.MainThreadConversationId);
+        var activitiesTask = _collector.QueryModelActivitiesAsync(activityQuery, cancellationToken).AsTask();
         var recentMainThreadsTask = _collector.QueryRecentMainThreadsAsync(20, cancellationToken).AsTask();
-        await Task.WhenAll(storedEventsTask, recentMainThreadsTask).ConfigureAwait(false);
+        await Task.WhenAll(storedEventsTask, activitiesTask, recentMainThreadsTask).ConfigureAwait(false);
         var storedEvents = await storedEventsTask.ConfigureAwait(false);
+        var activities = await activitiesTask.ConfigureAwait(false);
         var recentMainThreads = await recentMainThreadsTask.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -142,7 +148,12 @@ public sealed class DashboardApplicationService : IUsageDashboardService
                 ToScanDiagnostics(status.Diagnostics),
                 ToFilterSpec(request)),
             cancellationToken).ConfigureAwait(false);
-        return new DashboardSnapshot(status, result, recentMainThreads, GetEfficiencyResult());
+        var modelActivity = await Task.Run(
+            () => ModelActivityAccounting.Query(
+                activities.Select(value => value.ToModelActivitySample()),
+                ToFilterSpec(request)),
+            cancellationToken).ConfigureAwait(false);
+        return new DashboardSnapshot(status, result, modelActivity, recentMainThreads, GetEfficiencyResult());
     }
 
     private ValueTask<IReadOnlyList<StoredUsageEvent>> QueryStoredEventsAsync(

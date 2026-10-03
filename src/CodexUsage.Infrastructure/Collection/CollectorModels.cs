@@ -60,7 +60,9 @@ public sealed record CollectorDiagnostics(
     long CooperativeYieldCount,
     long PartialSources,
     long SafeOpaqueOversizedRecordsSkipped,
-    long SafeNullPaddingRecordsSkipped);
+    long SafeNullPaddingRecordsSkipped,
+    long UnavailableModelActivityRecords,
+    long OversizedModelActivityRecordsSkipped);
 
 public sealed record CollectorStatus(
     CollectorPhase Phase,
@@ -94,6 +96,9 @@ public interface IUsageCollector : IAsyncDisposable
     ValueTask<IReadOnlyList<StoredUsageEvent>> QueryEventsAsync(
         UsageEventQuery query,
         CancellationToken cancellationToken = default);
+
+    ValueTask<IReadOnlyList<StoredModelActivity>> QueryModelActivitiesAsync(
+        UsageEventQuery query, CancellationToken cancellationToken = default);
 
     ValueTask<IReadOnlyList<MainThreadOption>> QueryRecentMainThreadsAsync(
         int maximumCount,

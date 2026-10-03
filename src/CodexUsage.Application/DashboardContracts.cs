@@ -132,6 +132,7 @@ public sealed record DashboardApplicationStatus(
 public sealed record DashboardSnapshot(
     CollectorStatus Collector,
     QueryResult Result,
+    ModelActivityQueryResult ModelActivity,
     IReadOnlyList<MainThreadOption> RecentMainThreads,
     ProcessEfficiencyModeResult EfficiencyMode);
 

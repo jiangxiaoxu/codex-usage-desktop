@@ -407,6 +407,34 @@
                     </StackPanel>
                 </Border>
 
+                <Border Padding="20" Background="{StaticResource SurfaceBrush}" CornerRadius="12">
+                    <StackPanel Spacing="12">
+                        <TextBlock FontSize="18" FontWeight="SemiBold" Text="Fast 时间收益估算" />
+                        <controls:ChipWrapPanel>
+                            <TextBlock Margin="0,0,12,0" VerticalAlignment="Center" Text="节省的推理时间" />
+                            <TextBlock FontSize="18" FontWeight="SemiBold" Text="{Binding ReasoningTimeReductionText}" />
+                        </controls:ChipWrapPanel>
+                        <TextBlock Text="{Binding ModelActivityCoverageText}" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
+                        <TextBlock Text="基于当前筛选中相同模型和推理强度的普通模式样本推算. 推理体积由密文长度估算, 正文按 UTF-8 体积统计. 百分比为预计减少的时间, 负值表示预计更长; 样本量和内容差异会影响结果." TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
+                        <TextBlock Text="速率是记录体积与活动耗时的估算, 不是精确的 API TPS. 缺少普通模式对照时无法估算节省比例. 推理指标包含主线程与子代理, 不代表整轮工作的墙钟时间收益." TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
+                        <ItemsControl ItemsSource="{Binding ActivityRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,8,0,4" Spacing="5">
+                                        <TextBlock Text="{Binding Label}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                        <controls:ChipWrapPanel>
+                                            <TextBlock Margin="0,0,24,4" MaxWidth="480" TextWrapping="Wrap"><Run Text="普通: " /><Run Text="{Binding Standard}" /></TextBlock>
+                                            <TextBlock Margin="0,0,24,4" MaxWidth="480" TextWrapping="Wrap"><Run Text="Fast: " /><Run Text="{Binding Fast}" /></TextBlock>
+                                            <TextBlock Margin="0,0,24,4" Text="{Binding Unknown}" />
+                                            <TextBlock Margin="0,0,24,4"><Run Text="预计省时: " /><Run Text="{Binding TimeReduction}" /></TextBlock>
+                                        </controls:ChipWrapPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
                 <Grid x:Name="TableGrid" ColumnSpacing="12" RowSpacing="16">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />

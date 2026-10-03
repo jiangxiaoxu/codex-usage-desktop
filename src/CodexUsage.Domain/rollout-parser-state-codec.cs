@@ -6,7 +6,7 @@ namespace CodexUsage.Domain;
 
 public static class RolloutParserStateCodec
 {
-    public const int FormatRevision = 3;
+    public const int FormatRevision = 4;
 
     public static string Serialize(RolloutParserState state)
     {
@@ -28,7 +28,8 @@ public static class RolloutParserStateCodec
             state.ProvisionalTurnIds.ToArray(),
             state.CurrentServiceTier,
             state.TurnServiceTiers.OrderBy(value => value.Key, StringComparer.Ordinal)
-                .Select(value => new TurnServiceTierDocument(value.Key, value.Value)).ToArray());
+                .Select(value => new TurnServiceTierDocument(value.Key, value.Value)).ToArray(),
+            state.ActivitiesState);
         return JsonSerializer.Serialize(document, RolloutParserStateJsonContext.Default.RolloutParserStateDocument);
     }
 
@@ -51,7 +52,7 @@ public static class RolloutParserStateCodec
                 return false;
             }
             if (document.TurnModels is null || document.UnresolvedTurnIds is null || document.ProvisionalTurnIds is null || document.TurnServiceTiers is null
-                || document.CurrentServiceTier is null)
+                || document.CurrentServiceTier is null || document.ActivitiesState is null)
             {
                 error = "Parser state collections are missing.";
                 return false;
@@ -99,7 +100,8 @@ public static class RolloutParserStateCodec
                 unresolved,
                 provisional,
                 document.CurrentServiceTier.Value,
-                turnServiceTiers.ToImmutable());
+                turnServiceTiers.ToImmutable(),
+                document.ActivitiesState);
             ValidateState(candidate);
             state = candidate;
             return true;
@@ -129,6 +131,7 @@ public static class RolloutParserStateCodec
     private static void ValidateState(RolloutParserState state)
     {
         ArgumentNullException.ThrowIfNull(state.Metadata);
+        ValidateActivityState(state.ActivitiesState);
         ArgumentNullException.ThrowIfNull(state.TurnModels);
         ArgumentNullException.ThrowIfNull(state.TurnServiceTiers);
         ArgumentNullException.ThrowIfNull(state.ForkReplay);
@@ -172,6 +175,48 @@ public static class RolloutParserStateCodec
         foreach (var turnId in state.ProvisionalTurnIds) RequireText(turnId, "provisional turn id");
     }
 
+    private static void ValidateActivityState(RolloutActivityParserState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(state.SeenActivityIds);
+        ArgumentNullException.ThrowIfNull(state.TurnEfforts);
+        ArgumentNullException.ThrowIfNull(state.ConfiguredEffortTurnIds);
+        ArgumentNullException.ThrowIfNull(state.UnresolvedTurnIds);
+        ArgumentNullException.ThrowIfNull(state.AmbiguousTurnIds);
+        ArgumentNullException.ThrowIfNull(state.AmbiguousModelTurnIds);
+        if (state.NextActivityOrdinal < 0
+            || state.PendingReasoning.IsDefault)
+            throw new ArgumentException("Parser activity state is invalid.", nameof(state));
+        var identities = new HashSet<(string, string, string)>();
+        foreach (var pending in state.PendingReasoning)
+        {
+            ArgumentNullException.ThrowIfNull(pending);
+            RequireText(pending.ThreadId, "activity thread id");
+            RequireText(pending.TurnId, "activity turn id");
+            RequireText(pending.ItemId, "activity item id");
+            RequireText(pending.Model, "activity model");
+            if (!Enum.IsDefined(pending.Effort) || !Enum.IsDefined(pending.ServiceTier)
+                || !identities.Add((pending.ThreadId, pending.TurnId, pending.ItemId))
+                || (pending.RawPayloadBytes is { } bytes && bytes <= 0)
+                || (pending.StartedAtEpochMs is { } start && (start <= 0 || start > 253_402_300_799_999))
+                || (pending.CompletedAtEpochMs is { } end && (end <= 0 || end > 253_402_300_799_999))
+                || pending.StartedAtEpochMs.HasValue != pending.CompletedAtEpochMs.HasValue
+                || (pending.StartedAtEpochMs.HasValue && pending.CompletedAtEpochMs <= pending.StartedAtEpochMs)
+                || (!pending.StartedAtEpochMs.HasValue && !pending.RawPayloadBytes.HasValue))
+                throw new ArgumentException("Parser pending activity is invalid.", nameof(state));
+        }
+        foreach (var turnId in state.ConfiguredEffortTurnIds) RequireText(turnId, "configured activity effort turn id");
+        foreach (var identity in state.SeenActivityIds) RequireText(identity, "activity identity");
+        foreach (var turnId in state.UnresolvedTurnIds) RequireText(turnId, "activity unresolved turn id");
+        foreach (var turnId in state.AmbiguousTurnIds) RequireText(turnId, "activity ambiguous turn id");
+        foreach (var turnId in state.AmbiguousModelTurnIds) RequireText(turnId, "activity ambiguous model turn id");
+        foreach (var pair in state.TurnEfforts)
+        {
+            RequireText(pair.Key, "activity effort turn id");
+            if (!Enum.IsDefined(pair.Value)) throw new ArgumentException("Parser activity effort is invalid.", nameof(state));
+        }
+    }
+
     private static void RequireText(string? value, string name)
     {
         if (string.IsNullOrEmpty(value)) throw new ArgumentException($"{name} cannot be empty.", name);
@@ -206,7 +251,8 @@ internal sealed record RolloutParserStateDocument(
     string[] UnresolvedTurnIds,
     string[] ProvisionalTurnIds,
     ServiceTier? CurrentServiceTier,
-    TurnServiceTierDocument[] TurnServiceTiers);
+    TurnServiceTierDocument[] TurnServiceTiers,
+    RolloutActivityParserState ActivitiesState);
 
 [JsonSourceGenerationOptions(
     GenerationMode = JsonSourceGenerationMode.Metadata,

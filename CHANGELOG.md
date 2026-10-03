@@ -2,6 +2,14 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [Unreleased]
+
+## [0.3.32] - 2026-10-03
+
+- 新增离线 Fast 推理时间减少估算,按相同 raw model,已知 reasoning effort 和体积估算方法的普通模式样本对照,保留负值与可对照 Fast 活动样本覆盖.可包含子代理推理,不代表整轮任务的墙钟时间减少.
+- 新增推理与正文活动的普通/Fast 速度明细,显示加权速度,中位数和样本数.推理使用密文长度代理,正文使用 UTF-8 bytes,速度不代表 API tokens/s,估算不代表因果收益.
+- 升级后自动回填可读的历史 source.活动 ledger 仅保存数值计时,体积和归因,不存储正文或推理密文,原始 token 数和费用统计保持不变.
+
 ## [0.3.31] - 2026-10-03
 
 - 新增 Fast 模式用量记录和费用估算. 按本应用约定使用 Standard 基准费率的 2.5x, 与长上下文加价叠加, 原始 token 数保持不变.

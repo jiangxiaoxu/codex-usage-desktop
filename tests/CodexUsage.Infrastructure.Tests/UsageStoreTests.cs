@@ -14,18 +14,48 @@ public sealed class UsageStoreTests
         "conversation-1", "rollout-1", string.Empty, ThreadType.Main,
         "main", "/root", string.Empty, false, "Codex", string.Empty, 0);
 
+    private static ModelActivityInput Activity(long ordinal) => new(
+        ordinal, 2_000, "thread-1", "turn-1", $"item-{ordinal}", ModelActivityKind.Reasoning,
+        "gpt-6.1-sol", ReasoningEffort.High, ServiceTier.Fast, 1_000, 2_000, 2_000, 850, 1, $"activity-{ordinal}");
+
     [Fact]
-    public void EmptyDatabaseMigratesToExactSchemaV9AndRequiredPragmas()
+    public void ModelActivityQueriesFollowMainDescendantsAndHalfOpenTimeScope()
+    {
+        using var store = new UsageStore(":memory:");
+        const string root = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        var main = Metadata with { ConversationId = root, RolloutId = root };
+        var child = Metadata with
+        {
+            ConversationId = "child",
+            RolloutId = "child",
+            ParentThreadId = root,
+            ThreadType = ThreadType.Subagent,
+            AgentRole = "worker"
+        };
+        var unrelated = Metadata with { ConversationId = "other", RolloutId = "other" };
+        foreach (var metadata in new[] { main, child, unrelated })
+            store.AppendRolloutSource(new(metadata, [], [Activity(0)],
+                Source($"{metadata.RolloutId}.jsonl"), 3_000));
+        var query = new UsageEventQuery(2_000, 2_001, MainThreadConversationId: root);
+        Assert.Equal(new[] { "child", root }.Order(StringComparer.Ordinal),
+            store.QueryModelActivities(query).Select(value => value.RolloutId).Order(StringComparer.Ordinal));
+        Assert.Empty(store.QueryModelActivities(query with { EndEpochMs = 2_000 }));
+        Assert.Single(store.QueryModelActivities(query with { ThreadTypes = [ThreadType.Subagent] }));
+        Assert.Empty(store.QueryModelActivities(query with { Models = ["different-model"] }));
+    }
+
+    [Fact]
+    public void EmptyDatabaseMigratesToExactSchemaV10AndRequiredPragmas()
     {
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(9, store.CurrentSchemaVersion);
+            Assert.Equal(10, store.CurrentSchemaVersion);
         }
 
         using var connection = Open(databasePath);
-        Assert.Equal(9L, ScalarLong(connection, "PRAGMA user_version"));
+        Assert.Equal(10L, ScalarLong(connection, "PRAGMA user_version"));
         Assert.Equal(1L, ScalarLong(connection, "PRAGMA foreign_keys"));
         Assert.Equal("wal", ScalarString(connection, "PRAGMA journal_mode"));
         Assert.Equal(
@@ -33,6 +63,7 @@ public sealed class UsageStoreTests
                 "collector_diagnostics",
                 "collector_runs",
                 "collector_state",
+                "model_activity_samples",
                 "rollout_checkpoints",
                 "rollouts",
                 "source_files",
@@ -50,6 +81,7 @@ public sealed class UsageStoreTests
         Assert.Equal(
             [
                 "collector_diagnostics_run_idx",
+                "model_activity_samples_time_idx",
                 "rollout_checkpoints_rollout_idx",
                 "rollouts_parent_thread_idx",
                 "source_files_rollout_idx",
@@ -95,7 +127,7 @@ public sealed class UsageStoreTests
 
         using var store = new UsageStore(databasePath);
 
-        Assert.Equal(9, store.CurrentSchemaVersion);
+        Assert.Equal(10, store.CurrentSchemaVersion);
         Assert.False(store.GetRolloutMetadata("rollout-1")!.IsRealtimeVoice);
     }
 
@@ -106,7 +138,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(9, store.CurrentSchemaVersion);
+            Assert.Equal(10, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var command = connection.CreateCommand())
@@ -120,7 +152,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(10, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("safe_null_padding_records",
             ReadStrings(verified, "SELECT name FROM pragma_table_info('rollout_checkpoints')"));
@@ -147,7 +179,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(10, migrated.CurrentSchemaVersion);
         Assert.Equal("Codex", migrated.GetRolloutMetadata("rollout-1")!.ProjectName);
     }
 
@@ -172,7 +204,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(10, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("rollouts_parent_thread_idx", ReadStrings(verified, """
             SELECT name FROM sqlite_schema
@@ -222,7 +254,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(10, migrated.CurrentSchemaVersion);
         Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
         migrated.AppendEvents(Metadata with
         {
@@ -248,13 +280,13 @@ public sealed class UsageStoreTests
             var identity = Assert.Single(store.GetRolloutEventIdentities(Metadata.RolloutId));
             var semantic = Assert.Single(store.GetRolloutSemanticSignatures(Metadata.RolloutId));
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-                Metadata, [usage with { ServiceTier = ServiceTier.Fast }],
+                Metadata, [usage with { ServiceTier = ServiceTier.Fast }], [],
                 CanonicalSource("canonical.jsonl"), 1_000, null));
             Assert.Equal(identity, Assert.Single(store.GetRolloutEventIdentities(Metadata.RolloutId)));
             if (tier != ServiceTier.Fast)
                 Assert.NotEqual(semantic, Assert.Single(store.GetRolloutSemanticSignatures(Metadata.RolloutId)));
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-                Metadata, [usage], CanonicalSource("canonical.jsonl"), 1_000, null));
+                Metadata, [usage], [], CanonicalSource("canonical.jsonl"), 1_000, null));
         }
 
         using var reopened = new UsageStore(databasePath);
@@ -282,7 +314,7 @@ public sealed class UsageStoreTests
         }
 
         using var migrated = new UsageStore(databasePath);
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(10, migrated.CurrentSchemaVersion);
         var usage = Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
         Assert.Equal(ServiceTier.Unknown, usage.ServiceTier);
         Assert.Equal(100, usage.InputTokens);
@@ -335,12 +367,12 @@ public sealed class UsageStoreTests
         using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
         var sourcePath = Path.Combine(temporary.Path, "rollout.jsonl");
         var initial = new AppendRolloutSourceInput(
-            Metadata, [Event(0, 1_000, "original")], Source(sourcePath), 3_000);
+            Metadata, [Event(0, 1_000, "original")], [], Source(sourcePath), 3_000);
         Assert.Equal(new AppendEventsResult(1, 0), store.AppendRolloutSource(initial));
 
         Assert.Throws<InvalidOperationException>(() => store.AppendRolloutSource(new AppendRolloutSourceInput(
             Metadata with { AgentRole = "must-roll-back" },
-            [Event(1, 2_000), Event(0, 1_000, "conflict")],
+            [Event(1, 2_000), Event(0, 1_000, "conflict")], [],
             Source(sourcePath) with { ByteOffset = 900, LastScannedAtEpochMs = 5_000 },
             5_000)));
 
@@ -360,7 +392,7 @@ public sealed class UsageStoreTests
         var oldCanonicalSource = CanonicalSource(oldCanonicalPath);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             Metadata,
-            [Event(0, 1_000, "old")],
+            [Event(0, 1_000, "old")], [],
             oldCanonicalSource,
             2_000,
             null,
@@ -389,7 +421,7 @@ public sealed class UsageStoreTests
         Assert.Throws<SqliteException>(() => store.ReplaceCanonicalRollout(
             new ReplaceCanonicalRolloutInput(
                 Metadata with { AgentRole = "must-roll-back" },
-                [Event(0, 2_000, "replacement")],
+                [Event(0, 2_000, "replacement")], [],
                 replacementSource,
                 5_000,
                 null,
@@ -412,14 +444,14 @@ public sealed class UsageStoreTests
         using var store = new UsageStore(databasePath);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             Metadata,
-            [Event(0, 1_000, "old")],
+            [Event(0, 1_000, "old")], [],
             CanonicalSource(oldCanonicalPath),
             2_000,
             null));
 
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             Metadata with { AgentRole = "replacement" },
-            [Event(0, 2_000, "replacement")],
+            [Event(0, 2_000, "replacement")], [],
             CanonicalSource(replacementPath) with
             {
                 SizeBytes = 2_000,
@@ -448,7 +480,7 @@ public sealed class UsageStoreTests
         var candidatePath = Path.Combine(temporary.Path, "candidate.jsonl");
         var siblingConflictPath = Path.Combine(temporary.Path, "sibling-conflict.jsonl");
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            Metadata, [Event(0, 1_000, "old")], CanonicalSource(conflictPath), 2_000, null));
+            Metadata, [Event(0, 1_000, "old")], [], CanonicalSource(conflictPath), 2_000, null));
         store.UpsertSourceFile(ToSourceFile(Source(candidatePath), Metadata.RolloutId));
         store.UpsertSourceFile(ToSourceFile(
             Source(siblingConflictPath) with { CanonicalStatus = CanonicalStatus.Conflict },
@@ -458,7 +490,7 @@ public sealed class UsageStoreTests
 
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             Metadata,
-            [Event(0, 1_000, "recovered")],
+            [Event(0, 1_000, "recovered")], [],
             CanonicalSource(candidatePath),
             4_000,
             conflictPath));
@@ -483,7 +515,7 @@ public sealed class UsageStoreTests
         var candidatePath = Path.Combine(temporary.Path, "candidate.jsonl");
         using var store = new UsageStore(databasePath);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            Metadata, [Event(0, 1_000, "old")], CanonicalSource(conflictPath), 2_000, null));
+            Metadata, [Event(0, 1_000, "old")], [Activity(0)], CanonicalSource(conflictPath), 2_000, null));
         store.UpsertSourceFile(ToSourceFile(Source(candidatePath), Metadata.RolloutId));
         store.RecordSourceConflict(new SourceConflictInput(
             null, conflictPath, "canonical-source-malformed", "malformed", null, 3_000));
@@ -503,7 +535,7 @@ public sealed class UsageStoreTests
 
         Assert.Throws<SqliteException>(() => store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             Metadata with { AgentRole = "must-roll-back" },
-            [Event(0, 2_000, "replacement")],
+            [Event(0, 2_000, "replacement")], [Activity(0) with { ItemId = "replacement", DeterministicSignature = "replacement" }],
             CanonicalSource(candidatePath),
             4_000,
             conflictPath)));
@@ -512,6 +544,7 @@ public sealed class UsageStoreTests
         Assert.Equal(["old"], store.GetRolloutEventSignatures(Metadata.RolloutId));
         Assert.Equal("main", store.GetRolloutMetadata(Metadata.RolloutId)!.AgentRole);
         Assert.Equal(before, store.ListSourceFiles());
+        Assert.Equal("item-0", Assert.Single(store.QueryModelActivities(new(0, 10_000))).ItemId);
     }
 
     [Fact]
@@ -525,7 +558,7 @@ public sealed class UsageStoreTests
         using (var store = new UsageStore(databasePath))
         {
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-                Metadata, [Event(0, 1_000, "old")],
+                Metadata, [Event(0, 1_000, "old")], [],
                 CanonicalSource(canonicalPath) with
                 {
                     PrefixStatus = PrefixStatus.Diverged,
@@ -546,7 +579,7 @@ public sealed class UsageStoreTests
 
             store.RecoverDivergedCanonicalSource(new RecoverDivergedCanonicalSourceInput(
                 Metadata with { AgentRole = "recovered" },
-                [Event(0, 1_500, "new-0"), Event(1, 2_500, "new-1")],
+                [Event(0, 1_500, "new-0"), Event(1, 2_500, "new-1")], [],
                 RecoverableSource(canonicalPath),
                 5_000));
 
@@ -569,13 +602,13 @@ public sealed class UsageStoreTests
         using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
         var canonicalPath = Path.Combine(temporary.Path, "canonical.jsonl");
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            Metadata, [Event(0, 1_000, "old")], CanonicalSource(canonicalPath), 2_000, null));
+            Metadata, [Event(0, 1_000, "old")], [], CanonicalSource(canonicalPath), 2_000, null));
         var before = store.ListSourceFiles().Single();
 
         Assert.Throws<SqliteException>(() => store.RecoverDivergedCanonicalSource(
             new RecoverDivergedCanonicalSourceInput(
                 Metadata with { AgentRole = "must-roll-back" },
-                [Event(0, 2_000, "duplicate"), Event(1, 3_000, "duplicate")],
+                [Event(0, 2_000, "duplicate"), Event(1, 3_000, "duplicate")], [],
                 RecoverableSource(canonicalPath),
                 5_000)));
 
@@ -591,14 +624,14 @@ public sealed class UsageStoreTests
         using var store = new UsageStore(Path.Combine(temporary.Path, "usage.sqlite"));
         var canonicalPath = Path.Combine(temporary.Path, "canonical.jsonl");
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            Metadata, [Event(0, 1_000, "old")], CanonicalSource(canonicalPath), 2_000, null));
+            Metadata, [Event(0, 1_000, "old")], [], CanonicalSource(canonicalPath), 2_000, null));
 
         Assert.True(store.MarkSourceMissing(canonicalPath, 3_000));
         Assert.Equal(0, store.CountPresentSources());
         Assert.Single(store.QueryEvents(new UsageEventQuery(0, 10_000)));
 
         store.RecoverDivergedCanonicalSource(new RecoverDivergedCanonicalSourceInput(
-            Metadata, [Event(0, 2_000, "recovered")], RecoverableSource(canonicalPath), 5_000));
+            Metadata, [Event(0, 2_000, "recovered")], [], RecoverableSource(canonicalPath), 5_000));
         Assert.Equal(["recovered"], store.GetRolloutEventSignatures(Metadata.RolloutId));
         Assert.True(store.ListSourceFiles().Single().IsPresent);
     }
@@ -612,7 +645,7 @@ public sealed class UsageStoreTests
         var archivePath = Path.Combine(temporary.Path, "archive.jsonl");
         var voice = Metadata with { IsRealtimeVoice = true };
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            voice, [], CanonicalSource(activePath), 2_000, null));
+            voice, [], [], CanonicalSource(activePath), 2_000, null));
         store.UpsertSourceFile(ToSourceFile(Source(archivePath), voice.RolloutId));
 
         Assert.Equal(1, store.CountPresentRealtimeVoiceSessions());
@@ -641,7 +674,7 @@ public sealed class UsageStoreTests
         var legacyMetadata = Metadata with { ConversationId = legacyId, RolloutId = legacyId };
         var source = CanonicalSource(path);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            legacyMetadata, [Event(0, 1_000, "legacy")], source, 2_000, null));
+            legacyMetadata, [Event(0, 1_000, "legacy")], [], source, 2_000, null));
 
         if (scenario == "target-exists")
             store.AppendEvents(Metadata with { ConversationId = actualId, RolloutId = actualId }, [], 2_500);
@@ -686,7 +719,7 @@ public sealed class UsageStoreTests
         var source = CanonicalSource(path);
         var legacyCheckpoint = CheckpointFor(source, legacyMetadata, 5);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
-            legacyMetadata, [Event(0, 1_000, "legacy")], source, 2_000, null, legacyCheckpoint));
+            legacyMetadata, [Event(0, 1_000, "legacy")], [], source, 2_000, null, legacyCheckpoint));
         using (var connection = Open(databasePath))
         {
             using var trigger = connection.CreateCommand();
@@ -719,7 +752,7 @@ public sealed class UsageStoreTests
         var source = CanonicalSource(path);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             Metadata with { ConversationId = legacyId, RolloutId = legacyId },
-            [Event(0, 1_000, "legacy")],
+            [Event(0, 1_000, "legacy")], [],
             source,
             2_000,
             null));
@@ -995,7 +1028,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(9, store.CurrentSchemaVersion);
+            Assert.Equal(10, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var transaction = connection.BeginTransaction())
@@ -1067,7 +1100,8 @@ public sealed class UsageStoreTests
             ImmutableSortedSet<string>.Empty,
             ImmutableSortedSet<string>.Empty,
             ServiceTier.Unknown,
-            ImmutableDictionary<string, ServiceTier>.Empty);
+            ImmutableDictionary<string, ServiceTier>.Empty,
+            RolloutActivityParserState.Empty);
         var json = RolloutParserStateCodec.Serialize(state);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
         return new RolloutCheckpointInput(
@@ -1097,7 +1131,7 @@ public sealed class UsageStoreTests
         return new RekeyLegacyCanonicalRolloutInput(
             legacyId,
             metadata,
-            [Event(0, 2_000, "replacement")],
+            [Event(0, 2_000, "replacement")], [],
             source,
             4_000,
             CheckpointFor(source, metadata, 11));

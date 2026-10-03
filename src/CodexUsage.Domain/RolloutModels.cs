@@ -63,6 +63,10 @@ public sealed record RolloutParseDiagnostics(
     int InvalidTimestampsSkipped,
     int InvalidPaginatedHistoryMetadata)
 {
+    public int UnavailableModelActivityRecords { get; init; }
+
+    public int OversizedModelActivityRecordsSkipped => OversizedRecords.Count(value => value.ModelActivityDataUnavailable);
+
     public int SafeOpaqueOversizedRecordsSkipped => OversizedRecords.Count(value =>
         value.Disposition == OversizedRecordDisposition.SafeOpaqueSkipped);
 
@@ -100,7 +104,10 @@ public sealed record OversizedRecordDiagnostic(
     int StableLineNumber,
     int ByteLength,
     OversizedRecordDisposition Disposition,
-    OversizedRecordKind Kind);
+    OversizedRecordKind Kind)
+{
+    public bool ModelActivityDataUnavailable { get; init; }
+}
 
 public enum ForkReplayStatus
 {
@@ -136,11 +143,13 @@ public sealed record RolloutParserState(
     ImmutableSortedSet<string> UnresolvedTurnIds,
     ImmutableSortedSet<string> ProvisionalTurnIds,
     ServiceTier CurrentServiceTier,
-    ImmutableDictionary<string, ServiceTier> TurnServiceTiers);
+    ImmutableDictionary<string, ServiceTier> TurnServiceTiers,
+    RolloutActivityParserState ActivitiesState);
 
 public sealed record RolloutChunkParseResult(
     RolloutMetadata Metadata,
     ImmutableArray<ParsedRolloutUsageEvent> Events,
+    ImmutableArray<ParsedModelActivitySample> Activities,
     RolloutParseDiagnostics Diagnostics,
     RolloutParserState State,
     int StableLineCount,
@@ -150,6 +159,7 @@ public sealed record RolloutChunkParseResult(
 public sealed record RolloutParseResult(
     RolloutMetadata Metadata,
     ImmutableArray<ParsedRolloutUsageEvent> Events,
+    ImmutableArray<ParsedModelActivitySample> Activities,
     RolloutParseDiagnostics Diagnostics,
     int StableLineCount,
     bool TrailingPartialLine);
@@ -160,3 +170,25 @@ public sealed record CooperativeParseOptions(
     TimeSpan MaxTimePerSlice,
     int MaximumRecordBytes,
     Func<CancellationToken, ValueTask> YieldControl);
+
+public sealed record PendingReasoningActivity(
+    string ThreadId, string TurnId, string ItemId,
+    long? StartedAtEpochMs, long? CompletedAtEpochMs, long? RawPayloadBytes,
+    string Model, ReasoningEffort Effort, ServiceTier ServiceTier, bool EffortMayResolve);
+
+public sealed record RolloutActivityParserState(
+    long NextActivityOrdinal,
+    ImmutableArray<PendingReasoningActivity> PendingReasoning,
+    ImmutableSortedSet<string> SeenActivityIds,
+    ImmutableDictionary<string, ReasoningEffort> TurnEfforts,
+    ImmutableSortedSet<string> ConfiguredEffortTurnIds,
+    ImmutableSortedSet<string> UnresolvedTurnIds,
+    ImmutableSortedSet<string> AmbiguousTurnIds,
+    ImmutableSortedSet<string> AmbiguousModelTurnIds,
+    bool RequiresReparse)
+{
+    public static RolloutActivityParserState Empty { get; } = new(
+        0, [], ImmutableSortedSet<string>.Empty,
+        ImmutableDictionary<string, ReasoningEffort>.Empty,
+        ImmutableSortedSet<string>.Empty, ImmutableSortedSet<string>.Empty, ImmutableSortedSet<string>.Empty, ImmutableSortedSet<string>.Empty, false);
+}
