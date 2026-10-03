@@ -53,8 +53,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private DashboardHeaderStatusTone _headerStatusTone = DashboardHeaderStatusTone.Muted;
     private Brush? _headerStatusBrush;
     private string _coverageText = "等待首次对账";
-    private string _reasoningTimeReductionText = "无法估算";
-    private string _modelActivityCoverageText = "可对照 Fast 样本 0 / 0";
     private string _collectorStatusText = "正在启动采集器";
     private string _platformStatusText;
     private ReleaseUpdatePackage? _availableUpdate;
@@ -119,9 +117,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<MetricCard> Metrics => _presentation.Metrics;
     public ObservableCollection<CostSlice> CostSlices => _presentation.CostSlices;
-    public ObservableCollection<ModelActivityRow> ActivityRows => _presentation.ActivityRows;
-    public string ReasoningTimeReductionText { get => _reasoningTimeReductionText; private set => SetProperty(ref _reasoningTimeReductionText, value); }
-    public string ModelActivityCoverageText { get => _modelActivityCoverageText; private set => SetProperty(ref _modelActivityCoverageText, value); }
     public ObservableCollection<ModelUsageRow> Models => _presentation.Models;
     public ObservableCollection<SubjectUsageRow> Subjects => _presentation.Subjects;
     public ObservableCollection<DiagnosticRow> Diagnostics => _presentation.Diagnostics;
@@ -766,8 +761,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             static (current, incoming) => current.UpdateFrom(incoming));
         var summary = snapshot.Result.Summary;
         var totalCost = summary.Cost.Total;
-        ReasoningTimeReductionText = ModelActivityRow.Percent(snapshot.ModelActivity.ReasoningEstimatedTimeReductionPercent, "无法估算");
-        ModelActivityCoverageText = $"可对照 Fast 样本 {snapshot.ModelActivity.ComparableFastSampleCount:N0} / {snapshot.ModelActivity.FastSampleCount:N0}";
         var input = new DashboardPresentationInput(
             [
                 new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
@@ -825,9 +818,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 new("部分解析源 / 安全跳过",
                     $"{snapshot.Collector.Diagnostics.PartialSources:N0} / {snapshot.Collector.Diagnostics.SafeOpaqueOversizedRecordsSkipped:N0}",
                     "部分解析源 / 超大安全 opaque record"),
-                new("模型活动不可采样 / 超大跳过",
-                    $"{snapshot.Collector.Diagnostics.UnavailableModelActivityRecords:N0} / {snapshot.Collector.Diagnostics.OversizedModelActivityRecordsSkipped:N0}",
-                    "全局采集记录中缺少完整计时或体积的模型活动 / 超大模型活动记录"),
             ],
             snapshot.Result.Facets.Models
                 .OrderBy(value => ModelDisplayOrder(value.Model))
@@ -840,8 +830,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                     value.Subject.AgentRole))
                 .ThenBy(value => value.Subject.AgentRole, StringComparer.Ordinal)
                 .Select(value => new SubjectFilterOption(value.Subject))
-                .ToArray(),
-            snapshot.ModelActivity.Rows.Select(row => new ModelActivityRow(row)).ToArray());
+                .ToArray());
         var application = _snapshotApplicationLifecycle.Begin(
             purpose,
             _presentation.WouldApplyHaveStructuralChanges(input));

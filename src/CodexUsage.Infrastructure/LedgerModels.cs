@@ -77,7 +77,6 @@ public sealed record RecoverableCanonicalSourceInput(
 public sealed record AppendRolloutSourceInput(
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
-    IReadOnlyList<ModelActivityInput> Activities,
     CandidateSourceInput Source,
     long ObservedAtEpochMs,
     RolloutCheckpointInput? Checkpoint = null);
@@ -95,7 +94,6 @@ public sealed record CanonicalSourceInput(
 public sealed record ReplaceCanonicalRolloutInput(
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
-    IReadOnlyList<ModelActivityInput> Activities,
     CanonicalSourceInput Source,
     long ObservedAtEpochMs,
     string? ResolvedConflictSourcePath,
@@ -105,7 +103,6 @@ public sealed record RekeyLegacyCanonicalRolloutInput(
     string LegacyRolloutId,
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
-    IReadOnlyList<ModelActivityInput> Activities,
     CanonicalSourceInput Source,
     long ObservedAtEpochMs,
     RolloutCheckpointInput Checkpoint);
@@ -113,7 +110,6 @@ public sealed record RekeyLegacyCanonicalRolloutInput(
 public sealed record RecoverDivergedCanonicalSourceInput(
     RolloutMetadata Metadata,
     IReadOnlyList<UsageEventInput> Events,
-    IReadOnlyList<ModelActivityInput> Activities,
     RecoverableCanonicalSourceInput Source,
     long ObservedAtEpochMs,
     RolloutCheckpointInput? Checkpoint = null);
@@ -258,27 +254,3 @@ public sealed record CollectorRunRecord(
     string? ErrorMessage);
 
 public sealed record CheckpointResult(long Busy, long LogFrames, long CheckpointedFrames);
-
-public sealed record ModelActivityInput(
-    long ActivityOrdinal, long TimestampEpochMs, string ThreadId, string TurnId, string ItemId,
-    ModelActivityKind Kind, string Model, ReasoningEffort Effort, ServiceTier ServiceTier,
-    long StartedAtEpochMs, long CompletedAtEpochMs, long RawPayloadBytes,
-    long EstimatedContentBytes, int EstimatorRevision, string DeterministicSignature);
-
-public sealed record RolloutModelActivityCursor(
-    long ActivityCount, long NextActivityOrdinal);
-
-public sealed record StoredModelActivity(
-    string ConversationId, string RolloutId, string ParentThreadId, ThreadType ThreadType,
-    string AgentRole, string AgentPath, string AgentNickname, long TimestampEpochMs,
-    long ActivityOrdinal, string ThreadId, string TurnId, string ItemId,
-    ModelActivityKind Kind, string Model, ReasoningEffort Effort, ServiceTier ServiceTier,
-    long StartedAtEpochMs, long CompletedAtEpochMs, long RawPayloadBytes,
-    long EstimatedContentBytes, int EstimatorRevision, string DeterministicSignature)
-{
-    public ModelActivitySample ToModelActivitySample() => new(
-        ConversationId, RolloutId, ParentThreadId, ThreadType, AgentRole, AgentPath, AgentNickname,
-        DateTimeOffset.FromUnixTimeMilliseconds(TimestampEpochMs).ToString("O", System.Globalization.CultureInfo.InvariantCulture),
-        ActivityOrdinal, ThreadId, TurnId, ItemId, Kind, Model, Effort, ServiceTier,
-        StartedAtEpochMs, CompletedAtEpochMs, RawPayloadBytes, EstimatedContentBytes, EstimatorRevision);
-}

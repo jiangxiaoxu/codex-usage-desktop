@@ -25,10 +25,10 @@ dotnet format CodexUsageDesktop.sln --verify-no-changes
 使用 `-AutoDetectDependencies` 可查找本机已有的 .NET 10 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.生成 unpackaged、self-contained 的 x64 WinUI 3 应用和全用户 installer:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.32 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.33 -AutoDetectDependencies
 ```
 
-7-Zip Extra 位于非标准目录时,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.32-x64.exe`.构建会先用 7-Zip 生成并校验 payload archive,再生成唯一 pending EXE;仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
+7-Zip Extra 位于非标准目录时,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.setup 输出位于 `release\winui-installer\codex-usage-desktop-setup-0.3.33-x64.exe`.构建会先用 7-Zip 生成并校验 payload archive,再生成唯一 pending EXE;仅在 `makensis` 成功且 pending EXE 存在并非空时,再同卷原子发布正式 setup;失败不会覆盖已有 setup.同一 workspace 的 installer build 必须串行执行.它将 self-contained payload 安装到 `%ProgramFiles%\Codex Usage Desktop`,目标计算机不需要预装 .NET 或 Windows App SDK runtime.安装范围为全用户,安装、升级和卸载需要 UAC.
 
 setup 会在替换当前 WinUI payload 前检测并强制终止正在运行的 Codex Usage Desktop process.卸载 WinUI 3 默认不删除 LocalAppData ledger.用户可显式检查 GitHub Release,实验通道在下载时校验 SHA-256;运行前需要在警示 dialog 中确认并再次校验文件,随后 NSIS 结束当前应用和 collector process.
 
@@ -65,9 +65,6 @@ override 必须是受保护 Codex tree 以外的绝对可写目录.更新下载�
 - 页面只允许一个纵向滚动容器;每个 table 在宽度不足时拥有独立横向滚动,不得引入嵌套纵向滚动.
 - 查询由 Application layer 执行,结果通过 UI dispatcher 更新.
 - 汇总,模型和执行主体 table 分别显示 `长上下文费用倍率` 和 `Fast 费用倍率`,均以乘数显示.长上下文倍率为该项调整后费用 / Standard 基准费用;Fast 倍率为实际费用 / 长上下文调整后费用,不受长上下文自身倍率干扰.观察到 Fast 设置的 event 按本应用约定统一使用 2.5x,混合模式按费用加权显示;两项倍率相乘对应整体费用倍率.四类费用构成已包含这些加价,原始 token 数不变.无法识别模式的 event 不加 Fast 费用.日志只记录所选设置,费用为估算;不统计 credits.
-- Native `Fast 时间收益估算` 区块显示 `节省的推理时间`,沿用时间,model,执行主体和主线程筛选.明细按 raw model,已知 reasoning effort,推理/正文和估算方法版本分别对照普通与 Fast 模式,显示加权速度,中位数和样本数.模式或推理强度未知时不作为可比基准.
-- 推理体积代理为 `max(0, floor(密文 UTF-8 bytes * 3/4) - 650)`,正文使用 UTF-8 bytes,两者的 KiB/s 均不是 API tokens/s.推理收益为 `(普通预计推理耗时 - Fast 活动耗时) / 普通预计推理耗时`,多组按普通预计推理耗时加权,包含符合筛选的子代理.例如同等推理量速度为 2x 时,预计节省时间为 50%;它不代表并行任务的墙钟收益.
-- 推理时间百分比保留负值,表示预计耗时更长;同时显示可对照 Fast 活动样本覆盖,缺少可比基准时显示 `无法估算`.样本内容,上下文和服务负载未严格控制,结果用于观察加速趋势,不代表因果收益.筛选规则保守不意味着结果是时间节省的下限.历史源可读时自动回填,ledger 不保存正文或密文,原始 token 数和费用统计不变.
 - 模型与执行主体 table 是有界聚合结果,使用无内部纵向滚动的 `ItemsControl`;页面根容器负责唯一纵向滚动.
 - unpackaged 应用通过 HKCU Run entry 管理开机自启动;启动后可直接驻留 tray.
 - 关闭 dashboard 可保持后台采集,通过 tray `Exit` 执行 clean shutdown.
@@ -80,7 +77,7 @@ dotnet restore CodexUsageDesktop.sln
 dotnet build CodexUsageDesktop.sln -c Release --no-restore
 dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.32 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.33 -AutoDetectDependencies
 git diff --check
 ```
 

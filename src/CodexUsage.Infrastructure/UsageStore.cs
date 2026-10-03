@@ -4,9 +4,9 @@ using Microsoft.Data.Sqlite;
 
 namespace CodexUsage.Infrastructure;
 
-public sealed partial class UsageStore : IDisposable
+public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 10;
+    private const int SchemaVersion = 9;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -79,7 +79,6 @@ public sealed partial class UsageStore : IDisposable
         ArgumentNullException.ThrowIfNull(input);
         ValidateMetadata(input.Metadata);
         ValidateEvents(input.Events);
-        ValidateModelInputs(input.Activities);
         RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
         var source = ToSource(input.Source, input.Metadata.RolloutId);
         ValidateSource(source);
@@ -87,7 +86,6 @@ public sealed partial class UsageStore : IDisposable
         return WriteTransaction(transaction =>
         {
             var result = AppendWithinTransaction(transaction, input.Metadata, input.Events, input.ObservedAtEpochMs);
-            AppendModelInputs(transaction, input.Metadata.RolloutId, input.Activities);
             UpsertSourceWithinTransaction(transaction, source);
             if (input.Checkpoint is not null) UpsertCheckpointWithinTransaction(transaction, input.Checkpoint);
             return result;
@@ -99,7 +97,6 @@ public sealed partial class UsageStore : IDisposable
         ArgumentNullException.ThrowIfNull(input);
         ValidateMetadata(input.Metadata);
         ValidateEvents(input.Events);
-        ValidateModelInputs(input.Activities);
         RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
         RequireOptionalText(input.ResolvedConflictSourcePath, nameof(input.ResolvedConflictSourcePath));
         var source = ToCanonicalSource(input.Source, input.Metadata.RolloutId);
@@ -109,7 +106,6 @@ public sealed partial class UsageStore : IDisposable
         {
             UpsertRollout(transaction, input.Metadata, input.ObservedAtEpochMs);
             ReplaceEventsWithinTransaction(transaction, input.Metadata.RolloutId, input.Events);
-            ReplaceModelInputs(transaction, input.Metadata.RolloutId, input.Activities);
             UpsertSourceWithinTransaction(transaction, source);
             PromoteRolloutWithinTransaction(
                 transaction,
@@ -128,7 +124,6 @@ public sealed partial class UsageStore : IDisposable
         RequireText(input.LegacyRolloutId, nameof(input.LegacyRolloutId));
         ValidateMetadata(input.Metadata);
         ValidateEvents(input.Events);
-        ValidateModelInputs(input.Activities);
         RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
         if (!string.Equals(
                 input.LegacyRolloutId,
@@ -200,7 +195,6 @@ public sealed partial class UsageStore : IDisposable
 
             UpsertRollout(transaction, input.Metadata, input.ObservedAtEpochMs);
             ReplaceEventsWithinTransaction(transaction, input.Metadata.RolloutId, input.Events);
-            ReplaceModelInputs(transaction, input.Metadata.RolloutId, input.Activities);
             UpsertSourceWithinTransaction(transaction, source);
             PromoteRolloutWithinTransaction(
                 transaction,
@@ -218,7 +212,6 @@ public sealed partial class UsageStore : IDisposable
         ArgumentNullException.ThrowIfNull(input);
         ValidateMetadata(input.Metadata);
         ValidateEvents(input.Events);
-        ValidateModelInputs(input.Activities);
         RequireNonNegative(input.ObservedAtEpochMs, nameof(input.ObservedAtEpochMs));
         var source = new SourceFileInput(
             input.Source.FilePath,
@@ -267,7 +260,6 @@ public sealed partial class UsageStore : IDisposable
 
             UpsertRollout(transaction, input.Metadata, input.ObservedAtEpochMs);
             ReplaceEventsWithinTransaction(transaction, input.Metadata.RolloutId, input.Events);
-            ReplaceModelInputs(transaction, input.Metadata.RolloutId, input.Activities);
             UpsertSourceWithinTransaction(transaction, source);
             if (input.Checkpoint is not null) UpsertCheckpointWithinTransaction(transaction, input.Checkpoint);
             return 0;
@@ -937,6 +929,17 @@ public sealed partial class UsageStore : IDisposable
     private void Migrate()
     {
         var currentVersion = CurrentSchemaVersion;
+        if (currentVersion == 10)
+        {
+            WriteTransaction(transaction =>
+            {
+                ExecuteNonQuery(transaction, "DROP TABLE model_activity_samples");
+                ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
+                return 0;
+            });
+            return;
+        }
+
         if (currentVersion > SchemaVersion)
         {
             throw new InvalidOperationException(
@@ -1171,8 +1174,6 @@ public sealed partial class UsageStore : IDisposable
                         CHECK (service_tier IN ('unknown', 'standard', 'fast'));
                         """);
                 }
-
-                if (currentVersion < 10) CreateModelActivityTables(transaction);
 
                 ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
                 return 0;

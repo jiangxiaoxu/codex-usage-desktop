@@ -235,8 +235,7 @@ public sealed record DashboardPresentationInput(
     IReadOnlyList<SubjectUsageRow> Subjects,
     IReadOnlyList<DiagnosticRow> Diagnostics,
     IReadOnlyList<ModelFilterOption> ModelOptions,
-    IReadOnlyList<SubjectFilterOption> AgentOptions,
-    IReadOnlyList<ModelActivityRow> ActivityRows);
+    IReadOnlyList<SubjectFilterOption> AgentOptions);
 
 public readonly record struct DashboardPresentationApplyResult(bool HasStructuralChanges);
 
@@ -261,7 +260,6 @@ public sealed class DashboardPresentationCollections
             new("思考输出", 0, "0.0%", "WarningBrush"),
             new("其他输出", 0, "0.0%", "PurpleBrush"),
         };
-        ActivityRows = [];
         Models = [];
         Subjects = [];
         Diagnostics = [];
@@ -271,7 +269,6 @@ public sealed class DashboardPresentationCollections
 
     public ObservableCollection<MetricCard> Metrics { get; }
     public ObservableCollection<CostSlice> CostSlices { get; }
-    public ObservableCollection<ModelActivityRow> ActivityRows { get; }
     public ObservableCollection<ModelUsageRow> Models { get; }
     public ObservableCollection<SubjectUsageRow> Subjects { get; }
     public ObservableCollection<DiagnosticRow> Diagnostics { get; }
@@ -282,8 +279,7 @@ public sealed class DashboardPresentationCollections
     {
         ArgumentNullException.ThrowIfNull(input);
 
-        return WouldSynchronizeRows(ActivityRows, input.ActivityRows, static value => (value.Model, value.Effort, value.Kind, value.EstimatorRevision))
-            || WouldSynchronizeRows(Metrics, input.Metrics, static value => value.Label)
+        return WouldSynchronizeRows(Metrics, input.Metrics, static value => value.Label)
             || WouldSynchronizeRows(CostSlices, input.CostSlices, static value => value.Label)
             || WouldSynchronizeRows(Models, input.Models, static value => value.Model)
             || WouldSynchronizeRows(Subjects, input.Subjects, static value => (value.ThreadType, value.Role))
@@ -296,7 +292,6 @@ public sealed class DashboardPresentationCollections
     {
         ArgumentNullException.ThrowIfNull(input);
         var hasStructuralChanges = false;
-        hasStructuralChanges |= SynchronizeRows(ActivityRows, input.ActivityRows, static value => (value.Model, value.Effort, value.Kind, value.EstimatorRevision), static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(Metrics, input.Metrics, static value => value.Label, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(CostSlices, input.CostSlices, static value => value.Label, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;
         hasStructuralChanges |= SynchronizeRows(Models, input.Models, static value => value.Model, static (current, incoming) => current.UpdateFrom(incoming)).HasStructuralChanges;

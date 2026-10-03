@@ -28,8 +28,6 @@ CodexUsageDesktop.sln           solution entry
 - 按 model、实际 role、主线程和时间范围筛选并汇总 token 与费用.主线程 `AutoSuggestBox` 最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.也可手动输入完整 UUIDv7 session ID 或使用清空按钮取消筛选.合法输入会规范化;非空非法输入显示红色验证状态并保留已应用的筛选.筛选以精确的主线程 `ConversationId` 为根,归集其全部后代 event.
 - `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.`codex-auto-review` 与 GPT-6.1 Sol、GPT-6 Astra、Sol、Luna、GPT-5.4、GPT-5.5、GPT-5.6 之外的 model 归入未计费的 `Others`,`source_model=unknown` 保持独立 attribution.
 - 汇总,model 和执行主体 table 分别显示 `长上下文费用倍率` 和 `Fast 费用倍率`.前者为长上下文调整后费用 / Standard 基准费用,后者为实际费用 / 长上下文调整后费用,按当前筛选范围的费用加权计算.Fast 设置取自所属线程的 rollout settings snapshot;缺失或无法识别时保留为 Unknown,不估算 Fast 加价.升级后自动重解析可读的历史 source,不会重复追加已有 event.日志不提供逐次响应的实际计费档位,因此费用仍为估算,不统计 credits 或订阅额度消耗.
-- `Fast 时间收益估算` 显示 `节省的推理时间` 百分比,按当前筛选中相同 raw model,已知 reasoning effort 和体积估算方法的普通模式样本对照,包括主线程与子代理的可比推理活动.推理体积来自密文长度代理,正文使用 UTF-8 bytes;明细展示两者的普通/Fast 加权速度,中位数与样本数,不将其当作 API tokens/s.
-- 推理时间估算保留负值,表示预计耗时更长,并显示可对照 Fast 活动样本覆盖.结果用于观察加速趋势,不代表因果收益或整轮任务的墙钟时间减少.缺少可比基准时留空.升级后自动回填可读的历史 source,新增活动数据仅保存体积,计时与归因,不保存正文或推理密文,不改变原始 token 数与费用统计.
 
 ## 数据目录与安全边界
 
@@ -67,10 +65,10 @@ git diff --check
 生成 x64 全用户安装包:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.32 -AutoDetectDependencies
+pwsh -NoProfile -File .\scripts\build-installer.ps1 -Version 0.3.33 -AutoDetectDependencies
 ```
 
-`-AutoDetectDependencies` 查找本机已有的 .NET 10 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.32-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
+`-AutoDetectDependencies` 查找本机已有的 .NET 10 SDK、NSIS 3.x `makensis.exe` 和 7-Zip Extra 的 `7za.exe`、`7zr.exe`;脚本不会下载或安装构建工具.若 7-Zip Extra 位于非标准目录,追加 `-DependencySearchDirectory 'D:\tools\7-Zip'`;多个目录使用逗号数组或分号分隔.脚本先生成 unpackaged、self-contained 的 WinUI 3 publish,再用 7-Zip LZMA2 生成 payload archive,最后使用 NSIS 3.x 生成 `release\winui-installer\codex-usage-desktop-setup-0.3.33-x64.exe`.目标计算机无需预装 .NET 或 Windows App SDK runtime.安装范围为全用户,默认写入 `%ProgramFiles%\Codex Usage Desktop`,因此安装、升级和卸载会触发 UAC.
 
 安装器会在替换 payload 前终止正在运行的 Codex Usage Desktop process,并只删除当前 WinUI payload 的已知文件.卸载器默认只移除程序、快捷方式、自启动 entry 和 uninstall registration,不会删除 LocalAppData ledger.
 

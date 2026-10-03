@@ -2,7 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
-## [Unreleased]
+## [0.3.33] - 2026-10-03
+
+- 完整撤销 v0.3.32 新增的 Fast 时间收益估算, 包括推理活动解析, 存储, 估算和 dashboard 展示, 恢复 v0.3.31 行为.
+- 保留 v0.3.31 的 Fast 模式用量记录, 2.5x 费用估算和长上下文费用倍率, 原始 token 数和去重计费规则保持不变.
+- 将应用和安装包版本提升至 v0.3.33, 使已安装 v0.3.32 的用户可通过自动更新升级.
 
 ## [0.3.32] - 2026-10-03
 

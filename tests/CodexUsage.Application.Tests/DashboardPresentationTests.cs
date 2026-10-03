@@ -340,7 +340,6 @@ public sealed class DashboardPresentationTests
         collections.ModelOptions[0].IsSelected = false;
 
         var metric = collections.Metrics[0];
-        var activity = collections.ActivityRows[0];
         var cost = collections.CostSlices[0];
         var model = collections.Models[0];
         var subject = collections.Subjects[0];
@@ -357,8 +356,6 @@ public sealed class DashboardPresentationTests
         Assert.False(result.HasStructuralChanges);
         Assert.Empty(collectionChanges);
         Assert.Same(metric, collections.Metrics[0]);
-        Assert.Same(activity, collections.ActivityRows[0]);
-        Assert.Contains("2 条", activity.Fast);
         Assert.Same(cost, collections.CostSlices[0]);
         Assert.Same(model, collections.Models[0]);
         Assert.Same(subject, collections.Subjects[0]);
@@ -394,7 +391,7 @@ public sealed class DashboardPresentationTests
     }
 
     [Fact]
-    public void PresentationCollectionsChangeOnlyRelatedStructuresWhenFacetsChange()
+    public void PresentationCollectionsChangeOnlyModelAndSubjectStructuresWhenFacetsChange()
     {
         var collections = new DashboardPresentationCollections();
         collections.Apply(CreatePresentationInput("first"));
@@ -406,7 +403,6 @@ public sealed class DashboardPresentationTests
         SubscribeToCollectionChanges(collections.Diagnostics, "Diagnostics", changes);
         SubscribeToCollectionChanges(collections.ModelOptions, "ModelOptions", changes);
         SubscribeToCollectionChanges(collections.AgentOptions, "AgentOptions", changes);
-        SubscribeToCollectionChanges(collections.ActivityRows, "ActivityRows", changes);
 
         var second = CreatePresentationInput("second", includeAdditionalFacet: true);
         Assert.True(collections.WouldApplyHaveStructuralChanges(second));
@@ -950,19 +946,12 @@ public sealed class DashboardPresentationTests
         };
         var modelOptions = new List<ModelFilterOption> { new("gpt-5.6-sol") };
         var agentOptions = new List<SubjectFilterOption> { new(root) };
-        var activity = new ModelActivityComparisonRow(
-            "gpt-5.6-sol", ReasoningEffort.High, ModelActivityKind.Reasoning, 1,
-            ModelActivityRateSummary.Empty,
-            new ModelActivityRateSummary(marker == "first" ? 1 : 2, 1024, 1, 1024, 1024),
-            ModelActivityRateSummary.Empty, null, null, null, 0, null);
-        var activities = new List<ModelActivityRow> { new(activity) };
         if (includeAdditionalFacet)
         {
             models.Add(new("gpt-5.6-terra", "total-terra", "uncached-terra", "cached-terra", "output-terra", "reasoning-terra", "model-rate-terra", "model-fast-terra", "model-share-terra"));
             subjects.Add(new("子代理", "worker", "subject-count-worker", "subject-total-worker", "subject-uncached-worker", "subject-cached-worker", "subject-output-worker", "subject-reasoning-worker", "subject-rate-worker", "subject-fast-worker", "subject-share-worker"));
             modelOptions.Add(new("gpt-5.6-terra"));
             agentOptions.Add(new(worker));
-            activities.Add(new ModelActivityRow(activity with { Model = "gpt-5.6-terra" }));
         }
 
         return new DashboardPresentationInput(
@@ -972,8 +961,7 @@ public sealed class DashboardPresentationTests
             subjects,
             [new("Collector phase", $"diagnostic-value-{marker}", $"diagnostic-detail-{marker}")],
             modelOptions,
-            agentOptions,
-            activities);
+            agentOptions);
     }
 
     private static void SubscribeToAllCollectionChanges(
@@ -981,7 +969,6 @@ public sealed class DashboardPresentationTests
         List<NotifyCollectionChangedAction> changes)
     {
         collections.Metrics.CollectionChanged += (_, args) => changes.Add(args.Action);
-        collections.ActivityRows.CollectionChanged += (_, args) => changes.Add(args.Action);
         collections.CostSlices.CollectionChanged += (_, args) => changes.Add(args.Action);
         collections.Models.CollectionChanged += (_, args) => changes.Add(args.Action);
         collections.Subjects.CollectionChanged += (_, args) => changes.Add(args.Action);
@@ -1009,10 +996,9 @@ public sealed class DashboardPresentationTests
         Assert.Contains("Subjects", changes);
         Assert.Contains("ModelOptions", changes);
         Assert.Contains("AgentOptions", changes);
-        Assert.Contains("ActivityRows", changes);
         Assert.All(changes, change => Assert.Contains(
             change,
-            new[] { "Models", "Subjects", "ModelOptions", "AgentOptions", "ActivityRows" }));
+            new[] { "Models", "Subjects", "ModelOptions", "AgentOptions" }));
     }
 
     private static RoleUsageRow SubjectRow(decimal totalCost, ThreadType threadType, string role) => new(

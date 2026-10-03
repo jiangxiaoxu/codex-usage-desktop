@@ -11,26 +11,6 @@ namespace CodexUsage.App.Tests;
 
 public sealed class DashboardViewModelTests
 {
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task SnapshotDisplaysSignedOrUnavailableReasoningPercentWithCoverage(bool hasComparison)
-    {
-        var snapshot = Snapshot("activity", []) with
-        {
-            ModelActivity = ModelActivityQueryResult.Empty with
-            {
-                ReasoningEstimatedTimeReductionPercent = hasComparison ? -12.5m : null,
-                ComparableFastSampleCount = 3,
-                FastSampleCount = 5,
-            },
-        };
-        using var viewModel = CreateViewModel(new FakeUsageDashboardService(snapshot));
-        await viewModel.InitializeAsync();
-
-        Assert.Equal(hasComparison ? "-12.5%" : "无法估算", viewModel.ReasoningTimeReductionText);
-        Assert.Equal("可对照 Fast 样本 3 / 5", viewModel.ModelActivityCoverageText);
-    }
     private const string DirectMainThreadId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
     private const string FirstCollidingMainThreadId = "019fe0d7-dd65-7412-8fa0-ea96334569dd";
     private const string SecondCollidingMainThreadId = "019fe0d7-dd66-7412-8fa0-ea96334569dd";
@@ -514,7 +494,7 @@ public sealed class DashboardViewModelTests
             ObservationCoverage.Baseline,
             null,
             message,
-            new CollectorDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            new CollectorDiagnostics(0, 0, 0, 0, 0, 0, 0, 0, 0),
             0),
         new QueryResult(
             new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, cost ?? CostBreakdown.PricedZero, 0, 0, 0, 0),
@@ -523,7 +503,6 @@ public sealed class DashboardViewModelTests
             ImmutableArray<GroupRow>.Empty,
             new QueryFacets(ImmutableArray<ModelFacetOption>.Empty, ImmutableArray<SubjectFacetOption>.Empty),
             ScanDiagnostics.Empty),
-        ModelActivityQueryResult.Empty,
         mainThreads,
         new ProcessEfficiencyModeResult(ProcessExecutionMode.Efficiency, false, false, "Not attempted"));
 

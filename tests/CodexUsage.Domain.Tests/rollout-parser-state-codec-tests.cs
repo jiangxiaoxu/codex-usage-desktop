@@ -28,8 +28,7 @@ public sealed class RolloutParserStateCodecTests
             ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-c"),
             ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-d"),
             ServiceTier.Standard,
-            ImmutableDictionary<string, ServiceTier>.Empty.Add("turn-b", ServiceTier.Fast),
-            RolloutActivityParserState.Empty);
+            ImmutableDictionary<string, ServiceTier>.Empty.Add("turn-b", ServiceTier.Fast));
 
         var json = RolloutParserStateCodec.Serialize(state);
         var succeeded = RolloutParserStateCodec.TryDeserialize(json, out var restored, out var error);
@@ -55,8 +54,8 @@ public sealed class RolloutParserStateCodecTests
     public void RejectsUnknownFormatRevisionAndDuplicateTurnModels()
     {
         const string metadata = "\"metadata\":{\"conversationId\":\"c\",\"rolloutId\":\"r\",\"parentThreadId\":\"\",\"threadType\":0,\"agentRole\":\"main\",\"agentPath\":\"/root\",\"agentNickname\":\"\",\"isRealtimeVoice\":false}";
-        var duplicate = $"{{\"formatRevision\":4,\"hasMetadata\":true,{metadata},\"turnModels\":[{{\"turnId\":\"t\",\"model\":\"m\"}},{{\"turnId\":\"t\",\"model\":\"m\"}}],\"currentTurnId\":\"\",\"currentTurnModelOverridden\":false,\"currentModel\":\"unknown\",\"forkReplay\":{{\"status\":0}},\"previousSnapshot\":null,\"nextTokenEventOrdinal\":0,\"unresolvedTurnIds\":[],\"provisionalTurnIds\":[],\"currentServiceTier\":0,\"turnServiceTiers\":[]}}";
-        var unknownRevision = duplicate.Replace("\"formatRevision\":4", "\"formatRevision\":99", StringComparison.Ordinal);
+        var duplicate = $"{{\"formatRevision\":3,\"hasMetadata\":true,{metadata},\"turnModels\":[{{\"turnId\":\"t\",\"model\":\"m\"}},{{\"turnId\":\"t\",\"model\":\"m\"}}],\"currentTurnId\":\"\",\"currentTurnModelOverridden\":false,\"currentModel\":\"unknown\",\"forkReplay\":{{\"status\":0}},\"previousSnapshot\":null,\"nextTokenEventOrdinal\":0,\"unresolvedTurnIds\":[],\"provisionalTurnIds\":[],\"currentServiceTier\":0,\"turnServiceTiers\":[]}}";
+        var unknownRevision = duplicate.Replace("\"formatRevision\":3", "\"formatRevision\":99", StringComparison.Ordinal);
 
         Assert.False(RolloutParserStateCodec.TryDeserialize(duplicate, out _, out _));
         Assert.False(RolloutParserStateCodec.TryDeserialize(unknownRevision, out _, out _));

@@ -23,7 +23,7 @@ public static partial class RolloutParser
     public static RolloutParseResult Parse(ReadOnlyMemory<byte> input, string fallbackRolloutId)
     {
         var chunk = ParseChunk(input, fallbackRolloutId);
-        return new(chunk.Metadata, chunk.Events, chunk.Activities, chunk.Diagnostics, chunk.StableLineCount, chunk.TrailingPartialLine);
+        return new(chunk.Metadata, chunk.Events, chunk.Diagnostics, chunk.StableLineCount, chunk.TrailingPartialLine);
     }
 
     public static RolloutChunkParseResult ParseChunk(string input, string fallbackRolloutId, RolloutParserState? priorState = null) =>
@@ -155,7 +155,7 @@ public static partial class RolloutParser
         return contentEnd > lineStart && input[contentEnd - 1] == (byte)'\r' ? contentEnd - 1 : contentEnd;
     }
 
-    private sealed partial class ParserAccumulator
+    private sealed class ParserAccumulator
     {
         private readonly RolloutParserState? _priorState;
         private readonly MutableDiagnostics _diagnostics = new();
@@ -185,20 +185,13 @@ public static partial class RolloutParser
             _currentModel = priorState?.CurrentModel ?? "unknown";
             _forkReplay = priorState?.ForkReplay ?? RolloutForkReplayState.Inactive;
             _previousSnapshot = priorState?.PreviousSnapshot;
-            InitializeActivities(priorState?.ActivitiesState);
         }
 
         public void ClassifyOversizedRecord(ReadOnlyMemory<byte> rawLine, int stableLineNumber) =>
             AddOversizedDiagnostic(InspectOversizedRecord(rawLine.Span, stableLineNumber));
 
-        public void AddOversizedDiagnostic(OversizedRecordDiagnostic diagnostic)
-        {
+        public void AddOversizedDiagnostic(OversizedRecordDiagnostic diagnostic) =>
             _diagnostics.OversizedRecords.Add(diagnostic);
-            if (diagnostic.ModelActivityDataUnavailable)
-            {
-                _pendingReasoning.Clear();
-            }
-        }
 
         public void SkipNullPaddingRecord() => _diagnostics.SafeNullPaddingRecordsSkipped++;
 
@@ -254,8 +247,6 @@ public static partial class RolloutParser
                     if (_metadata.IsRealtimeVoice)
                     {
                         _candidates.Clear();
-                        _activityCandidates.Clear();
-                        _pendingReasoning.Clear();
                         _previousSnapshot = null;
                     }
                     _forkReplay = ForkReplayFrom(payload, _metadata, root);
@@ -282,13 +273,6 @@ public static partial class RolloutParser
                     return;
                 }
 
-                if (eventType == "response_item" && hasPayload && _forkReplay.Status == ForkReplayStatus.Inactive)
-                {
-                    if (GetNonEmptyString(payload, "type") == "configuration_update")
-                        ProcessActivityConfiguration(root, payload);
-                    ProcessReasoningPayload(payload);
-                    return;
-                }
                 if (eventType != "event_msg" || !hasPayload) return;
                 ProcessEventMessage(root, payload);
             }
@@ -320,11 +304,6 @@ public static partial class RolloutParser
             CaptureTurnServiceTier(turnId);
             _currentTurnId = turnId;
             if (model is not null) _turnModels[turnId] = model;
-            if (!_configuredEffortTurns.Contains(turnId) && (!_turnEfforts.ContainsKey(turnId) || _turnEfforts[turnId] == ReasoningEffort.Unknown))
-                _turnEfforts[turnId] = EffortFrom(GetNonEmptyString(payload, "effort"));
-            ResolveLateActivityEffort(turnId, EffortFrom(GetNonEmptyString(payload, "effort")));
-            if (_priorState?.ActivitiesState.UnresolvedTurnIds.Contains(turnId) == true
-                && (model is not null || _turnEfforts[turnId] != ReasoningEffort.Unknown)) _activitiesRequireReparse = true;
         }
 
         private void ProcessForkRecipient(JsonElement payload)
@@ -351,39 +330,16 @@ public static partial class RolloutParser
             if (payloadType == "thread_settings_applied")
             {
                 if (SettingsBelongToCurrentThread(payload))
-                {
-                    var updatedTier = TryGetObject(payload, "thread_settings", out var tierSettings)
+                    _currentServiceTier = TryGetObject(payload, "thread_settings", out var tierSettings)
                         ? ServiceTierFrom(tierSettings) : ServiceTier.Unknown;
-                    if (_currentTurnId.Length > 0 && _currentServiceTier != updatedTier)
-                    {
-                        _ambiguousActivityTurns.Add(_currentTurnId);
-                        if (_priorState?.ActivitiesState.NextActivityOrdinal > 0) _activitiesRequireReparse = true;
-                    }
-                    _currentServiceTier = updatedTier;
-                }
                 if (TryGetObject(payload, "thread_settings", out var settings) && GetNonEmptyString(settings, "model") is { } model)
                 {
-                    var activityModelChanged = SettingsBelongToCurrentThread(payload)
-                        && _currentTurnId.Length > 0 && model != ActivityModel(_currentTurnId);
                     _currentModel = model;
-                    if (_currentTurnId.Length > 0)
-                    {
-                        _currentTurnModelOverridden = true;
-                        if (activityModelChanged)
-                        {
-                            _ambiguousActivityModelTurns.Add(_currentTurnId);
-                            if (_priorState?.ActivitiesState.NextActivityOrdinal > 0) _activitiesRequireReparse = true;
-                        }
-                    }
+                    if (_currentTurnId.Length > 0) _currentTurnModelOverridden = true;
                 }
                 return;
             }
 
-            if (payloadType == "item_completed" && _forkReplay.Status == ForkReplayStatus.Inactive)
-            {
-                ProcessCompletedActivity(payload);
-                return;
-            }
             if (payloadType == "task_started")
             {
                 ProcessTaskStarted(payload);
@@ -538,12 +494,6 @@ public static partial class RolloutParser
                 await CheckpointAsync(index + 1 < _candidates.Count).ConfigureAwait(false);
             }
 
-            var activities = ImmutableArray.CreateBuilder<ParsedModelActivitySample>(_activityCandidates.Count);
-            for (var index = 0; index < _activityCandidates.Count; index++)
-            {
-                activities.Add(MaterializeActivity(_activityCandidates[index], index));
-                await CheckpointAsync(index + 1 < _activityCandidates.Count).ConfigureAwait(false);
-            }
             var immutableEvents = events.ToImmutable();
             var unresolved = (_priorState?.UnresolvedTurnIds ?? ImmutableSortedSet<string>.Empty).ToBuilder();
             var provisional = (_priorState?.ProvisionalTurnIds ?? ImmutableSortedSet<string>.Empty).ToBuilder();
@@ -573,8 +523,8 @@ public static partial class RolloutParser
             var state = new RolloutParserState(
                 _hasMetadata, _metadata, _turnModels.ToImmutable(), _currentTurnId, _currentTurnModelOverridden, _currentModel,
                 _forkReplay, _previousSnapshot, checked(firstOrdinal + immutableEvents.Length), unresolved.ToImmutable(), provisional.ToImmutable(),
-                _currentServiceTier, _turnServiceTiers.ToImmutable(), BuildActivityState());
-            return new(_metadata, immutableEvents, activities.ToImmutable(), _diagnostics.ToImmutable(), state, stableLineCount, stableByteLength, trailingPartialLine);
+                _currentServiceTier, _turnServiceTiers.ToImmutable());
+            return new(_metadata, immutableEvents, _diagnostics.ToImmutable(), state, stableLineCount, stableByteLength, trailingPartialLine);
         }
 
         private ParsedRolloutUsageEvent Materialize(TokenCandidate candidate, int candidateIndex)
@@ -619,8 +569,8 @@ public static partial class RolloutParser
             var state = new RolloutParserState(
                 _hasMetadata, _metadata, _turnModels.ToImmutable(), _currentTurnId, _currentTurnModelOverridden, _currentModel,
                 _forkReplay, _previousSnapshot, checked(firstOrdinal + events.Length), unresolved.ToImmutable(), provisional.ToImmutable(),
-                _currentServiceTier, _turnServiceTiers.ToImmutable(), BuildActivityState());
-            return new(_metadata, events, MaterializeActivities(), _diagnostics.ToImmutable(), state, stableLineCount, stableByteLength, trailingPartialLine);
+                _currentServiceTier, _turnServiceTiers.ToImmutable());
+            return new(_metadata, events, _diagnostics.ToImmutable(), state, stableLineCount, stableByteLength, trailingPartialLine);
         }
     }
 
@@ -729,7 +679,6 @@ public static partial class RolloutParser
     private static OversizedPayloadType ReadOversizedPayloadType(ref Utf8JsonReader reader)
     {
         if (reader.ValueTextEquals("agent_message"u8)) return OversizedPayloadType.AgentMessage;
-        if (reader.ValueTextEquals("reasoning"u8)) return OversizedPayloadType.Reasoning;
         if (reader.ValueTextEquals("token_count"u8)) return OversizedPayloadType.TokenCount;
         if (reader.ValueTextEquals("thread_settings_applied"u8)
             || reader.ValueTextEquals("task_started"u8)
@@ -743,6 +692,7 @@ public static partial class RolloutParser
             || reader.ValueTextEquals("function_call_output"u8)
             || reader.ValueTextEquals("local_shell_call"u8)
             || reader.ValueTextEquals("message"u8)
+            || reader.ValueTextEquals("reasoning"u8)
             || reader.ValueTextEquals("tool_search_call"u8)
             || reader.ValueTextEquals("tool_search_output"u8)
             || reader.ValueTextEquals("web_search_call"u8)
@@ -960,7 +910,6 @@ public static partial class RolloutParser
         public int MalformedLines { get; set; }
         public int NonObjectLines { get; set; }
         public List<OversizedRecordDiagnostic> OversizedRecords { get; } = [];
-        public int UnavailableModelActivityRecords { get; set; }
         public int InvalidTokenUsageLines { get; set; }
         public int DuplicateSnapshotsSkipped { get; set; }
         public int ZeroBreakdownSnapshotsSkipped { get; set; }
@@ -970,15 +919,13 @@ public static partial class RolloutParser
         public RolloutParseDiagnostics ToImmutable() => new(BlankLines, SafeNullPaddingRecordsSkipped,
             MalformedLines, NonObjectLines, [.. OversizedRecords],
             InvalidTokenUsageLines, DuplicateSnapshotsSkipped, ZeroBreakdownSnapshotsSkipped,
-            InvalidTokenRelationshipsSkipped, InvalidTimestampsSkipped, InvalidPaginatedHistoryMetadata)
-        { UnavailableModelActivityRecords = UnavailableModelActivityRecords };
+            InvalidTokenRelationshipsSkipped, InvalidTimestampsSkipped, InvalidPaginatedHistoryMetadata);
     }
 
     private sealed class OversizedRecordInspector(int stableLineNumber, int recordByteLength)
     {
         private OversizedEventType _eventType = OversizedEventType.Unknown;
         private OversizedPayloadType _payloadType = OversizedPayloadType.Unknown;
-        private bool _activityItemType;
         private bool _rootTypeSeen;
         private bool _payloadSeen;
         private bool _payloadWasObject;
@@ -1015,7 +962,6 @@ public static partial class RolloutParser
                     var depth when _payloadObjectDepth is { } payloadDepth
                         && depth == payloadDepth + 1
                         && reader.ValueTextEquals("type"u8) => OversizedPendingProperty.PayloadType,
-                    3 when reader.ValueTextEquals("type"u8) => OversizedPendingProperty.ActivityItemType,
                     _ => OversizedPendingProperty.None,
                 };
                 return;
@@ -1023,10 +969,6 @@ public static partial class RolloutParser
 
             switch (_pending)
             {
-                case OversizedPendingProperty.ActivityItemType:
-                    _activityItemType |= reader.TokenType == JsonTokenType.String
-                        && (reader.ValueTextEquals("Reasoning"u8) || reader.ValueTextEquals("AgentMessage"u8));
-                    break;
                 case OversizedPendingProperty.RootType:
                     if (_rootTypeSeen || reader.TokenType != JsonTokenType.String)
                         _eventType = OversizedEventType.Ambiguous;
@@ -1069,7 +1011,7 @@ public static partial class RolloutParser
                     Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.InterAgentCommunicationMetadata),
                 (OversizedEventType.ResponseItem, OversizedPayloadType.AgentMessage, true) =>
                     Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.ResponseItemAgentMessage),
-                (OversizedEventType.ResponseItem, OversizedPayloadType.Reasoning or OversizedPayloadType.OpaqueResponseItem, true) =>
+                (OversizedEventType.ResponseItem, OversizedPayloadType.OpaqueResponseItem, true) =>
                     Create(OversizedRecordDisposition.SafeOpaqueSkipped, OversizedRecordKind.ResponseItemOpaque),
                 (OversizedEventType.EventMessage, OversizedPayloadType.TokenCount, true) =>
                     Create(OversizedRecordDisposition.UnsafeCritical, OversizedRecordKind.TokenCount),
@@ -1092,14 +1034,10 @@ public static partial class RolloutParser
 
         private OversizedRecordDiagnostic Create(
             OversizedRecordDisposition disposition,
-            OversizedRecordKind kind) => new(stableLineNumber, recordByteLength, disposition, kind)
-            {
-                ModelActivityDataUnavailable = _payloadType == OversizedPayloadType.Reasoning
-                    || (_payloadType == OversizedPayloadType.ItemCompleted && _activityItemType),
-            };
+            OversizedRecordKind kind) => new(stableLineNumber, recordByteLength, disposition, kind);
     }
 
-    private enum OversizedPendingProperty { None, RootType, Payload, PayloadType, ActivityItemType }
+    private enum OversizedPendingProperty { None, RootType, Payload, PayloadType }
     private enum OversizedEventType
     {
         Unknown,
@@ -1121,7 +1059,6 @@ public static partial class RolloutParser
         TokenCount,
         EventContext,
         OpaqueResponseItem,
-        Reasoning,
         ImageGenerationEnd,
         McpToolCallEnd,
         ItemCompleted,

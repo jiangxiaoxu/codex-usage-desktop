@@ -17,7 +17,7 @@ public sealed class UsageCollector : IUsageCollector
 {
     private const int BoundaryWindowBytes = 64 * 1024;
     private const long ReverseReconciliationMaximumBytes = 64L * 1024 * 1024;
-    private const int ParserRevision = 22;
+    private const int ParserRevision = 21;
     private static readonly TimeSpan RepeatedFailureDiagnosticInterval = TimeSpan.FromMinutes(5);
     private const string ParserRevisionStateKey = "rollout_parser_revision";
     private const string LastInventoryStateKey = "last_successful_inventory_epoch_ms";
@@ -143,14 +143,6 @@ public sealed class UsageCollector : IUsageCollector
         ArgumentNullException.ThrowIfNull(query);
         return RequestAsync<IReadOnlyList<StoredUsageEvent>>(
             (completion, token) => new QueryCommand(query, completion, token), cancellationToken);
-    }
-
-    public ValueTask<IReadOnlyList<StoredModelActivity>> QueryModelActivitiesAsync(
-        UsageEventQuery query, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(query);
-        return RequestAsync<IReadOnlyList<StoredModelActivity>>(
-            (completion, token) => new StoredModelActivityQueryCommand(query, completion, token), cancellationToken);
     }
 
     public ValueTask<IReadOnlyList<MainThreadOption>> QueryRecentMainThreadsAsync(
@@ -298,12 +290,6 @@ public sealed class UsageCollector : IUsageCollector
                         break;
                     case QueryCommand query:
                         CompleteQuery(query);
-                        break;
-                    case StoredModelActivityQueryCommand query when query.CancellationToken.IsCancellationRequested:
-                        query.Completion.TrySetCanceled(query.CancellationToken);
-                        break;
-                    case StoredModelActivityQueryCommand query:
-                        CompleteStoredModelActivityQuery(query);
                         break;
                     case QueryRecentMainThreadsCommand query when query.CancellationToken.IsCancellationRequested:
                         query.Completion.TrySetCanceled(query.CancellationToken);
@@ -464,10 +450,6 @@ public sealed class UsageCollector : IUsageCollector
         if (eventCursor.EventCount != state.NextTokenEventOrdinal
             || eventCursor.NextTokenEventOrdinal != state.NextTokenEventOrdinal)
             return CheckpointRehydrateResult.Miss("Checkpoint parser ordinal does not match the ledger event cursor.");
-        var modelCursor = RequireStore().GetRolloutModelActivityCursor(checkpoint.RolloutId);
-        if (modelCursor.ActivityCount != state.ActivitiesState.NextActivityOrdinal
-            || modelCursor.NextActivityOrdinal != state.ActivitiesState.NextActivityOrdinal)
-            return CheckpointRehydrateResult.Miss("Checkpoint model activity ordinals do not match ledger cursors.");
         if (state.NextTokenEventOrdinal > 0 && state.PreviousSnapshot is null)
             return CheckpointRehydrateResult.Miss("Checkpoint parser cumulative token snapshot is missing.");
 
@@ -1589,8 +1571,7 @@ public sealed class UsageCollector : IUsageCollector
         var metadata = ApplyThreadPickerMetadata(result.Metadata);
         RejectInternalDamage(filePath, result);
         var resolvedTurns = result.State.TurnModels.Keys.ToHashSet(StringComparer.Ordinal);
-        if (result.State.ActivitiesState.RequiresReparse
-            || runtime.State.UnresolvedTurnIds.Concat(runtime.State.ProvisionalTurnIds).Any(resolvedTurns.Contains))
+        if (runtime.State.UnresolvedTurnIds.Concat(runtime.State.ProvisionalTurnIds).Any(resolvedTurns.Contains))
             return await ProcessFullFileAsync(
                 filePath, new FullParseContext(ParseReason.LateModelResolution, runtime.RolloutId), yields, cancellationToken).ConfigureAwait(false);
         AddDiagnostics(filePath, result.Diagnostics);
@@ -1604,7 +1585,7 @@ public sealed class UsageCollector : IUsageCollector
                 result.State, runtime.SafeOpaqueOversizedRecordsSkipped, runtime.SafeNullPaddingRecordsSkipped,
                 snapshot.Stat.Size - runtime.ByteOffset);
             RequireStore().AppendRolloutSource(new AppendRolloutSourceInput(
-                metadata, [], [], partialSource, NowEpochMs(), partialCheckpoint));
+                metadata, [], partialSource, NowEpochMs(), partialCheckpoint));
             RememberSource(new SourceFileInput(
                 partialSource.FilePath, result.Metadata.RolloutId, partialSource.SizeBytes,
                 partialSource.ModifiedAtEpochMs, partialSource.ByteOffset, partialSource.PrefixHash,
@@ -1633,7 +1614,7 @@ public sealed class UsageCollector : IUsageCollector
             filePath, snapshot.Stat, snapshot.SourceIdentity, newOffset, hash, result.State,
             safeOpaqueSkipped, safeNullPaddingSkipped, snapshot.Stat.Size - newOffset);
         var appended = RequireStore().AppendRolloutSource(new AppendRolloutSourceInput(
-            metadata, UsageInputs(result), ActivityInputs(result), source, NowEpochMs(), checkpoint));
+            metadata, UsageInputs(result), source, NowEpochMs(), checkpoint));
         RememberSource(new SourceFileInput(
             source.FilePath, result.Metadata.RolloutId, source.SizeBytes, source.ModifiedAtEpochMs,
             source.ByteOffset, source.PrefixHash, source.PrefixStatus, source.CanonicalStatus,
@@ -1642,7 +1623,7 @@ public sealed class UsageCollector : IUsageCollector
             result.Metadata.RolloutId, newOffset, hash, result.State, safeOpaqueSkipped,
             safeNullPaddingSkipped,
             snapshot.SourceIdentity, snapshot.Stat.ModifiedAtEpochMs);
-        return appended.Inserted > 0 || result.Activities.Length > 0;
+        return appended.Inserted > 0;
     }
 
     private async Task<AppendSnapshot> ReadStableAppendSnapshotAsync(
@@ -1747,17 +1728,17 @@ public sealed class UsageCollector : IUsageCollector
         }
 
         var observedAt = NowEpochMs();
-        var candidateIdentities = ParseSignatures(result, identities: true);
-        var existingIdentities = LedgerSignatures(store, result.Metadata.RolloutId, identities: true);
+        var candidateIdentities = result.Events.Select(EventIdentity).ToArray();
+        var existingIdentities = store.GetRolloutEventIdentities(result.Metadata.RolloutId);
         var relation = SignatureRelation(existingIdentities, candidateIdentities);
-        var candidateSemanticSignatures = ParseSignatures(result);
-        var existingSemanticSignatures = LedgerSignatures(store, result.Metadata.RolloutId);
+        var candidateSemanticSignatures = result.Events.Select(EventSemanticSignature).ToArray();
+        var existingSemanticSignatures = store.GetRolloutSemanticSignatures(result.Metadata.RolloutId);
         var semanticRelation = SignatureRelation(existingSemanticSignatures, candidateSemanticSignatures);
         var storedMetadata = store.GetRolloutMetadata(result.Metadata.RolloutId);
         var threadPickerChanged = !metadata.IsRealtimeVoice
             && !SameThreadPickerMetadata(storedMetadata, metadata);
         var usageChanged = semanticRelation != SignatureRelationship.Equal
-            || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Count > 0)
+            || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Length > 0)
             && !SameDashboardUsageMetadata(storedMetadata, metadata)
             || threadPickerChanged;
         if (context.Reason == ParseReason.ParserRevision)
@@ -1773,7 +1754,7 @@ public sealed class UsageCollector : IUsageCollector
                 parsed.Stat.Size - result.StableByteLength);
             store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
                 metadata,
-                UsageInputs(result), ActivityInputs(result),
+                UsageInputs(result),
                 new CanonicalSourceInput(
                     source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
                     source.PrefixHash, source.PrefixStatus, source.LastScannedAtEpochMs, source.LastError),
@@ -1854,7 +1835,7 @@ public sealed class UsageCollector : IUsageCollector
             parsed.Stat.Size - result.StableByteLength);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             metadata,
-            UsageInputs(result), ActivityInputs(result),
+            UsageInputs(result),
             new CanonicalSourceInput(
                 candidateSource.FilePath, candidateSource.SizeBytes, candidateSource.ModifiedAtEpochMs,
                 candidateSource.ByteOffset, candidateSource.PrefixHash, candidateSource.PrefixStatus,
@@ -1886,7 +1867,7 @@ public sealed class UsageCollector : IUsageCollector
             RequireStore().RekeyLegacyCanonicalRollout(new RekeyLegacyCanonicalRolloutInput(
                 legacyRolloutId,
                 metadata,
-                UsageInputs(result), ActivityInputs(result),
+                UsageInputs(result),
                 new CanonicalSourceInput(
                     source.FilePath, source.SizeBytes, source.ModifiedAtEpochMs, source.ByteOffset,
                     source.PrefixHash, source.PrefixStatus, source.LastScannedAtEpochMs, source.LastError),
@@ -1926,14 +1907,14 @@ public sealed class UsageCollector : IUsageCollector
         var metadata = ApplyThreadPickerMetadata(parsed.Result.Metadata);
         var observedAt = NowEpochMs();
         var store = RequireStore();
-        var existingSemanticSignatures = LedgerSignatures(store, rolloutId);
-        var candidateSemanticSignatures = ParseSignatures(parsed.Result);
+        var existingSemanticSignatures = store.GetRolloutSemanticSignatures(rolloutId);
+        var candidateSemanticSignatures = parsed.Result.Events.Select(EventSemanticSignature).ToArray();
         var storedMetadata = store.GetRolloutMetadata(rolloutId);
         var threadPickerChanged = !metadata.IsRealtimeVoice
             && !SameThreadPickerMetadata(storedMetadata, metadata);
         var usageChanged = SignatureRelation(existingSemanticSignatures, candidateSemanticSignatures)
                 != SignatureRelationship.Equal
-            || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Count > 0)
+            || (existingSemanticSignatures.Count > 0 || candidateSemanticSignatures.Length > 0)
             && !SameDashboardUsageMetadata(storedMetadata, metadata)
             || threadPickerChanged;
         var checkpoint = CreateCheckpoint(
@@ -1943,7 +1924,7 @@ public sealed class UsageCollector : IUsageCollector
             parsed.Stat.Size - parsed.Result.StableByteLength);
         store.RecoverDivergedCanonicalSource(new RecoverDivergedCanonicalSourceInput(
             metadata,
-            UsageInputs(parsed.Result), ActivityInputs(parsed.Result),
+            UsageInputs(parsed.Result),
             new RecoverableCanonicalSourceInput(filePath, parsed.Stat.Size, parsed.Stat.ModifiedAtEpochMs,
                 parsed.Result.StableByteLength, parsed.BoundaryHash, observedAt),
             observedAt,
@@ -1972,7 +1953,7 @@ public sealed class UsageCollector : IUsageCollector
         var store = RequireStore();
         var metadata = store.GetRolloutMetadata(rolloutId);
         if (metadata is null) return new ConflictRecoveryResult(false, false);
-        var existingSignatures = LedgerSignatures(store, rolloutId);
+        var existingSignatures = store.GetRolloutSemanticSignatures(rolloutId);
         var candidatePaths = new Dictionary<string, RecoverySeed?>(StringComparer.OrdinalIgnoreCase);
         if (_sourceKeysByRollout.TryGetValue(rolloutId, out var sourceKeys))
         {
@@ -2045,7 +2026,7 @@ public sealed class UsageCollector : IUsageCollector
             selected.Snapshot.Stat.Size - selected.Snapshot.Result.StableByteLength);
         store.ReplaceCanonicalRollout(new ReplaceCanonicalRolloutInput(
             selectedMetadata,
-            UsageInputs(selected.Snapshot.Result), ActivityInputs(selected.Snapshot.Result),
+            UsageInputs(selected.Snapshot.Result),
             new CanonicalSourceInput(
                 source.FilePath,
                 source.SizeBytes,
@@ -2105,7 +2086,7 @@ public sealed class UsageCollector : IUsageCollector
     private async Task<RecoveryCandidate?> RevalidateRecoveryCandidateAsync(
         string filePath,
         RolloutMetadata metadata,
-        RolloutStreamSignatures existingSignatures,
+        IReadOnlyList<string> existingSignatures,
         InventoryYieldTracker? yields,
         CancellationToken cancellationToken)
     {
@@ -2115,7 +2096,7 @@ public sealed class UsageCollector : IUsageCollector
         if (parsed is null || !SameMetadata(metadata, parsed.Result.Metadata)) return null;
         var relation = SignatureRelation(
             existingSignatures,
-            ParseSignatures(parsed.Result));
+            parsed.Result.Events.Select(EventSemanticSignature).ToArray());
         return relation is SignatureRelationship.Equal or SignatureRelationship.Extension
             ? new RecoveryCandidate(filePath, parsed, relation)
             : null;
@@ -2159,12 +2140,12 @@ public sealed class UsageCollector : IUsageCollector
         string filePath,
         ParsedSnapshot? parsed,
         RolloutMetadata metadata,
-        RolloutStreamSignatures existingSignatures)
+        IReadOnlyList<string> existingSignatures)
     {
         if (parsed is null || !SameMetadata(metadata, parsed.Result.Metadata)) return;
         var relation = SignatureRelation(
             existingSignatures,
-            ParseSignatures(parsed.Result));
+            parsed.Result.Events.Select(EventSemanticSignature).ToArray());
         if (relation is SignatureRelationship.Equal or SignatureRelationship.Extension)
             candidates.Add(new RecoveryCandidate(filePath, parsed, relation));
     }
@@ -2568,12 +2549,6 @@ public sealed class UsageCollector : IUsageCollector
         _diagnostics.DuplicateSnapshotsSkipped += value.DuplicateSnapshotsSkipped;
         _diagnostics.ZeroBreakdownSnapshotsSkipped += value.ZeroBreakdownSnapshotsSkipped;
         _diagnostics.InvalidTokenRelationshipsSkipped += value.InvalidTokenRelationshipsSkipped;
-        _diagnostics.UnavailableModelActivityRecords += value.UnavailableModelActivityRecords;
-        _diagnostics.OversizedModelActivityRecordsSkipped += value.OversizedModelActivityRecordsSkipped;
-        if (value.UnavailableModelActivityRecords > 0 || value.OversizedModelActivityRecordsSkipped > 0)
-            AddDiagnostic(filePath, "model-activity-unavailable",
-                $"Model activity timing or volume unavailable for {value.UnavailableModelActivityRecords} records; {value.OversizedModelActivityRecordsSkipped} oversized model activity records skipped.",
-                DiagnosticSeverity.Info);
     }
 
     private void Heartbeat()
@@ -2592,19 +2567,6 @@ public sealed class UsageCollector : IUsageCollector
             EnsureStarted();
             _testHooks?.BeforeQuery?.Invoke();
             query.Completion.TrySetResult(RequireStore().QueryEvents(query.Query));
-        }
-        catch (Exception error)
-        {
-            query.Completion.TrySetException(error);
-        }
-    }
-
-    private void CompleteStoredModelActivityQuery(StoredModelActivityQueryCommand query)
-    {
-        try
-        {
-            EnsureStarted();
-            query.Completion.TrySetResult(RequireStore().QueryModelActivities(query.Query));
         }
         catch (Exception error)
         {
@@ -2665,12 +2627,6 @@ public sealed class UsageCollector : IUsageCollector
                     break;
                 case QueryCommand query:
                     CompleteQuery(query);
-                    break;
-                case StoredModelActivityQueryCommand query when query.CancellationToken.IsCancellationRequested:
-                    query.Completion.TrySetCanceled(query.CancellationToken);
-                    break;
-                case StoredModelActivityQueryCommand query:
-                    CompleteStoredModelActivityQuery(query);
                     break;
                 case QueryRecentMainThreadsCommand query when query.CancellationToken.IsCancellationRequested:
                     query.Completion.TrySetCanceled(query.CancellationToken);
@@ -2780,9 +2736,7 @@ public sealed class UsageCollector : IUsageCollector
                 _diagnostics.CooperativeYieldCount,
                 _partialSourceKeys.Count,
                 _diagnostics.SafeOpaqueOversizedRecordsSkipped,
-                _diagnostics.SafeNullPaddingRecordsSkipped,
-                _diagnostics.UnavailableModelActivityRecords,
-                _diagnostics.OversizedModelActivityRecordsSkipped),
+                _diagnostics.SafeNullPaddingRecordsSkipped),
             _usageRevision);
     }
 
@@ -2909,13 +2863,6 @@ public sealed class UsageCollector : IUsageCollector
             value.DeterministicSignature,
             value.ServiceTier)).ToArray();
 
-    private static IReadOnlyList<ModelActivityInput> ActivityInputs(RolloutChunkParseResult result) =>
-        result.Activities.Select(value => new ModelActivityInput(value.ActivityOrdinal,
-            DateTimeOffset.Parse(value.TimestampUtc).ToUnixTimeMilliseconds(), value.ThreadId, value.TurnId,
-            value.ItemId, value.Kind, value.Model, value.Effort, value.ServiceTier, value.StartedAtEpochMs,
-            value.CompletedAtEpochMs, value.RawPayloadBytes, value.EstimatedContentBytes,
-            value.EstimatorRevision, value.DeterministicSignature)).ToArray();
-
     private static RolloutCheckpointInput CreateCheckpoint(
         string filePath,
         SourceStat stat,
@@ -2967,38 +2914,6 @@ public sealed class UsageCollector : IUsageCollector
         value.ReasoningOutputTokens,
         value.ServiceTier.ToString().ToLowerInvariant(),
     });
-
-    private sealed record RolloutStreamSignatures(
-        IReadOnlyList<string> Events, IReadOnlyList<string> Activities)
-    {
-        public int Count => Events.Count + Activities.Count;
-    }
-
-    private static RolloutStreamSignatures LedgerSignatures(UsageStore store, string rolloutId, bool identities = false) =>
-        new(identities ? store.GetRolloutEventIdentities(rolloutId) : store.GetRolloutSemanticSignatures(rolloutId),
-            store.GetRolloutActivitySignatures(rolloutId));
-
-    private static RolloutStreamSignatures ParseSignatures(RolloutChunkParseResult result, bool identities = false) =>
-        new(result.Events.Select(value => identities ? EventIdentity(value) : EventSemanticSignature(value)).ToArray(),
-            result.Activities.Select(value => JsonSerializer.Serialize(new object[]
-            {
-                value.ThreadId, value.TurnId, value.ItemId, (int)value.Kind, value.Model, (int)value.Effort,
-                value.ServiceTier.ToString().ToLowerInvariant(), value.StartedAtEpochMs, value.CompletedAtEpochMs,
-                value.RawPayloadBytes, value.EstimatedContentBytes, value.EstimatorRevision,
-            })).ToArray());
-
-    private static SignatureRelationship SignatureRelation(RolloutStreamSignatures existing, RolloutStreamSignatures candidate)
-    {
-        var events = SignatureRelation(existing.Events, candidate.Events);
-        var activities = SignatureRelation(existing.Activities, candidate.Activities);
-        var relations = new[] { events, activities };
-        if (relations.Contains(SignatureRelationship.Diverged)
-            || relations.Contains(SignatureRelationship.Shorter) && relations.Contains(SignatureRelationship.Extension))
-            return SignatureRelationship.Diverged;
-        if (relations.Contains(SignatureRelationship.Shorter)) return SignatureRelationship.Shorter;
-        if (relations.Contains(SignatureRelationship.Extension)) return SignatureRelationship.Extension;
-        return SignatureRelationship.Equal;
-    }
 
     private static SignatureRelationship SignatureRelation(
         IReadOnlyList<string> existing,
@@ -3182,13 +3097,6 @@ public sealed class UsageCollector : IUsageCollector
     private sealed record QueryCommand(
         UsageEventQuery Query,
         TaskCompletionSource<IReadOnlyList<StoredUsageEvent>> Completion,
-        CancellationToken CancellationToken) : CollectorCommand
-    {
-        public override void CancelCompletion() => Completion.TrySetCanceled();
-    }
-
-    private sealed record StoredModelActivityQueryCommand(
-        UsageEventQuery Query, TaskCompletionSource<IReadOnlyList<StoredModelActivity>> Completion,
         CancellationToken CancellationToken) : CollectorCommand
     {
         public override void CancelCompletion() => Completion.TrySetCanceled();
@@ -3385,8 +3293,6 @@ public sealed class UsageCollector : IUsageCollector
         public long CooperativeYieldCount { get; set; }
         public long SafeOpaqueOversizedRecordsSkipped { get; set; }
         public long SafeNullPaddingRecordsSkipped { get; set; }
-        public long UnavailableModelActivityRecords { get; set; }
-        public long OversizedModelActivityRecordsSkipped { get; set; }
     }
 
 }

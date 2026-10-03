@@ -10,39 +10,6 @@ namespace CodexUsage.Application.Tests;
 public sealed class DashboardApplicationServiceTests
 {
     [Fact]
-    public async Task ActivitySnapshotUsesGlobalTimeModelSubjectAndMainRootQuery()
-    {
-        const string rootId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
-        var end = DateTimeOffset.Parse("2026-07-30T04:00:00Z");
-        var start = end.AddHours(-1);
-        var timestamp = end.AddMinutes(-20);
-        var epoch = timestamp.ToUnixTimeMilliseconds();
-        var standard = new StoredModelActivity(rootId, "rollout", rootId, ThreadType.Subagent,
-            "worker", "/root/worker", "worker", epoch, 0, "child", "standard", "reason",
-            ModelActivityKind.Reasoning, "gpt-5.6-sol", ReasoningEffort.High, ServiceTier.Standard,
-            epoch - 2000, epoch, 2000, 1024, 1, "standard");
-        var fast = standard with { ActivityOrdinal = 1, TurnId = "fast", ServiceTier = ServiceTier.Fast, StartedAtEpochMs = epoch - 1000, DeterministicSignature = "fast" };
-        var collector = new FakeCollector([])
-        {
-            Activities =
-            [
-                standard, fast,
-                fast with { Model = "gpt-5.6-terra", DeterministicSignature = "other-model" },
-                fast with { AgentRole = "explorer", DeterministicSignature = "other-role" },
-                fast with { TimestampEpochMs = start.AddSeconds(-1).ToUnixTimeMilliseconds(), DeterministicSignature = "outside" },
-            ],
-        };
-        await using var service = new DashboardApplicationService(collector, new FakeEfficiencyMode([]));
-        var snapshot = await service.StartAsync(new DashboardQueryRequest(start, end,
-            ["gpt-5.6-sol"], [new SubjectFilter(ThreadType.Subagent, "worker")], rootId));
-
-        Assert.Equal(collector.LastQuery, collector.LastActivityQuery);
-        Assert.Equal(rootId, collector.LastActivityQuery!.MainThreadConversationId);
-        var row = Assert.Single(snapshot.ModelActivity.Rows);
-        Assert.Equal((1, 1), (row.Standard.SampleCount, row.Fast.SampleCount));
-        Assert.Equal(50m, snapshot.ModelActivity.ReasoningEstimatedTimeReductionPercent);
-    }
-    [Fact]
     public async Task StartAppliesInactiveEfficiencyModeBeforeCollectorAndBuildsSummary()
     {
         var order = new List<string>();
@@ -389,8 +356,6 @@ public sealed class DashboardApplicationServiceTests
         public int QueryCount { get; private set; }
 
         public UsageEventQuery? LastQuery { get; private set; }
-        public UsageEventQuery? LastActivityQuery { get; private set; }
-        public IReadOnlyList<StoredModelActivity> Activities { get; set; } = [];
 
         public int? LastRecentMainThreadMaximumCount { get; private set; }
 
@@ -463,14 +428,6 @@ public sealed class DashboardApplicationServiceTests
             ]);
         }
 
-        public ValueTask<IReadOnlyList<StoredModelActivity>> QueryModelActivitiesAsync(
-            UsageEventQuery query, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            LastActivityQuery = query;
-            return ValueTask.FromResult(Activities);
-        }
-
         public ValueTask DisposeAsync()
         {
             DisposeCount++;
@@ -504,7 +461,7 @@ public sealed class DashboardApplicationServiceTests
             ObservationCoverage.Continuous,
             null,
             "watching",
-            new CollectorDiagnostics(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            new CollectorDiagnostics(1, 0, 0, 0, 0, 1, 0, 0, 0),
             0);
     }
 }
