@@ -13,7 +13,6 @@ public static class UsageAccounting
     private static readonly string[] SupportedFamilies = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6", "gpt-5.5", "gpt-5.4"];
     private static readonly IReadOnlySet<string> LongContextEligibleModels = new HashSet<string>(StringComparer.Ordinal)
     {
-        "gpt-6.1-sol",
         "gpt-6-astra",
         "gpt-6-sol",
         "gpt-6-luna",

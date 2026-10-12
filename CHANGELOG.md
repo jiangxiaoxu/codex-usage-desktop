@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.34] - 2026-10-12
+
+- 取消本应用 GPT-6.1 Sol 的长上下文加价, 所有上下文长度统一使用每 1M input/cached input/output token 的 `$2/$0.10/$10` 基准费率.
+- 历史 GPT-6.1 Sol 费用在查询时自动按新策略重算, 无需数据库迁移或重新采集. 该模型的长上下文费用倍率为 1x, Fast 仍按现有约定估算为 2.5x.
+
 ## [0.3.33] - 2026-10-03
 
 - 完整撤销 v0.3.32 新增的 Fast 时间收益估算, 包括推理活动解析, 存储, 估算和 dashboard 展示, 恢复 v0.3.31 行为.

@@ -211,7 +211,6 @@ public sealed class UsageAccountingTests
     {
         foreach (var (model, inputRate, cachedRate, outputRate) in new[]
         {
-            ("gpt-6.1-sol", 2m, 0.1m, 10m),
             ("gpt-6-sol", 2m, 0.2m, 10m),
             ("gpt-6-luna", 0.1m, 0.01m, 0.5m),
         })
@@ -248,6 +247,36 @@ public sealed class UsageAccountingTests
             Assert.Equal(longContext.UncachedInput + longContext.CachedInput + longContext.ReasoningOutput + longContext.OtherOutput, longContext.Total);
             Assert.Equal(longContext.Total - longContext.BaselineTotal, longContext.LongContextPremium);
         }
+    }
+
+    [Theory]
+    [InlineData(271_999, ServiceTier.Standard, 0.383998, 0.008, 0.7, 0.3, 1.391998)]
+    [InlineData(272_000, ServiceTier.Standard, 0.384, 0.008, 0.7, 0.3, 1.392)]
+    [InlineData(272_001, ServiceTier.Standard, 0.384002, 0.008, 0.7, 0.3, 1.392002)]
+    [InlineData(1_000_000, ServiceTier.Standard, 1.84, 0.008, 0.7, 0.3, 2.848)]
+    [InlineData(1_000_000, ServiceTier.Fast, 4.6, 0.02, 1.75, 0.75, 7.12)]
+    public void Sol61UsesFlatContextPricingAndPreservesFastPricing(
+        long inputTokens, ServiceTier serviceTier, decimal uncached, decimal cached,
+        decimal reasoning, decimal otherOutput, decimal total)
+    {
+        var cost = UsageAccounting.CostFor(Event with
+        {
+            Model = "gpt-6.1-sol",
+            InputTokens = inputTokens,
+            CachedInputTokens = 80_000,
+            ServiceTier = serviceTier,
+        });
+
+        Assert.True(cost.Priced);
+        Assert.Equal(uncached, cost.UncachedInput);
+        Assert.Equal(cached, cost.CachedInput);
+        Assert.Equal(reasoning, cost.ReasoningOutput);
+        Assert.Equal(otherOutput, cost.OtherOutput);
+        Assert.Equal(total, cost.Total);
+        Assert.Equal(0m, cost.LongContextPremium);
+        Assert.Equal(1m, cost.LongContextCostMultiplier);
+        Assert.Equal(total - cost.BaselineTotal, cost.FastModePremium);
+        Assert.Equal(serviceTier == ServiceTier.Fast ? 2.5m : 1m, cost.FastModeCostMultiplier);
     }
 
     [Fact]
