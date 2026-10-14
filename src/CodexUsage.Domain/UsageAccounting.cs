@@ -7,6 +7,7 @@ public static class UsageAccounting
 {
     public const long LongContextInputTokenThreshold = 272_000;
     public const decimal FastModeCostMultiplier = 2.5m;
+    public const decimal UltrafastModeCostMultiplier = 6m;
     public const string OtherModelCategory = "Others";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
@@ -59,6 +60,8 @@ public static class UsageAccounting
         var category = ModelCategory(usageEvent.Model);
         if (category is OtherModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
             return CostBreakdown.UnpricedZero;
+        if (usageEvent.ServiceTier == ServiceTier.Ultrafast && usageEvent.Model is not ("gpt-6-astra" or "gpt-6.1-sol"))
+            return CostBreakdown.UnpricedZero;
 
         var baselineUncached = (usageEvent.InputTokens - usageEvent.CachedInputTokens) * rate.Input / Million;
         var baselineCached = usageEvent.CachedInputTokens * rate.CachedInput / Million;
@@ -71,7 +74,12 @@ public static class UsageAccounting
         var outputMultiplier = isLongContext ? 1.5m : 1m;
         var longAdjustedTotal = (baselineUncached + baselineCached) * inputMultiplier
             + (baselineReasoning + baselineOther) * outputMultiplier;
-        var fastMultiplier = usageEvent.ServiceTier == ServiceTier.Fast ? FastModeCostMultiplier : 1m;
+        var fastMultiplier = usageEvent.ServiceTier switch
+        {
+            ServiceTier.Fast => FastModeCostMultiplier,
+            ServiceTier.Ultrafast => UltrafastModeCostMultiplier,
+            _ => 1m,
+        };
         var uncached = baselineUncached * inputMultiplier * fastMultiplier;
         var cached = baselineCached * inputMultiplier * fastMultiplier;
         var reasoning = baselineReasoning * outputMultiplier * fastMultiplier;
@@ -98,7 +106,7 @@ public static class UsageAccounting
             output = checked(output + usageEvent.OutputTokens);
             reasoning = checked(reasoning + usageEvent.ReasoningOutputTokens);
             if (!cost.Priced) unpriced = checked(unpriced + canonical);
-            if (usageEvent.ServiceTier == ServiceTier.Fast)
+            if (usageEvent.ServiceTier is ServiceTier.Fast or ServiceTier.Ultrafast)
             {
                 fastCalls = checked(fastCalls + 1);
                 fastTokens = checked(fastTokens + canonical);

@@ -14,6 +14,49 @@ public sealed class UsageStoreTests
         "conversation-1", "rollout-1", string.Empty, ThreadType.Main,
         "main", "/root", string.Empty, false, "Codex", string.Empty, 0);
 
+    [Theory]
+    [InlineData(9)]
+    [InlineData(10)]
+    public void PreviousSchemaMigrationPreservesUsageAndAcceptsUltrafast(int schemaVersion)
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using (var store = new UsageStore(databasePath))
+            store.AppendEvents(Metadata, [Event(0, 1_000) with { ServiceTier = ServiceTier.Fast }], 1_000);
+        using (var connection = Open(databasePath))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                CREATE TABLE usage_events_v9 (
+                    rollout_id TEXT NOT NULL REFERENCES rollouts(rollout_id) ON DELETE CASCADE,
+                    token_event_ordinal INTEGER NOT NULL,
+                    timestamp_epoch_ms INTEGER NOT NULL, model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL, reasoning_output_tokens INTEGER NOT NULL,
+                    event_signature TEXT NOT NULL,
+                    service_tier TEXT NOT NULL CHECK(service_tier IN ('unknown', 'standard', 'fast')),
+                    PRIMARY KEY (rollout_id, token_event_ordinal), UNIQUE (rollout_id, event_signature)
+                ) WITHOUT ROWID, STRICT;
+                INSERT INTO usage_events_v9 SELECT * FROM usage_events;
+                DROP TABLE usage_events;
+                ALTER TABLE usage_events_v9 RENAME TO usage_events;
+                PRAGMA user_version = 9;
+                """;
+            command.ExecuteNonQuery();
+            if (schemaVersion == 10)
+            {
+                command.CommandText = "CREATE TABLE model_activity_samples (id INTEGER); PRAGMA user_version = 10;";
+                command.ExecuteNonQuery();
+            }
+        }
+        using var migrated = new UsageStore(databasePath);
+        Assert.Equal(ServiceTier.Fast, Assert.Single(migrated.QueryEvents(new(0, 2_000))).ServiceTier);
+        migrated.AppendEvents(Metadata, [Event(1, 1_001) with { ServiceTier = ServiceTier.Ultrafast }], 1_001);
+        Assert.Equal([ServiceTier.Fast, ServiceTier.Ultrafast], migrated.QueryEvents(new(0, 2_000)).Select(value => value.ServiceTier));
+        using var reopened = new UsageStore(databasePath);
+        Assert.Equal([ServiceTier.Fast, ServiceTier.Ultrafast], reopened.QueryEvents(new(0, 2_000)).Select(value => value.ServiceTier));
+    }
+
     [Fact]
     public void SchemaV10RollbackRemovesActivityAndPreservesPricedUsageAcrossReopen()
     {
@@ -56,7 +99,7 @@ public sealed class UsageStoreTests
         }
         using (var rolledBack = new UsageStore(databasePath))
         {
-            Assert.Equal(9, rolledBack.CurrentSchemaVersion);
+            Assert.Equal(11, rolledBack.CurrentSchemaVersion);
             var usage = Assert.Single(rolledBack.QueryEvents(new(0, 2_000)));
             Assert.Equal(baseline, usage);
             var cost = UsageAccounting.CostFor(new UsageEvent(
@@ -73,22 +116,22 @@ public sealed class UsageStoreTests
             Assert.Equal(0, ScalarLong(connection, "SELECT count(*) FROM pragma_foreign_key_check"));
         }
         using var reopened = new UsageStore(databasePath);
-        Assert.Equal(9, reopened.CurrentSchemaVersion);
+        Assert.Equal(11, reopened.CurrentSchemaVersion);
         Assert.Equal(baseline, Assert.Single(reopened.QueryEvents(new(0, 2_000))));
     }
 
     [Fact]
-    public void EmptyDatabaseMigratesToExactSchemaV9AndRequiredPragmas()
+    public void EmptyDatabaseMigratesToExactSchemaV11AndRequiredPragmas()
     {
         using var temporary = new TemporaryDirectory();
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(9, store.CurrentSchemaVersion);
+            Assert.Equal(11, store.CurrentSchemaVersion);
         }
 
         using var connection = Open(databasePath);
-        Assert.Equal(9L, ScalarLong(connection, "PRAGMA user_version"));
+        Assert.Equal(11L, ScalarLong(connection, "PRAGMA user_version"));
         Assert.Equal(1L, ScalarLong(connection, "PRAGMA foreign_keys"));
         Assert.Equal("wal", ScalarString(connection, "PRAGMA journal_mode"));
         Assert.Equal(
@@ -150,7 +193,14 @@ public sealed class UsageStoreTests
                 INSERT INTO rollouts VALUES (
                     'rollout-1', 'conversation-1', '', 'main', 'main', '/root', '', NULL, 1, 1
                 );
-                CREATE TABLE usage_events (rollout_id TEXT NOT NULL) STRICT;
+                CREATE TABLE usage_events (
+                    rollout_id TEXT NOT NULL, token_event_ordinal INTEGER NOT NULL,
+                    timestamp_epoch_ms INTEGER NOT NULL, model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL, reasoning_output_tokens INTEGER NOT NULL,
+                    event_signature TEXT NOT NULL,
+                    PRIMARY KEY (rollout_id, token_event_ordinal)
+                ) STRICT;
                 PRAGMA user_version = 1;
                 """;
             command.ExecuteNonQuery();
@@ -158,7 +208,7 @@ public sealed class UsageStoreTests
 
         using var store = new UsageStore(databasePath);
 
-        Assert.Equal(9, store.CurrentSchemaVersion);
+        Assert.Equal(11, store.CurrentSchemaVersion);
         Assert.False(store.GetRolloutMetadata("rollout-1")!.IsRealtimeVoice);
     }
 
@@ -169,7 +219,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(9, store.CurrentSchemaVersion);
+            Assert.Equal(11, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var command = connection.CreateCommand())
@@ -183,7 +233,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(11, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("safe_null_padding_records",
             ReadStrings(verified, "SELECT name FROM pragma_table_info('rollout_checkpoints')"));
@@ -210,7 +260,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(11, migrated.CurrentSchemaVersion);
         Assert.Equal("Codex", migrated.GetRolloutMetadata("rollout-1")!.ProjectName);
     }
 
@@ -235,7 +285,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(11, migrated.CurrentSchemaVersion);
         using var verified = Open(databasePath);
         Assert.Contains("rollouts_parent_thread_idx", ReadStrings(verified, """
             SELECT name FROM sqlite_schema
@@ -285,7 +335,7 @@ public sealed class UsageStoreTests
 
         using var migrated = new UsageStore(databasePath);
 
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(11, migrated.CurrentSchemaVersion);
         Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
         migrated.AppendEvents(Metadata with
         {
@@ -300,6 +350,7 @@ public sealed class UsageStoreTests
     [InlineData(ServiceTier.Unknown)]
     [InlineData(ServiceTier.Standard)]
     [InlineData(ServiceTier.Fast)]
+    [InlineData(ServiceTier.Ultrafast)]
     public void ServiceTierPersistsWithoutChangingTokenIdentity(ServiceTier tier)
     {
         using var temporary = new TemporaryDirectory();
@@ -345,7 +396,7 @@ public sealed class UsageStoreTests
         }
 
         using var migrated = new UsageStore(databasePath);
-        Assert.Equal(9, migrated.CurrentSchemaVersion);
+        Assert.Equal(11, migrated.CurrentSchemaVersion);
         var usage = Assert.Single(migrated.QueryEvents(new UsageEventQuery(0, 2_000)));
         Assert.Equal(ServiceTier.Unknown, usage.ServiceTier);
         Assert.Equal(100, usage.InputTokens);
@@ -1058,7 +1109,7 @@ public sealed class UsageStoreTests
         var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
         using (var store = new UsageStore(databasePath))
         {
-            Assert.Equal(9, store.CurrentSchemaVersion);
+            Assert.Equal(11, store.CurrentSchemaVersion);
         }
         using (var connection = Open(databasePath))
         using (var transaction = connection.BeginTransaction())

@@ -251,7 +251,7 @@ public sealed class DashboardPresentationCollections
             new("基准费用", "$0.0"),
             new("实际费用", "$0.0"),
             new("长上下文费用倍率", "—"),
-            new("Fast 费用倍率", "—"),
+            new("速度费用倍率", "—"),
         };
         CostSlices = new ObservableCollection<CostSlice>
         {

@@ -22,13 +22,13 @@ public sealed class RolloutParserStateCodecTests
             "turn-b",
             true,
             "gpt-5.6-terra",
-            new RolloutForkReplayState(ForkReplayStatus.AwaitingRecipient, 123, "turn-b", "gpt-5.6-terra", ServiceTier.Fast),
+            new RolloutForkReplayState(ForkReplayStatus.AwaitingRecipient, 123, "turn-b", "gpt-5.6-terra", ServiceTier.Ultrafast),
             "[10,2,3,1,13]",
             42,
             ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-c"),
             ImmutableSortedSet.Create(StringComparer.Ordinal, "turn-d"),
             ServiceTier.Standard,
-            ImmutableDictionary<string, ServiceTier>.Empty.Add("turn-b", ServiceTier.Fast));
+            ImmutableDictionary<string, ServiceTier>.Empty.Add("turn-b", ServiceTier.Ultrafast));
 
         var json = RolloutParserStateCodec.Serialize(state);
         var succeeded = RolloutParserStateCodec.TryDeserialize(json, out var restored, out var error);

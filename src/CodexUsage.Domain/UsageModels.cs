@@ -15,6 +15,7 @@ public enum ServiceTier
     Unknown,
     Standard,
     Fast,
+    Ultrafast,
 }
 
 public sealed record SubjectFilter(ThreadType ThreadType, string AgentRole);

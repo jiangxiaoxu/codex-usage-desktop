@@ -403,6 +403,7 @@ public static partial class RolloutParser
         private static ServiceTier ServiceTierFrom(JsonElement settings) => GetNonEmptyString(settings, "service_tier") switch
         {
             "priority" or "fast" => ServiceTier.Fast,
+            "ultrafast" => ServiceTier.Ultrafast,
             "default" or "standard" => ServiceTier.Standard,
             _ => ServiceTier.Unknown,
         };

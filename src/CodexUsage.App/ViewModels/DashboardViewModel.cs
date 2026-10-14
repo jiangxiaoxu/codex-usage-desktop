@@ -767,7 +767,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
                 new("输出", FormatTokens(summary.OutputTokens)), new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
                 new("实际费用", FormatCost(summary.Cost.Total)),
                 new("长上下文费用倍率", FormatMultiplier(summary.Cost.LongContextCostMultiplier)),
-                new("Fast 费用倍率", FormatMultiplier(summary.Cost.FastModeCostMultiplier)),
+                new("速度费用倍率", FormatMultiplier(summary.Cost.FastModeCostMultiplier)),
             ],
             DashboardCostComposition.From(summary.Cost),
             snapshot.Result.ByModel

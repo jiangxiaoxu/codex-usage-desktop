@@ -17,7 +17,7 @@ public sealed class UsageCollector : IUsageCollector
 {
     private const int BoundaryWindowBytes = 64 * 1024;
     private const long ReverseReconciliationMaximumBytes = 64L * 1024 * 1024;
-    private const int ParserRevision = 21;
+    private const int ParserRevision = 22;
     private static readonly TimeSpan RepeatedFailureDiagnosticInterval = TimeSpan.FromMinutes(5);
     private const string ParserRevisionStateKey = "rollout_parser_revision";
     private const string LastInventoryStateKey = "last_successful_inventory_epoch_ms";

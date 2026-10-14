@@ -2,6 +2,12 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.35] - 2026-10-14
+
+- 支持 GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast, 以 Standard API 基准费率的 6x 估算.
+- GPT-6.1 Sol 继续不叠加长上下文加价, Fast 继续使用现有 2.5x 估算.
+- 速度费用倍率统一展示 Fast 和 Ultrafast 加价, 升级后重解析可读历史以识别 Ultrafast.
+
 ## [0.3.34] - 2026-10-12
 
 - 取消本应用 GPT-6.1 Sol 的长上下文加价, 所有上下文长度统一使用每 1M input/cached input/output token 的 `$2/$0.10/$10` 基准费率.

@@ -891,13 +891,13 @@ public sealed class RolloutParserTests
     [Fact]
     public void PersistedServiceTierKeepsActiveTurnAndNextTurnSettingsDistinct()
     {
-        var first = RolloutParser.ParseChunk(Jsonl(TierSettings("fast"), TaskStarted("active"), TierSettings("default")), "rollout");
+        var first = RolloutParser.ParseChunk(Jsonl(TierSettings("ultrafast"), TaskStarted("active"), TierSettings("default")), "rollout");
         Assert.True(RolloutParserStateCodec.TryDeserialize(RolloutParserStateCodec.Serialize(first.State), out var state, out _));
         var second = RolloutParser.ParseChunk(Jsonl(
             Line("turn_context", new { turn_id = "active", model = "gpt-5.6-sol" }),
             Token([1, 0, 1, 0, 2], [1, 0, 1, 0, 2]),
             TaskStarted("next"), Token([1, 0, 1, 0, 2], [2, 0, 2, 0, 4])), "rollout", state);
-        Assert.Equal([ServiceTier.Fast, ServiceTier.Standard], second.Events.Select(value => value.ServiceTier));
+        Assert.Equal([ServiceTier.Ultrafast, ServiceTier.Standard], second.Events.Select(value => value.ServiceTier));
     }
 
     private static string TierSettings(object? tier, string? owner = null) =>

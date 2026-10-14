@@ -32,7 +32,7 @@ public sealed class DashboardViewModelTests
             metric => Assert.Equal(("基准费用", "$4.4"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("实际费用", "$18.3"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("长上下文费用倍率", "×1.66"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("Fast 费用倍率", "×2.50"), (metric.Label, metric.Value)));
+            metric => Assert.Equal(("速度费用倍率", "×2.50"), (metric.Label, metric.Value)));
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public sealed class DashboardViewModelTests
         Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "基准费用").Value);
         Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "实际费用").Value);
         Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "长上下文费用倍率").Value);
-        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "Fast 费用倍率").Value);
+        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "速度费用倍率").Value);
     }
 
     [Fact]

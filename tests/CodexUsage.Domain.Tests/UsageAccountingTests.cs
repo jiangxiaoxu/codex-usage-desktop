@@ -255,6 +255,9 @@ public sealed class UsageAccountingTests
     [InlineData(272_001, ServiceTier.Standard, 0.384002, 0.008, 0.7, 0.3, 1.392002)]
     [InlineData(1_000_000, ServiceTier.Standard, 1.84, 0.008, 0.7, 0.3, 2.848)]
     [InlineData(1_000_000, ServiceTier.Fast, 4.6, 0.02, 1.75, 0.75, 7.12)]
+    [InlineData(272_000, ServiceTier.Ultrafast, 2.304, 0.048, 4.2, 1.8, 8.352)]
+    [InlineData(272_001, ServiceTier.Ultrafast, 2.304012, 0.048, 4.2, 1.8, 8.352012)]
+    [InlineData(1_000_000, ServiceTier.Ultrafast, 11.04, 0.048, 4.2, 1.8, 17.088)]
     public void Sol61UsesFlatContextPricingAndPreservesFastPricing(
         long inputTokens, ServiceTier serviceTier, decimal uncached, decimal cached,
         decimal reasoning, decimal otherOutput, decimal total)
@@ -276,7 +279,32 @@ public sealed class UsageAccountingTests
         Assert.Equal(0m, cost.LongContextPremium);
         Assert.Equal(1m, cost.LongContextCostMultiplier);
         Assert.Equal(total - cost.BaselineTotal, cost.FastModePremium);
-        Assert.Equal(serviceTier == ServiceTier.Fast ? 2.5m : 1m, cost.FastModeCostMultiplier);
+        Assert.Equal(serviceTier switch { ServiceTier.Fast => 2.5m, ServiceTier.Ultrafast => 6m, _ => 1m }, cost.FastModeCostMultiplier);
+    }
+
+    [Fact]
+    public void UltrafastAstraStacksWithLongContextAndMixedTiersKeepSeparatePremiums()
+    {
+        var astra = Event with { Model = "gpt-6-astra", ServiceTier = ServiceTier.Ultrafast };
+        var cost = UsageAccounting.CostFor(astra);
+        Assert.Equal(24m, cost.UncachedInput);
+        Assert.Equal(9.6m, cost.CachedInput);
+        Assert.Equal(31.5m, cost.ReasoningOutput);
+        Assert.Equal(13.5m, cost.OtherOutput);
+        Assert.Equal(78.6m, cost.Total);
+        Assert.Equal(7.8m, cost.BaselineTotal);
+        Assert.Equal(5.3m, cost.LongContextPremium);
+        Assert.Equal(65.5m, cost.FastModePremium);
+        Assert.Equal(6m, cost.FastModeCostMultiplier);
+
+        var summary = UsageAccounting.Summarize([astra, Event with { ServiceTier = ServiceTier.Fast }, Event,
+            Event with { ServiceTier = ServiceTier.Ultrafast }]);
+        Assert.Equal(104.15m, summary.Cost.Total);
+        Assert.Equal(1_100_000, summary.UnpricedTokens);
+        Assert.Equal(3, summary.FastCalls);
+        Assert.Equal(3_300_000, summary.FastTokens);
+        Assert.Equal(76.45m, summary.Cost.FastModePremium);
+        Assert.Equal(CostBreakdown.UnpricedZero, UsageAccounting.CostFor(Event with { ServiceTier = ServiceTier.Ultrafast }));
     }
 
     [Fact]

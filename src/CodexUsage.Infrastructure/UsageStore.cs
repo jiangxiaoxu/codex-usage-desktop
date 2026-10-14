@@ -6,7 +6,7 @@ namespace CodexUsage.Infrastructure;
 
 public sealed class UsageStore : IDisposable
 {
-    private const int SchemaVersion = 9;
+    private const int SchemaVersion = 11;
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
@@ -929,17 +929,6 @@ public sealed class UsageStore : IDisposable
     private void Migrate()
     {
         var currentVersion = CurrentSchemaVersion;
-        if (currentVersion == 10)
-        {
-            WriteTransaction(transaction =>
-            {
-                ExecuteNonQuery(transaction, "DROP TABLE model_activity_samples");
-                ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
-                return 0;
-            });
-            return;
-        }
-
         if (currentVersion > SchemaVersion)
         {
             throw new InvalidOperationException(
@@ -987,7 +976,7 @@ public sealed class UsageStore : IDisposable
                         output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
                         reasoning_output_tokens INTEGER NOT NULL CHECK (reasoning_output_tokens >= 0 AND reasoning_output_tokens <= output_tokens),
                         event_signature TEXT NOT NULL,
-                        service_tier TEXT NOT NULL CHECK (service_tier IN ('unknown', 'standard', 'fast')),
+                        service_tier TEXT NOT NULL CHECK (service_tier IN ('unknown', 'standard', 'fast', 'ultrafast')),
                         PRIMARY KEY (rollout_id, token_event_ordinal),
                         UNIQUE (rollout_id, event_signature)
                     ) WITHOUT ROWID, STRICT;
@@ -1171,8 +1160,42 @@ public sealed class UsageStore : IDisposable
                     ExecuteNonQuery(transaction, """
                         ALTER TABLE usage_events
                         ADD COLUMN service_tier TEXT NOT NULL DEFAULT 'unknown'
-                        CHECK (service_tier IN ('unknown', 'standard', 'fast'));
+                        CHECK (service_tier IN ('unknown', 'standard', 'fast', 'ultrafast'));
                         """);
+                }
+
+                if (currentVersion == 10)
+                    ExecuteNonQuery(transaction, "DROP TABLE model_activity_samples");
+                if (currentVersion > 0)
+                {
+                    ExecuteNonQuery(transaction, """
+                    CREATE TABLE usage_events_tier_migration (
+                        rollout_id TEXT NOT NULL REFERENCES rollouts(rollout_id) ON DELETE CASCADE,
+                        token_event_ordinal INTEGER NOT NULL CHECK (token_event_ordinal >= 0),
+                        timestamp_epoch_ms INTEGER NOT NULL CHECK (timestamp_epoch_ms >= 0),
+                        model TEXT NOT NULL,
+                        input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+                        cached_input_tokens INTEGER NOT NULL CHECK (cached_input_tokens >= 0 AND cached_input_tokens <= input_tokens),
+                        output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+                        reasoning_output_tokens INTEGER NOT NULL CHECK (reasoning_output_tokens >= 0 AND reasoning_output_tokens <= output_tokens),
+                        event_signature TEXT NOT NULL,
+                        service_tier TEXT NOT NULL CHECK (service_tier IN ('unknown', 'standard', 'fast', 'ultrafast')),
+                        PRIMARY KEY (rollout_id, token_event_ordinal),
+                        UNIQUE (rollout_id, event_signature)
+                    ) WITHOUT ROWID, STRICT;
+
+                    INSERT INTO usage_events_tier_migration (
+                        rollout_id, token_event_ordinal, timestamp_epoch_ms, model,
+                        input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
+                        event_signature, service_tier)
+                    SELECT rollout_id, token_event_ordinal, timestamp_epoch_ms, model,
+                           input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
+                           event_signature, service_tier FROM usage_events;
+                    DROP TABLE usage_events;
+                    ALTER TABLE usage_events_tier_migration RENAME TO usage_events;
+                    CREATE INDEX usage_events_timestamp_idx ON usage_events(timestamp_epoch_ms);
+                    CREATE INDEX usage_events_model_timestamp_idx ON usage_events(model, timestamp_epoch_ms);
+                    """);
                 }
 
                 ExecuteNonQuery(transaction, $"PRAGMA user_version = {SchemaVersion}");
@@ -1817,6 +1840,7 @@ public sealed class UsageStore : IDisposable
         ServiceTier.Unknown => "unknown",
         ServiceTier.Standard => "standard",
         ServiceTier.Fast => "fast",
+        ServiceTier.Ultrafast => "ultrafast",
         _ => throw new ArgumentOutOfRangeException(nameof(value)),
     };
 
@@ -1825,6 +1849,7 @@ public sealed class UsageStore : IDisposable
         "unknown" => ServiceTier.Unknown,
         "standard" => ServiceTier.Standard,
         "fast" => ServiceTier.Fast,
+        "ultrafast" => ServiceTier.Ultrafast,
         _ => throw new InvalidDataException($"Unknown service tier: {value}"),
     };
 

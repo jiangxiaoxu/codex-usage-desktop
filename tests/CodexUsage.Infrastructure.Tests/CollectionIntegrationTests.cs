@@ -46,8 +46,8 @@ public sealed class CollectionIntegrationTests
         {
             var checkpoint = Assert.Single(store.ListRolloutCheckpoints());
             Assert.Equal(3, checkpoint.CheckpointFormatRevision);
-            Assert.Equal(21, checkpoint.ParserRevision);
-            Assert.Equal("21", store.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal(22, checkpoint.ParserRevision);
+            Assert.Equal("22", store.GetCollectorState("rollout_parser_revision"));
         }
         File.AppendAllText(rolloutPath,
             Token([20, 4, 8, 2, 28], [30, 6, 12, 3, 42], "2026-07-15T02:02:03.004Z") + "\n");
@@ -281,7 +281,7 @@ public sealed class CollectionIntegrationTests
         Assert.Equal(segmentId, events.Single(value => value.RolloutId == secondSegmentId).ConversationId);
         Assert.Equal([rootId], (await collector.QueryRecentMainThreadsAsync(20)).Select(value => value.ConversationId));
         using var verified = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
-        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("22", verified.GetCollectorState("rollout_parser_revision"));
         Assert.DoesNotContain(verified.ListSourceFiles(), value => value.CanonicalStatus == CanonicalStatus.Conflict);
     }
 
@@ -1853,8 +1853,8 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
-        Assert.Equal(21, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+        Assert.Equal("22", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(22, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
     }
 
     [Fact]
@@ -1952,8 +1952,8 @@ public sealed class CollectionIntegrationTests
         using var verified = new UsageStore(databasePath, protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.Main, verified.GetRolloutMetadata(forkId)!.ThreadType);
         Assert.Equal(parentId, verified.GetRolloutMetadata(forkId)!.ParentThreadId);
-        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
-        Assert.Equal(21, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
+        Assert.Equal("22", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal(22, Assert.Single(verified.ListRolloutCheckpoints()).ParserRevision);
     }
 
     [Fact]
@@ -2014,7 +2014,7 @@ public sealed class CollectionIntegrationTests
             databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(ThreadType.GuardianReview, verified.GetRolloutMetadata(rolloutId)!.ThreadType);
-        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("22", verified.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -2105,9 +2105,9 @@ public sealed class CollectionIntegrationTests
             Assert.Equal(CanonicalStatus.Canonical, source.CanonicalStatus);
             var checkpoint = Assert.Single(verified.ListRolloutCheckpoints());
             Assert.Equal(actualId, checkpoint.RolloutId);
-            Assert.Equal(21, checkpoint.ParserRevision);
+            Assert.Equal(22, checkpoint.ParserRevision);
             Assert.Equal(1, checkpoint.SafeNullPaddingRecords);
-            Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+            Assert.Equal("22", verified.GetCollectorState("rollout_parser_revision"));
         }
 
         await using var restarted = CreateCollector(codexHome, temporary.Path);
@@ -2143,7 +2143,7 @@ public sealed class CollectionIntegrationTests
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Null(store.GetRolloutMetadata(legacyId));
         Assert.NotNull(store.GetRolloutMetadata(actualId));
-        Assert.Equal("21", store.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("22", store.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
@@ -2179,7 +2179,7 @@ public sealed class CollectionIntegrationTests
     }
 
     [Fact]
-    public async Task ParserRevisionBackfillsFastTierAndAdvancesUsageRevisionForTierOnlyChange()
+    public async Task ParserRevisionBackfillsUltrafastTierAndAdvancesUsageRevisionForTierOnlyChange()
     {
         using var temporary = new TemporaryDirectory();
         var codexHome = CreateCodexHome(temporary.Path);
@@ -2189,7 +2189,7 @@ public sealed class CollectionIntegrationTests
         WriteRollout(rolloutPath, string.Join('\n', new[]
         {
             Line("session_meta", new { session_id = "rollout-fast", id = "rollout-fast", thread_source = "user" }),
-            Line("event_msg", new { type = "thread_settings_applied", thread_settings = new { service_tier = "fast" } }),
+            Line("event_msg", new { type = "thread_settings_applied", thread_settings = new { service_tier = "ultrafast" } }),
             Line("turn_context", new { turn_id = "turn-a", model = "gpt-5.6-sol" }),
             token,
         }) + "\n");
@@ -2197,14 +2197,14 @@ public sealed class CollectionIntegrationTests
         await using (var collector = CreateCollector(codexHome, temporary.Path))
         {
             await StartAndWaitForInventoryAsync(collector);
-            Assert.Equal(ServiceTier.Fast, Assert.Single(await collector.QueryEventsAsync(AllTimeQuery())).ServiceTier);
+            Assert.Equal(ServiceTier.Ultrafast, Assert.Single(await collector.QueryEventsAsync(AllTimeQuery())).ServiceTier);
         }
         using (var store = new UsageStore(
                    databasePath,
                    protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome)))
         {
             identity = Assert.Single(store.GetRolloutEventIdentities("rollout-fast"));
-            store.SetCollectorState("rollout_parser_revision", "20", 1);
+            store.SetCollectorState("rollout_parser_revision", "21", 1);
         }
         using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
         {
@@ -2217,13 +2217,13 @@ public sealed class CollectionIntegrationTests
         await using var reparsingCollector = CreateCollector(codexHome, temporary.Path);
         var status = await StartAndWaitForInventoryAsync(reparsingCollector);
         var usage = Assert.Single(await reparsingCollector.QueryEventsAsync(AllTimeQuery()));
-        Assert.Equal(ServiceTier.Fast, usage.ServiceTier);
+        Assert.Equal(ServiceTier.Ultrafast, usage.ServiceTier);
         Assert.Equal(1, status.UsageRevision);
         Assert.Equal(10, usage.InputTokens);
         using var verified = new UsageStore(databasePath,
             protectedPathPolicy: ProtectedPathPolicy.ForCodexHome(codexHome));
         Assert.Equal(identity, Assert.Single(verified.GetRolloutEventIdentities("rollout-fast")));
-        Assert.Equal("21", verified.GetCollectorState("rollout_parser_revision"));
+        Assert.Equal("22", verified.GetCollectorState("rollout_parser_revision"));
     }
 
     [Fact]
