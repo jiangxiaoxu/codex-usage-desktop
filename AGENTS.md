@@ -38,6 +38,7 @@
 - 生成物放在被忽略的 `bin/`,`obj/`,`release/` 或 `work/` 目录.不得手工修改生成物.
 - 面向用户的项目文档维护在 `README.md` 和 `README_GUI.md`;installer 说明必须与实际 WinUI 安装、升级和卸载行为一致.
 - 持久化 prose,code comment 和 commit message 使用半角标点.
+- 每次发布完成后,最终回复必须提供本次本地安装包的绝对路径和可点击文件链接.
 
 ## 验证
 
