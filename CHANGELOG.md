@@ -2,6 +2,12 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.36] - 2026-10-18
+
+- 概览固定为两行, 第一行显示总 TOKEN, 无缓存输入, 缓存输入, 输出和思考输出.
+- 第二行显示基准费用, 实际费用, 长上下文费用倍率和加速费用倍率.
+- 概览数值字体从 26 调整为 22, 为每行指标保留更多空间.
+
 ## [0.3.35] - 2026-10-14
 
 - 支持 GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast, 以 Standard API 基准费率的 6x 估算.

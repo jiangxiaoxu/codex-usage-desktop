@@ -118,7 +118,7 @@
 
             <Style x:Key="MetricValueStyle" TargetType="TextBlock">
                 <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
-                <Setter Property="FontSize" Value="26" />
+                <Setter Property="FontSize" Value="22" />
                 <Setter Property="FontWeight" Value="SemiBold" />
             </Style>
 

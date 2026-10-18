@@ -19,20 +19,39 @@ public sealed class DashboardViewModelTests
     public async Task SnapshotPresentsSeparateFastAndLongContextCostMultiplierMetrics()
     {
         var cost = new CostBreakdown(5m, 2m, 7.875m, 3.375m, 18.25m, 4.4m, 2.9m, FastModePremium: 10.95m, Priced: true);
-        var service = new FakeUsageDashboardService(Snapshot("priced", [], cost));
+        var snapshot = Snapshot("priced", [], cost);
+        snapshot = snapshot with
+        {
+            Result = snapshot.Result with
+            {
+                Summary = snapshot.Result.Summary with
+                {
+                    InputTokens = 900,
+                    UncachedInputTokens = 600,
+                    CachedInputTokens = 300,
+                    OutputTokens = 80,
+                    ReasoningOutputTokens = 20,
+                    OtherOutputTokens = 60,
+                    CanonicalTotalTokens = 980,
+                },
+            },
+        };
+        var service = new FakeUsageDashboardService(snapshot);
         using var viewModel = CreateViewModel(service);
 
         await viewModel.InitializeAsync();
 
         Assert.Collection(
             viewModel.Metrics,
-            metric => Assert.Equal(("总 tokens", "0"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("输入", "0"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("输出", "0"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("总 TOKEN", "980"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("无缓存输入", "600"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("缓存输入", "300"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("输出", "80"), (metric.Label, metric.Value)),
+            metric => Assert.Equal(("思考输出", "20"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("基准费用", "$4.4"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("实际费用", "$18.3"), (metric.Label, metric.Value)),
             metric => Assert.Equal(("长上下文费用倍率", "×1.66"), (metric.Label, metric.Value)),
-            metric => Assert.Equal(("速度费用倍率", "×2.50"), (metric.Label, metric.Value)));
+            metric => Assert.Equal(("加速费用倍率", "×2.50"), (metric.Label, metric.Value)));
     }
 
     [Fact]
@@ -46,7 +65,7 @@ public sealed class DashboardViewModelTests
         Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "基准费用").Value);
         Assert.Equal("$0.0", viewModel.Metrics.Single(metric => metric.Label == "实际费用").Value);
         Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "长上下文费用倍率").Value);
-        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "速度费用倍率").Value);
+        Assert.Equal("—", viewModel.Metrics.Single(metric => metric.Label == "加速费用倍率").Value);
     }
 
     [Fact]

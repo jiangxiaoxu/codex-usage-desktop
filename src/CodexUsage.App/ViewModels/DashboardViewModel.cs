@@ -763,11 +763,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         var totalCost = summary.Cost.Total;
         var input = new DashboardPresentationInput(
             [
-                new("总 tokens", FormatTokens(summary.CanonicalTotalTokens)), new("输入", FormatTokens(summary.InputTokens)),
-                new("输出", FormatTokens(summary.OutputTokens)), new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
+                new("总 TOKEN", FormatTokens(summary.CanonicalTotalTokens)),
+                new("无缓存输入", FormatTokens(summary.UncachedInputTokens)),
+                new("缓存输入", FormatTokens(summary.CachedInputTokens)),
+                new("输出", FormatTokens(summary.OutputTokens)),
+                new("思考输出", FormatTokens(summary.ReasoningOutputTokens)),
+                new("基准费用", FormatCost(summary.Cost.BaselineTotal)),
                 new("实际费用", FormatCost(summary.Cost.Total)),
                 new("长上下文费用倍率", FormatMultiplier(summary.Cost.LongContextCostMultiplier)),
-                new("速度费用倍率", FormatMultiplier(summary.Cost.FastModeCostMultiplier)),
+                new("加速费用倍率", FormatMultiplier(summary.Cost.FastModeCostMultiplier)),
             ],
             DashboardCostComposition.From(summary.Cost),
             snapshot.Result.ByModel

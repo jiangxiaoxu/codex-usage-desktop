@@ -27,8 +27,6 @@
                         <Setter Target="CompactCommandBar.Visibility" Value="Visible" />
                         <Setter Target="BodyRoot.Margin" Value="20,0" />
                         <Setter Target="BodyStack.Spacing" Value="16" />
-                        <Setter Target="WideMetrics.Visibility" Value="Collapsed" />
-                        <Setter Target="CompactMetrics.Visibility" Value="Visible" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Medium">
@@ -42,8 +40,6 @@
                         <Setter Target="CompactCommandBar.Visibility" Value="Visible" />
                         <Setter Target="BodyRoot.Margin" Value="24,0" />
                         <Setter Target="BodyStack.Spacing" Value="18" />
-                        <Setter Target="WideMetrics.Visibility" Value="Visible" />
-                        <Setter Target="CompactMetrics.Visibility" Value="Collapsed" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Wide">
@@ -57,8 +53,6 @@
                         <Setter Target="CompactCommandBar.Visibility" Value="Collapsed" />
                         <Setter Target="BodyRoot.Margin" Value="28,0" />
                         <Setter Target="BodyStack.Spacing" Value="20" />
-                        <Setter Target="WideMetrics.Visibility" Value="Visible" />
-                        <Setter Target="CompactMetrics.Visibility" Value="Collapsed" />
                     </VisualState.Setters>
                 </VisualState>
             </VisualStateGroup>
@@ -263,12 +257,11 @@
                 </Border>
 
                 <Border
-                    x:Name="WideMetrics"
                     Background="{StaticResource SurfaceBrush}"
                     BorderBrush="{StaticResource TableDividerBrush}"
                     BorderThickness="0,1">
-                    <Grid RowDefinitions="Auto,1,Auto,1,Auto">
-                        <Grid Grid.Row="0" ColumnDefinitions="*,1,*,1,*">
+                    <Grid RowDefinitions="Auto,1,Auto">
+                        <Grid Grid.Row="0" ColumnDefinitions="*,1,*,1,*,1,*,1,*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[0].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[0].Value}" />
@@ -283,21 +276,19 @@
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[2].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[2].Value}" />
                             </StackPanel>
-                        </Grid>
-                        <Rectangle Grid.Row="1" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="2" ColumnDefinitions="*,1,*">
-                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
+                            <Rectangle Grid.Column="5" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
+                            <StackPanel Grid.Column="6" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[3].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[3].Value}" />
                             </StackPanel>
-                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
-                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
+                            <Rectangle Grid.Column="7" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
+                            <StackPanel Grid.Column="8" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[4].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[4].Value}" />
                             </StackPanel>
                         </Grid>
-                        <Rectangle Grid.Row="3" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="4" ColumnDefinitions="*,1,*">
+                        <Rectangle Grid.Row="1" Fill="{StaticResource TableDividerBrush}" />
+                        <Grid Grid.Row="2" ColumnDefinitions="*,1,*,1,*,1,*">
                             <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[5].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[5].Value}" />
@@ -307,57 +298,15 @@
                                 <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[6].Label}" />
                                 <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[6].Value}" />
                             </StackPanel>
-                        </Grid>
-                    </Grid>
-                </Border>
-
-                <Border
-                    x:Name="CompactMetrics"
-                    Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource TableDividerBrush}"
-                    BorderThickness="0,1"
-                    Visibility="Collapsed">
-                    <Grid RowDefinitions="Auto,1,Auto,1,Auto,1,Auto">
-                        <Grid Grid.Row="0" ColumnDefinitions="*,1,*">
-                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[0].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[0].Value}" />
+                            <Rectangle Grid.Column="3" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
+                            <StackPanel Grid.Column="4" Margin="14,10" Spacing="2">
+                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[7].Label}" />
+                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[7].Value}" />
                             </StackPanel>
-                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
-                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[1].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[1].Value}" />
-                            </StackPanel>
-                        </Grid>
-                        <Rectangle Grid.Row="1" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="2" ColumnDefinitions="*">
-                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[2].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[2].Value}" />
-                            </StackPanel>
-                        </Grid>
-                        <Rectangle Grid.Row="3" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="4" ColumnDefinitions="*,1,*">
-                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[3].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[3].Value}" />
-                            </StackPanel>
-                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
-                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[4].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[4].Value}" />
-                            </StackPanel>
-                        </Grid>
-                        <Rectangle Grid.Row="5" Fill="{StaticResource TableDividerBrush}" />
-                        <Grid Grid.Row="6" ColumnDefinitions="*,1,*">
-                            <StackPanel Grid.Column="0" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[5].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[5].Value}" />
-                            </StackPanel>
-                            <Rectangle Grid.Column="1" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
-                            <StackPanel Grid.Column="2" Margin="14,10" Spacing="2">
-                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[6].Label}" />
-                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[6].Value}" />
+                            <Rectangle Grid.Column="5" Margin="0,10" Fill="{StaticResource TableDividerBrush}" />
+                            <StackPanel Grid.Column="6" Margin="14,10" Spacing="2">
+                                <TextBlock Style="{StaticResource CaptionStyle}" Text="{Binding Metrics[8].Label}" />
+                                <TextBlock Style="{StaticResource MetricValueStyle}" Text="{Binding Metrics[8].Value}" />
                             </StackPanel>
                         </Grid>
                     </Grid>

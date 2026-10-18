@@ -245,13 +245,15 @@ public sealed class DashboardPresentationCollections
     {
         Metrics = new ObservableCollection<MetricCard>
         {
-            new("总 tokens", "0"),
-            new("输入", "0"),
+            new("总 TOKEN", "0"),
+            new("无缓存输入", "0"),
+            new("缓存输入", "0"),
             new("输出", "0"),
+            new("思考输出", "0"),
             new("基准费用", "$0.0"),
             new("实际费用", "$0.0"),
             new("长上下文费用倍率", "—"),
-            new("速度费用倍率", "—"),
+            new("加速费用倍率", "—"),
         };
         CostSlices = new ObservableCollection<CostSlice>
         {
