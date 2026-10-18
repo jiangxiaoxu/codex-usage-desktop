@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.37] - 2026-10-18
+
+- 删除概览中的 token 指标行, 仅保留基准费用, 实际费用, 长上下文费用倍率和加速费用倍率.
+- 保留 22 号概览数值字体; token 明细仍可在模型和执行主体表中查看.
+
 ## [0.3.36] - 2026-10-18
 
 - 概览固定为两行, 第一行显示总 TOKEN, 无缓存输入, 缓存输入, 输出和思考输出.
