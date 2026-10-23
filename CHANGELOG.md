@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.38] - 2026-10-23
+
+- 将 GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 估算倍率从 6x 调整为 8x, 历史费用在查询时按新倍率重算.
+
 ## [0.3.37] - 2026-10-18
 
 - 删除概览中的 token 指标行, 仅保留基准费用, 实际费用, 长上下文费用倍率和加速费用倍率.

@@ -289,7 +289,7 @@
                     BorderThickness="0,1">
                     <StackPanel Spacing="8">
                         <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
-                        <TextBlock Style="{StaticResource CaptionStyle}" Text="费用包含适用的长上下文和速度加价, 按可识别的模式估算." TextWrapping="Wrap" ToolTipService.ToolTip="长上下文费用倍率 = (基准费用 + 长上下文加价) / 基准费用. 速度费用倍率 = 估算费用 / (基准费用 + 长上下文加价). 两倍率相乘为总费用倍率. Fast 按 2.5x 估算, 支持模型的 Ultrafast 按 6x 估算. GPT-6.1 Sol 不加长上下文费用. 模式未知不加速度费用; 日志仅反映所选模式, 不代表实际响应模式." />
+                        <TextBlock Style="{StaticResource CaptionStyle}" Text="费用包含适用的长上下文和速度加价, 按可识别的模式估算." TextWrapping="Wrap" ToolTipService.ToolTip="长上下文费用倍率 = (基准费用 + 长上下文加价) / 基准费用. 速度费用倍率 = 估算费用 / (基准费用 + 长上下文加价). 两倍率相乘为总费用倍率. Fast 按 2.5x 估算, 支持模型的 Ultrafast 按 8x 估算. GPT-6.1 Sol 不加长上下文费用. 模式未知不加速度费用; 日志仅反映所选模式, 不代表实际响应模式." />
                         <controls:CostCompositionBar
                             Height="10"
                             Background="{StaticResource ProgressTrackBrush}"

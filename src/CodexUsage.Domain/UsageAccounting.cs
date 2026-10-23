@@ -7,7 +7,7 @@ public static class UsageAccounting
 {
     public const long LongContextInputTokenThreshold = 272_000;
     public const decimal FastModeCostMultiplier = 2.5m;
-    public const decimal UltrafastModeCostMultiplier = 6m;
+    public const decimal UltrafastModeCostMultiplier = 8m;
     public const string OtherModelCategory = "Others";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
