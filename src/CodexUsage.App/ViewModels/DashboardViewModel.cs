@@ -1206,13 +1206,14 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     {
         "gpt-6-astra" => 0,
         "gpt-6.1-sol" => 1,
-        "gpt-6-sol" => 2,
-        "gpt-6-luna" => 3,
-        "gpt-5.6-sol" => 4,
-        "gpt-5.6-terra" => 5,
-        "gpt-5.6-luna" => 6,
-        "Others" => 7,
-        _ => 8,
+        "gpt-6.1-terra" => 2,
+        "gpt-6-sol" => 3,
+        "gpt-6-luna" => 4,
+        "gpt-5.6-sol" => 5,
+        "gpt-5.6-terra" => 6,
+        "gpt-5.6-luna" => 7,
+        "Others" => 8,
+        _ => 9,
     };
 
     private static string SubjectTypeLabel(string threadType) => threadType switch

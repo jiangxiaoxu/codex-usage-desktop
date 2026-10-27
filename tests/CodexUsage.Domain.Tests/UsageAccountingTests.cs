@@ -207,10 +207,11 @@ public sealed class UsageAccountingTests
     }
 
     [Fact]
-    public void SolAndLunaUseStandardRatesAndLongContextMultipliers()
+    public void Terra61SolAndLunaUseStandardRatesAndLongContextMultipliers()
     {
         foreach (var (model, inputRate, cachedRate, outputRate) in new[]
         {
+            ("gpt-6.1-terra", 1m, 0.05m, 5m),
             ("gpt-6-sol", 2m, 0.2m, 10m),
             ("gpt-6-luna", 0.1m, 0.01m, 0.5m),
         })
@@ -247,6 +248,25 @@ public sealed class UsageAccountingTests
             Assert.Equal(longContext.UncachedInput + longContext.CachedInput + longContext.ReasoningOutput + longContext.OtherOutput, longContext.Total);
             Assert.Equal(longContext.Total - longContext.BaselineTotal, longContext.LongContextPremium);
         }
+    }
+
+    [Fact]
+    public void Terra61FastStacksWithLongContextAndUltrafastRemainsUnpriced()
+    {
+        var usage = Event with { Model = "gpt-6.1-terra", ServiceTier = ServiceTier.Fast };
+        var cost = UsageAccounting.CostFor(usage);
+
+        Assert.True(cost.Priced);
+        Assert.Equal(1m, cost.UncachedInput);
+        Assert.Equal(0.2m, cost.CachedInput);
+        Assert.Equal(1.3125m, cost.ReasoningOutput);
+        Assert.Equal(0.5625m, cost.OtherOutput);
+        Assert.Equal(3.075m, cost.Total);
+        Assert.Equal(0.74m, cost.BaselineTotal);
+        Assert.Equal(0.49m, cost.LongContextPremium);
+        Assert.Equal(1.845m, cost.FastModePremium);
+        Assert.Equal(2.5m, cost.FastModeCostMultiplier);
+        Assert.Equal(CostBreakdown.UnpricedZero, UsageAccounting.CostFor(usage with { ServiceTier = ServiceTier.Ultrafast }));
     }
 
     [Theory]
@@ -354,6 +374,9 @@ public sealed class UsageAccountingTests
     [InlineData("gpt-6-sol-preview", "gpt-6-sol-preview")]
     [InlineData("gpt-6.1-sol", "gpt-6.1-sol")]
     [InlineData("gpt-6.1-sol-preview", "gpt-6.1-sol-preview")]
+    [InlineData("gpt-6.1-terra", "gpt-6.1-terra")]
+    [InlineData("gpt-6.1-terra-preview", "gpt-6.1-terra-preview")]
+    [InlineData("gpt-6.1-terracotta", "Others")]
     [InlineData("gpt-6.1-solstice", "Others")]
     [InlineData("gpt-6.1-astra", "Others")]
     [InlineData("GPT-6.1-sol", "Others")]
@@ -384,6 +407,7 @@ public sealed class UsageAccountingTests
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-astra-preview" }).Priced);
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-sol-preview" }).Priced);
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6.1-sol-preview" }).Priced);
+        Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6.1-terra-preview" }).Priced);
     }
 
     [Fact]

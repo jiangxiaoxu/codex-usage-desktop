@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.39] - 2026-10-27
+
+- 支持 GPT-6.1 Terra 费用估算, Standard 每 1M input/cached input/output token 分别为 $1/$0.05/$5; 超过 272K input 时适用长上下文加价.
+
 ## [0.3.38] - 2026-10-23
 
 - 将 GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 估算倍率从 6x 调整为 8x, 历史费用在查询时按新倍率重算.

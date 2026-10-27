@@ -115,6 +115,7 @@ public sealed class DashboardViewModelTests
                 new GroupRow(["gpt-5.6-terra"], Summary(modelCost)),
                 new GroupRow(["gpt-6-sol"], Summary(modelCost)),
                 new GroupRow(["gpt-6.1-sol"], Summary(modelCost)),
+                new GroupRow(["gpt-6.1-terra"], Summary(modelCost)),
             ]));
         using var viewModel = CreateViewModel(service);
 
@@ -124,6 +125,7 @@ public sealed class DashboardViewModelTests
             viewModel.Models,
             row => Assert.Equal("gpt-6-astra", row.Model),
             row => Assert.Equal("gpt-6.1-sol", row.Model),
+            row => Assert.Equal("gpt-6.1-terra", row.Model),
             row => Assert.Equal("gpt-6-sol", row.Model),
             row => Assert.Equal("gpt-6-luna", row.Model),
             row => Assert.Equal("gpt-5.6-sol", row.Model),
