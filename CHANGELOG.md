@@ -2,9 +2,9 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
-## [Unreleased]
+## [0.3.41] - 2026-11-18
 
-- 本应用对 GPT-6.2 Astra 和 Sol 取消长上下文加价, Ultrafast 统一按 6x 估算. 历史费用在查询时按新规则重算.
+- GPT-6.2 Astra 和 Sol 免长上下文加价, Ultrafast 统一按 6x 估算. Fast 按型号估算, 两款 GPT-6.2 模型为 2x, 较早的计费型号为 2.5x. 历史费用在查询时按新规则重算.
 
 ## [0.3.40] - 2026-11-18
 
