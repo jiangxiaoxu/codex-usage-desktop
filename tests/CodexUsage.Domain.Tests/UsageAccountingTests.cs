@@ -211,8 +211,6 @@ public sealed class UsageAccountingTests
     {
         foreach (var (model, inputRate, cachedRate, outputRate) in new[]
         {
-            ("gpt-6.2-astra", 8m, 0.4m, 40m),
-            ("gpt-6.2-sol", 2m, 0.1m, 10m),
             ("gpt-6.1-terra", 1m, 0.05m, 5m),
             ("gpt-6-sol", 2m, 0.2m, 10m),
             ("gpt-6-luna", 0.1m, 0.01m, 0.5m),
@@ -253,23 +251,32 @@ public sealed class UsageAccountingTests
     }
 
     [Theory]
-    [InlineData("gpt-6.2-astra", ServiceTier.Fast, "2026-11-18T00:00:00Z", 2)]
-    [InlineData("gpt-6.2-sol", ServiceTier.Fast, "2026-11-18T00:00:00Z", 2)]
-    [InlineData("gpt-6.2-astra", ServiceTier.Ultrafast, "2027-03-01T07:59:59.999Z", 3)]
-    [InlineData("gpt-6.2-sol", ServiceTier.Ultrafast, "2027-03-01T07:59:59.999Z", 3)]
-    [InlineData("gpt-6.2-astra", ServiceTier.Ultrafast, "2027-03-01T08:00:00Z", 6)]
-    [InlineData("gpt-6.2-sol", ServiceTier.Ultrafast, "2027-03-01T08:00:00Z", 6)]
-    public void Gpt62SpeedPricingUsesEventTimeAndStacksWithLongContext(
-        string model, ServiceTier serviceTier, string timestamp, int multiplier)
+    [InlineData("gpt-6.2-astra", 8, 0.4, 40)]
+    [InlineData("gpt-6.2-sol", 2, 0.1, 10)]
+    public void Gpt62UsesFlatContextPricingAndFixedSpeedMultipliers(
+        string model, decimal inputRate, decimal cachedRate, decimal outputRate)
     {
-        var usage = Event with { Model = model, TimestampUtc = timestamp };
-        var standard = UsageAccounting.CostFor(usage);
-        var accelerated = UsageAccounting.CostFor(usage with { ServiceTier = serviceTier });
+        var usage = Event with { Model = model, TimestampUtc = "2026-11-18T00:00:00Z" };
+        var baseline = 0.2m * inputRate + 0.8m * cachedRate + 0.1m * outputRate;
+        foreach (var (tier, multiplier) in new[]
+        {
+            (ServiceTier.Standard, 1m),
+            (ServiceTier.Fast, 2m),
+            (ServiceTier.Ultrafast, 6m),
+        })
+        {
+            var cost = UsageAccounting.CostFor(usage with { ServiceTier = tier });
 
-        Assert.True(accelerated.Priced);
-        Assert.Equal(standard.LongContextPremium, accelerated.LongContextPremium);
-        Assert.Equal(standard.Total * multiplier, accelerated.Total);
-        Assert.Equal(standard.Total * (multiplier - 1), accelerated.FastModePremium);
+            Assert.True(cost.Priced);
+            Assert.Equal(0.2m * inputRate * multiplier, cost.UncachedInput);
+            Assert.Equal(0.8m * cachedRate * multiplier, cost.CachedInput);
+            Assert.Equal(0.07m * outputRate * multiplier, cost.ReasoningOutput);
+            Assert.Equal(0.03m * outputRate * multiplier, cost.OtherOutput);
+            Assert.Equal(0m, cost.LongContextPremium);
+            Assert.Equal(1m, cost.LongContextCostMultiplier);
+            Assert.Equal(baseline * multiplier, cost.Total);
+            Assert.Equal(baseline * (multiplier - 1), cost.FastModePremium);
+        }
     }
 
     [Fact]

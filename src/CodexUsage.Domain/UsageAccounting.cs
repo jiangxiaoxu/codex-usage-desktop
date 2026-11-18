@@ -11,13 +11,10 @@ public static class UsageAccounting
     public const string OtherModelCategory = "Others";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
-    private static readonly DateTimeOffset Gpt62UltrafastStandardRateStart = new(2027, 3, 1, 0, 0, 0, TimeSpan.FromHours(-8));
     private static readonly string[] SupportedFamilies =
         ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6", "gpt-5.5", "gpt-5.4"];
     private static readonly IReadOnlySet<string> LongContextEligibleModels = new HashSet<string>(StringComparer.Ordinal)
     {
-        "gpt-6.2-astra",
-        "gpt-6.2-sol",
         "gpt-6.1-terra",
         "gpt-6-astra",
         "gpt-6-sol",
@@ -74,8 +71,7 @@ public static class UsageAccounting
         decimal? speedMultiplier = usageEvent.ServiceTier switch
         {
             ServiceTier.Fast => isGpt62 ? 2m : FastModeCostMultiplier,
-            ServiceTier.Ultrafast when isGpt62 && TryTimestamp(usageEvent.TimestampUtc, out var timestamp) =>
-                timestamp < Gpt62UltrafastStandardRateStart ? 3m : 6m,
+            ServiceTier.Ultrafast when isGpt62 => 6m,
             ServiceTier.Ultrafast when usageEvent.Model is "gpt-6-astra" or "gpt-6.1-sol" => UltrafastModeCostMultiplier,
             ServiceTier.Ultrafast => null,
             _ => 1m,

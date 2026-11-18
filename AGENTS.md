@@ -59,7 +59,7 @@ dotnet format CodexUsageDesktop.sln --verify-no-changes
 
 - `reasoning_output_tokens` 是 `output_tokens` 的子集,不得重复计费.
 - GPT-5.6 费用固定使用 2026-07-30 price-performance 公告的 standard API price,每 1M input/cached input/output:Sol 为 `$5/$0.5/$30`,Terra 为 `$2/$0.2/$12`,Luna 为 `$0.2/$0.02/$1.2`;不跟随后续促销或价格变动.
-- 单次 event 的 `input_tokens > 272K` 时,对整条 event 的 uncached input 和 cached input 应用 `2x`,对 output 应用 `1.5x`;恰好 272K 不触发.
+- 对适用长上下文加价的模型,单次 event 的 `input_tokens > 272K` 时,对整条 event 的 uncached input 和 cached input 应用 `2x`,对 output 应用 `1.5x`.GPT-6.1 Sol、GPT-6.2 Astra 和 GPT-6.2 Sol 免长上下文加价.
 - Codex cache write 不单独计费,不得将 `cache_write_input_tokens` 另加为费用组成.
-- GPT-5.4,GPT-5.5,GPT-5.6 之外的 model 归类为未计费的 `Others`. `source_model=unknown` 必须保留为独立 unknown attribution.
+- 未匹配受支持模型系列的 model 归类为未计费的 `Others`. `source_model=unknown` 必须保留为独立 unknown attribution.
 - 不得重新引入 adjacent complete cumulative snapshot,stale zero-breakdown snapshot,active-to-archive promotion 或 forked subagent replay 导致的重复计费.

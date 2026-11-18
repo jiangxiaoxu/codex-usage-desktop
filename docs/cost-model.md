@@ -42,7 +42,7 @@ The supported families are `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-sol`, `gpt-6
 
 The `gpt-5.6` alias is priced as GPT-5.6 Sol. Models outside the supported families, including `codex-auto-review`, are grouped as `Others`. The source model value `unknown` is grouped as `Unknown attribution`. Both categories include their tokens in `unpricedTokens`. A source model within a supported family keeps its own category and is unpriced if it has no exact rate in the table.
 
-GPT-6.2 base rates and speed multipliers come from the official model pages. [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol).
+GPT-6.2 base rates come from the official model pages. [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol).
 
 The GPT-5.6 base rates come from OpenAI's 2026-07-30 price-performance announcement. The application uses the configured base rates for historical and current events.
 
@@ -60,7 +60,7 @@ baselineTotal         = sum of the four baseline components
 
 For models covered by the long-context rule below, `input_tokens > 272_000` applies long-context rates to the full event. Uncached and cached input components each use `2x`, and reasoning and other output components each use `1.5x`. At or below `272_000`, these context multipliers are `1x`.
 
-The speed multiplier applies to all four context-adjusted components. Fast uses `2x` for GPT-6.2 Astra and Sol and the application's `2.5x` estimate for earlier priced models. GPT-6.2 Ultrafast uses `3x` before 2027-03-01 Pacific time and `6x` starting that day, based on the event timestamp. GPT-6 Astra and GPT-6.1 Sol Ultrafast use `8x`. An Ultrafast event with any other model remains unpriced.
+The speed multiplier applies to all four context-adjusted components. Fast uses `2x` for GPT-6.2 Astra and Sol and the application's `2.5x` estimate for earlier priced models. The application estimates GPT-6.2 Ultrafast at `6x` for all event dates. GPT-6 Astra and GPT-6.1 Sol Ultrafast use `8x`. An Ultrafast event with any other model remains unpriced.
 
 `longContextPremium` is the context-adjusted total minus `baselineTotal`, before applying Fast. `fastModePremium` is the final total minus the context-adjusted total. Thus `actualTotal = baselineTotal + longContextPremium + fastModePremium`. The UI's four actual-cost components already contain both adjustments; the premiums are overlapping analytical aggregates and must not be added as extra composition buckets. `actualToBaselineMultiplier` is `actualTotal / baselineTotal` when the baseline is positive. Across mixed events it is a cost-weighted multiplier, not an average of event multipliers. The dashboard shows no multiplier for a zero baseline.
 
@@ -74,7 +74,7 @@ These snapshots record selected settings, not the tier confirmed by each respons
 
 ## Codex subscription context policy
 
-This application treats every observed rollout as Codex activity. The long-context rule applies to `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` and `gpt-5.4`. `gpt-6.1-sol`, `gpt-5.4-mini` and `gpt-5.4-nano` have no long-context surcharge. For these models the displayed long-context multiplier is `1x` when the baseline cost is positive. The Codex rate card has no separate cache-write surcharge, so observed `cache_write_input_tokens` are not stored or added as another cost component. Tool-call charges, subscription charges, taxes, discounts and credits are also excluded.
+This application treats every observed rollout as Codex activity. The long-context rule applies to `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` and `gpt-5.4`. The application uses the same base token rates at every input length for `gpt-6.1-sol`, `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-5.4-mini` and `gpt-5.4-nano`. For these models the displayed long-context multiplier is `1x` when the baseline cost is positive. The Codex rate card has no separate cache-write surcharge, so observed `cache_write_input_tokens` are not stored or added as another cost component. Tool-call charges, subscription charges, taxes, discounts and credits are also excluded.
 
 ## Time, filters and percentages
 

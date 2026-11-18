@@ -289,7 +289,7 @@
                     BorderThickness="0,1">
                     <StackPanel Spacing="8">
                         <TextBlock Style="{StaticResource SectionTitleStyle}" Text="费用构成" />
-                        <TextBlock Style="{StaticResource CaptionStyle}" Text="费用包含适用的长上下文和速度加价, 按可识别的模式估算." TextWrapping="Wrap" ToolTipService.ToolTip="长上下文费用倍率 = (基准费用 + 长上下文加价) / 基准费用. 速度费用倍率 = 估算费用 / (基准费用 + 长上下文加价). 两倍率相乘为总费用倍率. GPT-6.2 的 Fast 为 2x, Ultrafast 在太平洋时间 2027-03-01 前为 3x, 自当日起为 6x. 较早模型的 Fast 为 2.5x, GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 为 8x. GPT-6.1 Sol 不加长上下文费用. 日志记录所选模式, 模式未知时仅计基准费用和适用的长上下文加价." />
+                        <TextBlock Style="{StaticResource CaptionStyle}" Text="费用包含适用的长上下文和速度加价, 按可识别的模式估算." TextWrapping="Wrap" ToolTipService.ToolTip="长上下文费用倍率 = (基准费用 + 长上下文加价) / 基准费用. 速度费用倍率 = 估算费用 / (基准费用 + 长上下文加价). 两倍率相乘为总费用倍率. Fast 费用估算中, GPT-6.2 Sol/Astra 为 2x, GPT-6.1 Sol/Terra 和 GPT-6 Astra/Sol/Luna 等较早计费模型为 2.5x. GPT-6.2 的 Ultrafast 为 6x, GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 为 8x. 本应用对 GPT-6.1 Sol 和 GPT-6.2 Astra/Sol 免除长上下文加价. 日志记录所选模式, 模式未知时仅计基准费用和适用的长上下文加价." />
                         <controls:CostCompositionBar
                             Height="10"
                             Background="{StaticResource ProgressTrackBrush}"

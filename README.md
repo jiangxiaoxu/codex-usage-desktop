@@ -4,7 +4,7 @@
 
 基准费用按固定的 Standard API rates 估算.每 1M input/cached input/output token 的 USD 费率依次为 GPT-6.2 Astra (`$8/$0.40/$40`),GPT-6.2 Sol (`$2/$0.10/$10`),GPT-6.1 Terra (`$1/$0.05/$5`),GPT-6.1 Sol (`$2/$0.10/$10`),GPT-6 Astra (`$10/$1/$50`),GPT-6 Sol (`$2/$0.20/$10`) 和 GPT-6 Luna (`$0.10/$0.01/$0.50`).GPT-5.4、GPT-5.5 和 GPT-5.6 系列的适用型号也纳入计费.费率来源为 [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra)、[GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) 和 [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing).
 
-适用模型单次 event 的 input 超过 272K 时,对整条 event 的 input/cached input 应用 2x,output 应用 1.5x.GPT-6.2 Astra 和 Sol 均适用该规则,GPT-6.1 Sol 免长上下文加价.cache write 不单独计费,原始 token 数不放大.这些估算不代表 Plus/Pro 订阅实际账单.
+适用模型单次 event 的 input 超过 272K 时,对整条 event 的 input/cached input 应用 2x,output 应用 1.5x.本应用对 GPT-6.1 Sol 和 GPT-6.2 Astra/Sol 免除长上下文加价.cache write 不单独计费,原始 token 数不放大.这些估算不代表 Plus/Pro 订阅实际账单.
 
 ![顶部操作与筛选界面](assets/dashboard-preview.jpg)
 
@@ -32,7 +32,7 @@ CodexUsageDesktop.sln           solution entry
 - 按 model、实际 role、主线程和时间范围筛选并汇总 token 与费用.主线程 `AutoSuggestBox` 最多显示最近活动时间倒序的 20 项,格式为 `项目名 - 短 ID - 标题`:项目名取自 main session `session_meta.cwd` 的目录名,标题取自 `session_index.jsonl` 的权威 `thread_name`.也可手动输入完整 UUIDv7 session ID 或使用清空按钮取消筛选.合法输入会规范化;非空非法输入显示红色验证状态并保留已应用的筛选.筛选以精确的主线程 `ConversationId` 为根,归集其全部后代 event.
 - `reasoning_output_tokens` 是 `output_tokens` 的子集,不会重复计费.模型按 rollout 记录归类,无法归入已支持系列的模型(例如 `codex-auto-review`)归入未计费的 `Others`.`source_model=unknown` 保持独立 attribution.
 - 汇总,model 和执行主体 table 分别显示 `长上下文费用倍率` 和 `速度费用倍率`.前者为长上下文调整后费用 / Standard 基准费用,后者为估算费用 / 长上下文调整后费用,按当前筛选范围的费用加权计算.历史费用在查询时按当前计费规则重算.
-- 速度设置取自所属线程的 rollout settings snapshot.GPT-6.2 Astra 和 Sol 的 Fast 为 2x,Ultrafast 按 event 时间在太平洋时间 2027-03-01 前为 3x,自当日起为 6x.较早模型的 Fast 按本应用约定为 2.5x,GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 为 8x.模式缺失或无法识别时保留为 Unknown,估算费用只包含基准费用和适用的长上下文加价.日志记录所选设置,费用为估算.应用不统计 credits 或订阅额度消耗.
+- 速度设置取自所属线程的 rollout settings snapshot.本应用对 GPT-6.2 Astra 和 Sol 的 Fast 按 2x 估算,Ultrafast 按 6x 估算.较早模型的 Fast 按本应用约定为 2.5x,GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 为 8x.模式缺失或无法识别时保留为 Unknown,估算费用只包含基准费用和适用的长上下文加价.日志记录所选设置,费用为估算.应用不统计 credits 或订阅额度消耗.
 
 ## 数据目录与安全边界
 

@@ -66,7 +66,7 @@ override 必须是受保护 Codex tree 以外的绝对可写目录.更新下载�
 - 页面只允许一个纵向滚动容器;每个 table 在宽度不足时拥有独立横向滚动,不得引入嵌套纵向滚动.
 - 查询由 Application layer 执行,结果通过 UI dispatcher 更新.
 - 汇总,模型和执行主体 table 分别显示长上下文和加速两项费用倍率.长上下文倍率为长上下文调整后费用 / Standard 基准费用,加速倍率为估算费用 / 长上下文调整后费用.两项倍率相乘为整体费用倍率.混合模式按费用加权显示.费用构成包含这些加价,token 数显示原始值.
-- GPT-6.2 Astra 和 Sol 的 input 超过 272K 时计入长上下文加价.GPT-6.1 Sol 的长上下文倍率在基准费用大于零时为 x1.00.GPT-6.2 的 Fast 为 2x,Ultrafast 按 event 时间在太平洋时间 2027-03-01 前为 3x,自当日起为 6x.较早模型的 Fast 为 2.5x,GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 为 8x.日志记录所选设置.模式未知时仅计基准费用和适用的长上下文加价.
+- 本应用对 GPT-6.1 Sol 和 GPT-6.2 Astra/Sol 免除长上下文加价,基准费用大于零时显示长上下文倍率 x1.00.Fast 费用估算中,GPT-6.2 Sol/Astra 为 2x,GPT-6.1 Sol/Terra 和 GPT-6 Astra/Sol/Luna 等较早计费模型为 2.5x.GPT-6.2 的 Ultrafast 为 6x,GPT-6 Astra 和 GPT-6.1 Sol 的 Ultrafast 为 8x.日志记录所选设置.模式未知时仅计基准费用和适用的长上下文加价.
 - 模型与执行主体 table 是有界聚合结果,使用无内部纵向滚动的 `ItemsControl`;页面根容器负责唯一纵向滚动.
 - unpackaged 应用通过 HKCU Run entry 管理开机自启动;启动后可直接驻留 tray.
 - 关闭 dashboard 可保持后台采集,通过 tray `Exit` 执行 clean shutdown.

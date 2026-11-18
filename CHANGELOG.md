@@ -2,6 +2,10 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [Unreleased]
+
+- 本应用对 GPT-6.2 Astra 和 Sol 取消长上下文加价, Ultrafast 统一按 6x 估算. 历史费用在查询时按新规则重算.
+
 ## [0.3.40] - 2026-11-18
 
 - 支持 GPT-6.2 Astra 和 Sol 的用量归类、筛选和费用估算. Standard 每 1M input/cached input/output token 的费率分别为 Astra $8/$0.40/$40 和 Sol $2/$0.10/$10.
