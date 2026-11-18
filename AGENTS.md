@@ -51,7 +51,9 @@ dotnet test CodexUsageDesktop.sln -c Release --no-build
 dotnet format CodexUsageDesktop.sln --verify-no-changes
 ```
 
-当本次交付包含 release packaging 时,在已准备 NSIS 3.x、`7za.exe` 和 `7zr.exe` 的环境中运行 `pwsh -NoProfile -File .\scripts\build-installer.ps1 ...`.文档,XAML 或 CSS 改动交付前,确认 `git diff --check` 通过.不自动执行 `git add` 或 `git commit`;暂存和提交由用户决定.
+当本次交付包含 release packaging 时,在已准备 NSIS 3.x、`7za.exe` 和 `7zr.exe` 的环境中运行 `pwsh -NoProfile -File .\scripts\build-installer.ps1 ...`.文档,XAML 或 CSS 改动交付前,确认 `git diff --check` 通过.
+
+本次任务的改动验证通过后,自动暂存、提交并推送.发布任务同时推送对应的版本 tag.
 
 ## 费用统计不变量
 
