@@ -1204,16 +1204,18 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private static string FormatMultiplier(decimal? value) => value is { } multiplier ? $"×{multiplier:N2}" : "—";
     private static int ModelDisplayOrder(string model) => model switch
     {
-        "gpt-6-astra" => 0,
-        "gpt-6.1-sol" => 1,
-        "gpt-6.1-terra" => 2,
-        "gpt-6-sol" => 3,
-        "gpt-6-luna" => 4,
-        "gpt-5.6-sol" => 5,
-        "gpt-5.6-terra" => 6,
-        "gpt-5.6-luna" => 7,
-        "Others" => 8,
-        _ => 9,
+        "gpt-6.2-astra" => 0,
+        "gpt-6.2-sol" => 1,
+        "gpt-6-astra" => 2,
+        "gpt-6.1-sol" => 3,
+        "gpt-6.1-terra" => 4,
+        "gpt-6-sol" => 5,
+        "gpt-6-luna" => 6,
+        "gpt-5.6-sol" => 7,
+        "gpt-5.6-terra" => 8,
+        "gpt-5.6-luna" => 9,
+        "Others" => 10,
+        _ => 11,
     };
 
     private static string SubjectTypeLabel(string threadType) => threadType switch

@@ -2,6 +2,11 @@
 
 All notable changes are documented in this file. Versions use Semantic Versioning.
 
+## [0.3.40] - 2026-11-18
+
+- 支持 GPT-6.2 Astra 和 Sol 的用量归类、筛选和费用估算. Standard 每 1M input/cached input/output token 的费率分别为 Astra $8/$0.40/$40 和 Sol $2/$0.10/$10.
+- 两款模型单次 input 超过 272K 时适用长上下文加价. Fast 为 2x, Ultrafast 按事件时间在太平洋时间 2027-03-01 前为 3x, 自当日起为 6x.
+
 ## [0.3.39] - 2026-10-27
 
 - 支持 GPT-6.1 Terra 费用估算, Standard 每 1M input/cached input/output token 分别为 $1/$0.05/$5; 超过 272K input 时适用长上下文加价.

@@ -207,10 +207,12 @@ public sealed class UsageAccountingTests
     }
 
     [Fact]
-    public void Terra61SolAndLunaUseStandardRatesAndLongContextMultipliers()
+    public void ModelsWithLongContextPricingUseTheirStandardRatesAndThreshold()
     {
         foreach (var (model, inputRate, cachedRate, outputRate) in new[]
         {
+            ("gpt-6.2-astra", 8m, 0.4m, 40m),
+            ("gpt-6.2-sol", 2m, 0.1m, 10m),
             ("gpt-6.1-terra", 1m, 0.05m, 5m),
             ("gpt-6-sol", 2m, 0.2m, 10m),
             ("gpt-6-luna", 0.1m, 0.01m, 0.5m),
@@ -248,6 +250,26 @@ public sealed class UsageAccountingTests
             Assert.Equal(longContext.UncachedInput + longContext.CachedInput + longContext.ReasoningOutput + longContext.OtherOutput, longContext.Total);
             Assert.Equal(longContext.Total - longContext.BaselineTotal, longContext.LongContextPremium);
         }
+    }
+
+    [Theory]
+    [InlineData("gpt-6.2-astra", ServiceTier.Fast, "2026-11-18T00:00:00Z", 2)]
+    [InlineData("gpt-6.2-sol", ServiceTier.Fast, "2026-11-18T00:00:00Z", 2)]
+    [InlineData("gpt-6.2-astra", ServiceTier.Ultrafast, "2027-03-01T07:59:59.999Z", 3)]
+    [InlineData("gpt-6.2-sol", ServiceTier.Ultrafast, "2027-03-01T07:59:59.999Z", 3)]
+    [InlineData("gpt-6.2-astra", ServiceTier.Ultrafast, "2027-03-01T08:00:00Z", 6)]
+    [InlineData("gpt-6.2-sol", ServiceTier.Ultrafast, "2027-03-01T08:00:00Z", 6)]
+    public void Gpt62SpeedPricingUsesEventTimeAndStacksWithLongContext(
+        string model, ServiceTier serviceTier, string timestamp, int multiplier)
+    {
+        var usage = Event with { Model = model, TimestampUtc = timestamp };
+        var standard = UsageAccounting.CostFor(usage);
+        var accelerated = UsageAccounting.CostFor(usage with { ServiceTier = serviceTier });
+
+        Assert.True(accelerated.Priced);
+        Assert.Equal(standard.LongContextPremium, accelerated.LongContextPremium);
+        Assert.Equal(standard.Total * multiplier, accelerated.Total);
+        Assert.Equal(standard.Total * (multiplier - 1), accelerated.FastModePremium);
     }
 
     [Fact]
@@ -380,6 +402,10 @@ public sealed class UsageAccountingTests
     [InlineData("gpt-6.1-solstice", "Others")]
     [InlineData("gpt-6.1-astra", "Others")]
     [InlineData("GPT-6.1-sol", "Others")]
+    [InlineData("gpt-6.2-astra", "gpt-6.2-astra")]
+    [InlineData("gpt-6.2-sol", "gpt-6.2-sol")]
+    [InlineData("gpt-6.2-astra-preview", "gpt-6.2-astra-preview")]
+    [InlineData("gpt-6.2-luna", "Others")]
     [InlineData("codex-auto-review", "Others")]
     [InlineData("codex-auto-review-preview", "Others")]
     [InlineData("unknown", "Unknown attribution")]
@@ -408,6 +434,7 @@ public sealed class UsageAccountingTests
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6-sol-preview" }).Priced);
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6.1-sol-preview" }).Priced);
         Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6.1-terra-preview" }).Priced);
+        Assert.False(UsageAccounting.CostFor(Event with { Model = "gpt-6.2-astra-preview" }).Priced);
     }
 
     [Fact]

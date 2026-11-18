@@ -11,9 +11,13 @@ public static class UsageAccounting
     public const string OtherModelCategory = "Others";
     public const string UnknownAttributionCategory = "Unknown attribution";
     private const decimal Million = 1_000_000m;
-    private static readonly string[] SupportedFamilies = ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6", "gpt-5.5", "gpt-5.4"];
+    private static readonly DateTimeOffset Gpt62UltrafastStandardRateStart = new(2027, 3, 1, 0, 0, 0, TimeSpan.FromHours(-8));
+    private static readonly string[] SupportedFamilies =
+        ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6", "gpt-5.5", "gpt-5.4"];
     private static readonly IReadOnlySet<string> LongContextEligibleModels = new HashSet<string>(StringComparer.Ordinal)
     {
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
         "gpt-6.1-terra",
         "gpt-6-astra",
         "gpt-6-sol",
@@ -27,6 +31,9 @@ public static class UsageAccounting
     };
     private static readonly IReadOnlyDictionary<string, ModelRate> Rates = new Dictionary<string, ModelRate>(StringComparer.Ordinal)
     {
+        // Standard API prices for GPT-6.2, in USD per 1M tokens.
+        ["gpt-6.2-astra"] = new(8m, 0.4m, 40m),
+        ["gpt-6.2-sol"] = new(2m, 0.1m, 10m),
         // Standard API prices for GPT-6.1, in USD per 1M tokens.
         ["gpt-6.1-sol"] = new(2m, 0.1m, 10m),
         ["gpt-6.1-terra"] = new(1m, 0.05m, 5m),
@@ -62,7 +69,18 @@ public static class UsageAccounting
         var category = ModelCategory(usageEvent.Model);
         if (category is OtherModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
             return CostBreakdown.UnpricedZero;
-        if (usageEvent.ServiceTier == ServiceTier.Ultrafast && usageEvent.Model is not ("gpt-6-astra" or "gpt-6.1-sol"))
+
+        var isGpt62 = usageEvent.Model is "gpt-6.2-astra" or "gpt-6.2-sol";
+        decimal? speedMultiplier = usageEvent.ServiceTier switch
+        {
+            ServiceTier.Fast => isGpt62 ? 2m : FastModeCostMultiplier,
+            ServiceTier.Ultrafast when isGpt62 && TryTimestamp(usageEvent.TimestampUtc, out var timestamp) =>
+                timestamp < Gpt62UltrafastStandardRateStart ? 3m : 6m,
+            ServiceTier.Ultrafast when usageEvent.Model is "gpt-6-astra" or "gpt-6.1-sol" => UltrafastModeCostMultiplier,
+            ServiceTier.Ultrafast => null,
+            _ => 1m,
+        };
+        if (speedMultiplier is not { } fastMultiplier)
             return CostBreakdown.UnpricedZero;
 
         var baselineUncached = (usageEvent.InputTokens - usageEvent.CachedInputTokens) * rate.Input / Million;
@@ -76,12 +94,6 @@ public static class UsageAccounting
         var outputMultiplier = isLongContext ? 1.5m : 1m;
         var longAdjustedTotal = (baselineUncached + baselineCached) * inputMultiplier
             + (baselineReasoning + baselineOther) * outputMultiplier;
-        var fastMultiplier = usageEvent.ServiceTier switch
-        {
-            ServiceTier.Fast => FastModeCostMultiplier,
-            ServiceTier.Ultrafast => UltrafastModeCostMultiplier,
-            _ => 1m,
-        };
         var uncached = baselineUncached * inputMultiplier * fastMultiplier;
         var cached = baselineCached * inputMultiplier * fastMultiplier;
         var reasoning = baselineReasoning * outputMultiplier * fastMultiplier;
