@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CodexUsage.Domain;
 using Microsoft.Data.Sqlite;
+using SQLitePCL;
 
 namespace CodexUsage.Infrastructure;
 
@@ -10,6 +11,7 @@ public sealed class UsageStore : IDisposable
     private const int DefaultBusyTimeoutMs = 5_000;
 
     private readonly SqliteConnection _connection;
+    private (int MaximumCount, long DataVersion, IReadOnlyList<MainThreadOption> Options)? _recentMainThreads;
     private bool _closed;
 
     public UsageStore(
@@ -551,7 +553,9 @@ public sealed class UsageStore : IDisposable
         return Convert.ToInt64(command.ExecuteScalar());
     }
 
-    public IReadOnlyList<StoredUsageEvent> QueryEvents(UsageEventQuery filter)
+    public IReadOnlyList<StoredUsageEvent> QueryEvents(
+        UsageEventQuery filter,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(filter);
         RequireNonNegative(filter.StartEpochMs, nameof(filter.StartEpochMs));
@@ -589,27 +593,17 @@ public sealed class UsageStore : IDisposable
         {
             conditions.Add("""
                 r.rollout_id IN (
-                    WITH RECURSIVE
-                    rollout_parent_keys(rollout_id, parent_key) AS (
-                        SELECT rollout_id, rollout_id
-                        FROM rollouts
-                        UNION
+                    WITH RECURSIVE thread_rollouts(rollout_id, main_alias) AS (
                         SELECT rollout_id, conversation_id
-                        FROM rollouts
-                        WHERE thread_type = 'main'
-                    ),
-                    thread_rollouts(rollout_id) AS (
-                        SELECT rollout_id
                         FROM rollouts
                         WHERE conversation_id = $mainThreadConversationId
                           AND thread_type = 'main'
                         UNION
-                        SELECT child.rollout_id
+                        SELECT child.rollout_id,
+                               CASE WHEN child.thread_type = 'main' THEN child.conversation_id END
                         FROM thread_rollouts AS parent
-                        JOIN rollout_parent_keys AS parent_key
-                          ON parent_key.rollout_id = parent.rollout_id
                         JOIN rollouts AS child
-                          ON child.parent_thread_id = parent_key.parent_key
+                          ON child.parent_thread_id IN (parent.rollout_id, parent.main_alias)
                     )
                     SELECT rollout_id FROM thread_rollouts
                 )
@@ -626,30 +620,35 @@ public sealed class UsageStore : IDisposable
             FROM usage_events AS e
             JOIN rollouts AS r ON r.rollout_id = e.rollout_id
             WHERE {string.Join(" AND ", conditions)}
-            ORDER BY e.timestamp_epoch_ms, r.rollout_id, e.token_event_ordinal
+            ORDER BY e.timestamp_epoch_ms, e.rollout_id, e.token_event_ordinal
             """, parameters.ToArray());
-        using var reader = command.ExecuteReader();
-        var result = new List<StoredUsageEvent>();
-        while (reader.Read())
+        return ReadQuery<StoredUsageEvent>(command, int.MaxValue, cancellationToken, static reader =>
         {
             var epoch = reader.GetInt64(0);
-            result.Add(new StoredUsageEvent(
+            return new StoredUsageEvent(
                 DateTimeOffset.FromUnixTimeMilliseconds(epoch),
                 reader.GetString(8), reader.GetString(9), reader.GetString(10),
                 ParseThreadType(reader.GetString(11)), reader.GetString(12),
                 reader.GetString(13), reader.GetString(14), reader.GetString(3),
                 reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6),
-                reader.GetInt64(7), reader.GetInt64(1), epoch, reader.GetString(2), ParseServiceTier(reader.GetString(15))));
-        }
-
-        return result;
+                reader.GetInt64(7), reader.GetInt64(1), epoch, reader.GetString(2), ParseServiceTier(reader.GetString(15)));
+        });
     }
 
-    public IReadOnlyList<MainThreadOption> QueryRecentMainThreads(int maximumCount)
+    public IReadOnlyList<MainThreadOption> QueryRecentMainThreads(
+        int maximumCount,
+        CancellationToken cancellationToken = default)
     {
         if (maximumCount <= 0) throw new ArgumentOutOfRangeException(nameof(maximumCount));
 
         AssertOpen();
+        cancellationToken.ThrowIfCancellationRequested();
+        var dataVersion = ExecuteScalarLong(null, "PRAGMA data_version");
+        if (_recentMainThreads is { } cached && cached.MaximumCount == maximumCount && cached.DataVersion == dataVersion)
+        {
+            return cached.Options;
+        }
+
         using var command = CreateCommand(null, """
             WITH RECURSIVE ranked_main_rollouts AS (
                 SELECT conversation_id, project_name, thread_title, last_activity_epoch_ms,
@@ -666,56 +665,46 @@ public sealed class UsageStore : IDisposable
                 FROM ranked_main_rollouts
                 WHERE rank = 1
             ),
-            rollout_parent_keys(rollout_id, parent_key) AS (
-                SELECT rollout_id, rollout_id
-                FROM rollouts
-                UNION
-                SELECT rollout_id, conversation_id
-                FROM rollouts
-                WHERE thread_type = 'main'
-            ),
-            thread_rollouts(root_conversation_id, rollout_id) AS (
-                SELECT main.conversation_id, root.rollout_id
+            thread_rollouts(root_conversation_id, rollout_id, main_alias, last_activity_epoch_ms) AS (
+                SELECT main.conversation_id, root.rollout_id, root.conversation_id, root.last_activity_epoch_ms
                 FROM main_threads AS main
                 JOIN rollouts AS root
                   ON root.conversation_id = main.conversation_id
                  AND root.thread_type = 'main'
                 UNION
-                SELECT parent.root_conversation_id, child.rollout_id
+                SELECT parent.root_conversation_id, child.rollout_id,
+                       CASE WHEN child.thread_type = 'main' THEN child.conversation_id END,
+                       child.last_activity_epoch_ms
                 FROM thread_rollouts AS parent
-                JOIN rollout_parent_keys AS parent_key
-                  ON parent_key.rollout_id = parent.rollout_id
                 JOIN rollouts AS child
-                  ON child.parent_thread_id = parent_key.parent_key
+                  ON child.parent_thread_id IN (parent.rollout_id, parent.main_alias)
+            ),
+            activity(root_conversation_id, last_activity_epoch_ms) AS (
+                SELECT root_conversation_id, MAX(last_activity_epoch_ms)
+                FROM thread_rollouts
+                GROUP BY root_conversation_id
             )
             SELECT main.conversation_id,
                    main.project_name,
                    main.thread_title,
-                   MAX(related.last_activity_epoch_ms) AS last_activity_epoch_ms
-            FROM main_threads AS main
-            JOIN thread_rollouts AS thread
-              ON thread.root_conversation_id = main.conversation_id
-            JOIN rollouts AS related
-              ON related.rollout_id = thread.rollout_id
-            GROUP BY main.conversation_id, main.project_name, main.thread_title
-            ORDER BY last_activity_epoch_ms DESC, main.conversation_id DESC
+                   activity.last_activity_epoch_ms
+            FROM activity
+            JOIN main_threads AS main ON main.conversation_id = activity.root_conversation_id
+            ORDER BY activity.last_activity_epoch_ms DESC, main.conversation_id DESC
             """);
-        using var reader = command.ExecuteReader();
-        var result = new List<MainThreadOption>();
-        while (reader.Read() && result.Count < maximumCount)
+        var options = ReadQuery<MainThreadOption>(command, maximumCount, cancellationToken, static reader =>
         {
             var conversationId = reader.GetString(0);
-            if (ConversationId.IsUuidV7(conversationId))
-            {
-                result.Add(new MainThreadOption(
+            return ConversationId.IsUuidV7(conversationId)
+                ? new MainThreadOption(
                     conversationId,
                     reader.GetString(1),
                     reader.GetString(2),
-                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3))));
-            }
-        }
-
-        return result;
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)))
+                : null;
+        }).AsReadOnly();
+        _recentMainThreads = (maximumCount, dataVersion, options);
+        return options;
     }
 
     public bool SynchronizeMainThreadTitles(
@@ -763,6 +752,7 @@ public sealed class UsageStore : IDisposable
                     ("$observedAt", observedAtEpochMs)) > 0;
             }
 
+            if (changed) _recentMainThreads = null;
             return changed;
         });
     }
@@ -1308,6 +1298,7 @@ public sealed class UsageStore : IDisposable
             ("$projectName", metadata.ProjectName), ("$threadTitle", metadata.ThreadTitle),
             ("$lastActivityEpochMs", metadata.LastActivityEpochMs),
             ("$observedAt", observedAtEpochMs));
+        _recentMainThreads = null;
     }
 
     private void UpsertSourceWithinTransaction(SqliteTransaction transaction, SourceFileInput source)
@@ -1599,6 +1590,43 @@ public sealed class UsageStore : IDisposable
         }
 
         return command;
+    }
+
+    private List<T> ReadQuery<T>(
+        SqliteCommand command,
+        int maximumCount,
+        CancellationToken cancellationToken,
+        Func<SqliteDataReader, T?> readRow) where T : class
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var handle = _connection.Handle;
+        if (cancellationToken.CanBeCanceled)
+        {
+            raw.sqlite3_progress_handler(handle, 4_000, _ => cancellationToken.IsCancellationRequested ? 1 : 0, null);
+        }
+
+        try
+        {
+            using var reader = command.ExecuteReader();
+            var result = new List<T>();
+            while (result.Count < maximumCount && reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (readRow(reader) is { } value) result.Add(value);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch (SqliteException error) when (error.SqliteErrorCode == raw.SQLITE_INTERRUPT
+            && cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+        finally
+        {
+            if (cancellationToken.CanBeCanceled) raw.sqlite3_progress_handler(handle, 0, null, null);
+        }
     }
 
     private int ExecuteNonQuery(

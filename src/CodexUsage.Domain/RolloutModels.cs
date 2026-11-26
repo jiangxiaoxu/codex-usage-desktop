@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 
 namespace CodexUsage.Domain;
 
@@ -46,7 +47,8 @@ public sealed record ParsedRolloutUsageEvent(
     ServiceTier ServiceTier)
 {
     public UsageEvent ToUsageEvent() => new(
-        TimestampUtc, TokenEventOrdinal, ConversationId, RolloutId, ParentThreadId, ThreadType,
+        DateTimeOffset.Parse(TimestampUtc, CultureInfo.InvariantCulture),
+        TokenEventOrdinal, ConversationId, RolloutId, ParentThreadId, ThreadType,
         AgentRole, AgentPath, AgentNickname, Model, InputTokens, CachedInputTokens, OutputTokens, ReasoningOutputTokens, ServiceTier);
 }
 

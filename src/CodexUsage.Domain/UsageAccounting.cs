@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Globalization;
 
 namespace CodexUsage.Domain;
 
@@ -53,17 +52,21 @@ public static class UsageAccounting
     {
         ArgumentNullException.ThrowIfNull(sourceModel);
         if (sourceModel == "unknown") return UnknownAttributionCategory;
-        return SupportedFamilies.Any(family => sourceModel == family || sourceModel.StartsWith(family + "-", StringComparison.Ordinal))
-            ? sourceModel
-            : OtherModelCategory;
+        foreach (var family in SupportedFamilies)
+        {
+            if (sourceModel == family || (sourceModel.Length > family.Length && sourceModel[family.Length] == '-'
+                && sourceModel.StartsWith(family, StringComparison.Ordinal))) return sourceModel;
+        }
+        return OtherModelCategory;
     }
 
     public static string NormalizedAgentRole(ThreadType threadType, string observedRole) =>
         threadType == ThreadType.Main ? "root" : observedRole;
 
-    public static CostBreakdown CostFor(UsageEvent usageEvent)
+    public static CostBreakdown CostFor(UsageEvent usageEvent) => CostFor(usageEvent, ModelCategory(usageEvent.Model));
+
+    private static CostBreakdown CostFor(UsageEvent usageEvent, string category)
     {
-        var category = ModelCategory(usageEvent.Model);
         if (category is OtherModelCategory or UnknownAttributionCategory || !Rates.TryGetValue(usageEvent.Model, out var rate))
             return CostBreakdown.UnpricedZero;
 
@@ -101,104 +104,76 @@ public static class UsageAccounting
 
     public static UsageSummary Summarize(IEnumerable<UsageEvent> events)
     {
-        var calls = 0;
-        var fastCalls = 0;
-        var unknownServiceTierCalls = 0;
-        long input = 0, cached = 0, output = 0, reasoning = 0, unpriced = 0, fastTokens = 0, unknownServiceTierTokens = 0;
-        decimal uncachedCost = 0, cachedCost = 0, reasoningCost = 0, otherCost = 0, totalCost = 0, baselineCost = 0, longContextPremium = 0, fastModePremium = 0;
+        var summary = new SummaryAccumulator();
+        foreach (var usageEvent in events)
+            summary.Add(usageEvent, CostFor(usageEvent), checked(usageEvent.InputTokens + usageEvent.OutputTokens));
+        return summary.Build();
+    }
+
+    public static QueryResult Query(
+        IEnumerable<UsageEvent> events,
+        ScanDiagnostics diagnostics,
+        FilterSpec filter,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var modelFilter = filter.Models?.ToHashSet(StringComparer.Ordinal);
+        var subjectFilter = filter.Subjects?.Select(subject => (subject.ThreadType, subject.AgentRole)).ToHashSet();
+        var summary = new SummaryAccumulator();
+        var modelSummaries = new OrderedDictionary<string, SummaryAccumulator>(StringComparer.Ordinal);
+        var roleSummaries = new OrderedDictionary<(ThreadType ThreadType, string AgentRole), (SummaryAccumulator Summary, HashSet<string> Threads)>();
+        var modelFacets = new Dictionary<string, FacetAccumulator>(StringComparer.Ordinal);
+        var subjectFacets = new Dictionary<(ThreadType ThreadType, string AgentRole), FacetAccumulator>();
+
         foreach (var usageEvent in events)
         {
-            var cost = CostFor(usageEvent);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (usageEvent.TimestampUtc < filter.StartUtc || usageEvent.TimestampUtc >= filter.EndUtc) continue;
+
+            var model = ModelCategory(usageEvent.Model);
+            var subject = (usageEvent.ThreadType, AgentRole: NormalizedAgentRole(usageEvent.ThreadType, usageEvent.AgentRole));
+            var cost = CostFor(usageEvent, model);
             var canonical = checked(usageEvent.InputTokens + usageEvent.OutputTokens);
-            calls = checked(calls + 1);
-            input = checked(input + usageEvent.InputTokens);
-            cached = checked(cached + usageEvent.CachedInputTokens);
-            output = checked(output + usageEvent.OutputTokens);
-            reasoning = checked(reasoning + usageEvent.ReasoningOutputTokens);
-            if (!cost.Priced) unpriced = checked(unpriced + canonical);
-            if (usageEvent.ServiceTier is ServiceTier.Fast or ServiceTier.Ultrafast)
-            {
-                fastCalls = checked(fastCalls + 1);
-                fastTokens = checked(fastTokens + canonical);
-            }
-            if (usageEvent.ServiceTier == ServiceTier.Unknown)
-            {
-                unknownServiceTierCalls = checked(unknownServiceTierCalls + 1);
-                unknownServiceTierTokens = checked(unknownServiceTierTokens + canonical);
-            }
-            uncachedCost += cost.UncachedInput;
-            cachedCost += cost.CachedInput;
-            reasoningCost += cost.ReasoningOutput;
-            otherCost += cost.OtherOutput;
-            totalCost += cost.Total;
-            baselineCost += cost.BaselineTotal;
-            longContextPremium += cost.LongContextPremium;
-            fastModePremium += cost.FastModePremium;
+
+            // Facet totals describe the date scope before model and subject filtering.
+            if (!modelFacets.TryGetValue(model, out var modelFacet))
+                modelFacets[model] = modelFacet = new();
+            if (!subjectFacets.TryGetValue(subject, out var subjectFacet))
+                subjectFacets[subject] = subjectFacet = new();
+            modelFacet.Add(canonical, cost.Total);
+            subjectFacet.Add(canonical, cost.Total);
+
+            if (modelFilter is not null && !modelFilter.Contains(model)) continue;
+            if (subjectFilter is not null && !subjectFilter.Contains(subject)) continue;
+
+            if (!modelSummaries.TryGetValue(model, out var modelSummary))
+                modelSummaries[model] = modelSummary = new();
+            if (!roleSummaries.TryGetValue(subject, out var role))
+                roleSummaries[subject] = role = (new(), new(StringComparer.Ordinal));
+            summary.Add(usageEvent, cost, canonical);
+            modelSummary.Add(usageEvent, cost, canonical);
+            role.Summary.Add(usageEvent, cost, canonical);
+            role.Threads.Add(usageEvent.ThreadType == ThreadType.Main ? usageEvent.ConversationId : usageEvent.RolloutId);
         }
 
-        return new(
-            calls, input, cached, checked(input - cached), output, reasoning, checked(output - reasoning),
-            checked(input + output), unpriced,
-            new(uncachedCost, cachedCost, reasoningCost, otherCost, totalCost, baselineCost, longContextPremium, fastModePremium, true),
-            fastCalls, fastTokens, unknownServiceTierCalls, unknownServiceTierTokens);
-    }
-
-    public static bool MatchesFilter(UsageEvent usageEvent, FilterSpec filter)
-    {
-        if (!TryTimestamp(usageEvent.TimestampUtc, out var timestamp) || timestamp < filter.StartUtc || timestamp >= filter.EndUtc)
-            return false;
-        if (filter.Models is { } models && !models.Contains(ModelCategory(usageEvent.Model), StringComparer.Ordinal))
-            return false;
-        var role = NormalizedAgentRole(usageEvent.ThreadType, usageEvent.AgentRole);
-        if (filter.Subjects is { } subjects && !subjects.Any(subject => subject.ThreadType == usageEvent.ThreadType && subject.AgentRole == role))
-            return false;
-        return true;
-    }
-
-    public static QueryResult Query(IEnumerable<UsageEvent> events, ScanDiagnostics diagnostics, FilterSpec filter)
-    {
-        var dateScoped = events.Where(value => TryTimestamp(value.TimestampUtc, out var timestamp) && timestamp >= filter.StartUtc && timestamp < filter.EndUtc).ToArray();
-        var selected = dateScoped.Where(value => MatchesFilter(value, filter)).ToArray();
-        return new(
-            Summarize(selected),
-            Group(selected, value => [ModelCategory(value.Model)]),
-            GroupRoles(selected),
-            Group(selected, value => [ThreadTypeText(value.ThreadType), NormalizedAgentRole(value.ThreadType, value.AgentRole), value.AgentPath, ModelCategory(value.Model)]),
-            BuildFacets(dateScoped),
+        var result = new QueryResult(
+            summary.Build(),
+            modelSummaries.Select(value => new GroupRow([value.Key], value.Value.Build()))
+                .OrderByDescending(value => value.Summary.Cost.Total).ToImmutableArray(),
+            roleSummaries.Select(value => new RoleUsageRow(value.Key.ThreadType, value.Key.AgentRole,
+                    value.Value.Threads.Count, value.Value.Summary.Build()))
+                .OrderByDescending(value => value.Summary.Cost.Total).ToImmutableArray(),
+            new(
+                modelFacets.OrderBy(value => value.Key, StringComparer.Ordinal)
+                    .Select(value => new ModelFacetOption(value.Key, value.Value.Tokens, value.Value.Cost)).ToImmutableArray(),
+                subjectFacets.OrderBy(value => ThreadTypeText(value.Key.ThreadType), StringComparer.Ordinal)
+                    .ThenBy(value => value.Key.AgentRole, StringComparer.Ordinal)
+                    .Select(value => new SubjectFacetOption(new(value.Key.ThreadType, value.Key.AgentRole),
+                        value.Value.Tokens, value.Value.Cost)).ToImmutableArray()),
             diagnostics);
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
     }
-
-    private static QueryFacets BuildFacets(IEnumerable<UsageEvent> events)
-    {
-        var models = events.GroupBy(value => ModelCategory(value.Model), StringComparer.Ordinal)
-            .Select(group => new ModelFacetOption(group.Key, group.Sum(value => checked(value.InputTokens + value.OutputTokens)), group.Sum(value => CostFor(value).Total)))
-            .OrderBy(value => value.Model, StringComparer.Ordinal).ToImmutableArray();
-        var subjects = events.GroupBy(value => new SubjectFilter(value.ThreadType, NormalizedAgentRole(value.ThreadType, value.AgentRole)))
-            .Select(group => new SubjectFacetOption(group.Key, group.Sum(value => checked(value.InputTokens + value.OutputTokens)), group.Sum(value => CostFor(value).Total)))
-            .OrderBy(value => ThreadTypeText(value.Subject.ThreadType), StringComparer.Ordinal)
-            .ThenBy(value => value.Subject.AgentRole, StringComparer.Ordinal).ToImmutableArray();
-        return new(models, subjects);
-    }
-
-    private static ImmutableArray<GroupRow> Group(IEnumerable<UsageEvent> events, Func<UsageEvent, string[]> keySelector) =>
-        events.GroupBy(value => string.Join("\u001f", keySelector(value)), StringComparer.Ordinal)
-            .Select(group => new GroupRow(keySelector(group.First()).ToImmutableArray(), Summarize(group)))
-            .OrderByDescending(value => value.Summary.Cost.Total).ToImmutableArray();
-
-    private static ImmutableArray<RoleUsageRow> GroupRoles(IEnumerable<UsageEvent> events) =>
-        events.GroupBy(value => new SubjectFilter(value.ThreadType, NormalizedAgentRole(value.ThreadType, value.AgentRole)))
-            .Select(group => new RoleUsageRow(
-                group.Key.ThreadType,
-                group.Key.AgentRole,
-                group.Key.ThreadType == ThreadType.Main
-                    ? group.Select(value => value.ConversationId).Distinct(StringComparer.Ordinal).Count()
-                    : group.Select(value => value.RolloutId).Distinct(StringComparer.Ordinal).Count(),
-                Summarize(group)))
-            .OrderByDescending(value => value.Summary.Cost.Total)
-            .ToImmutableArray();
-
-    private static bool TryTimestamp(string value, out DateTimeOffset timestamp) =>
-        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out timestamp);
 
     public static string ThreadTypeText(ThreadType threadType) => threadType switch
     {
@@ -209,4 +184,60 @@ public static class UsageAccounting
     };
 
     private sealed record ModelRate(decimal Input, decimal CachedInput, decimal Output);
+
+    private sealed class FacetAccumulator
+    {
+        public long Tokens { get; private set; }
+        public decimal Cost { get; private set; }
+
+        public void Add(long tokens, decimal cost)
+        {
+            Tokens = checked(Tokens + tokens);
+            Cost += cost;
+        }
+    }
+
+    private sealed class SummaryAccumulator
+    {
+        private int _calls, _fastCalls, _unknownServiceTierCalls;
+        private long _input, _cached, _output, _reasoning, _unpriced, _fastTokens, _unknownServiceTierTokens;
+        private decimal _uncachedCost, _cachedCost, _reasoningCost, _otherCost, _totalCost, _baselineCost, _longContextPremium, _fastModePremium;
+
+        public void Add(UsageEvent usageEvent, CostBreakdown cost, long canonical)
+        {
+            checked
+            {
+                _calls++;
+                _input += usageEvent.InputTokens;
+                _cached += usageEvent.CachedInputTokens;
+                _output += usageEvent.OutputTokens;
+                _reasoning += usageEvent.ReasoningOutputTokens;
+                if (!cost.Priced) _unpriced += canonical;
+                if (usageEvent.ServiceTier is ServiceTier.Fast or ServiceTier.Ultrafast)
+                {
+                    _fastCalls++;
+                    _fastTokens += canonical;
+                }
+                else if (usageEvent.ServiceTier == ServiceTier.Unknown)
+                {
+                    _unknownServiceTierCalls++;
+                    _unknownServiceTierTokens += canonical;
+                }
+            }
+            _uncachedCost += cost.UncachedInput;
+            _cachedCost += cost.CachedInput;
+            _reasoningCost += cost.ReasoningOutput;
+            _otherCost += cost.OtherOutput;
+            _totalCost += cost.Total;
+            _baselineCost += cost.BaselineTotal;
+            _longContextPremium += cost.LongContextPremium;
+            _fastModePremium += cost.FastModePremium;
+        }
+
+        public UsageSummary Build() => new(
+            _calls, _input, _cached, checked(_input - _cached), _output, _reasoning, checked(_output - _reasoning),
+            checked(_input + _output), _unpriced,
+            new(_uncachedCost, _cachedCost, _reasoningCost, _otherCost, _totalCost, _baselineCost, _longContextPremium, _fastModePremium, true),
+            _fastCalls, _fastTokens, _unknownServiceTierCalls, _unknownServiceTierTokens);
+    }
 }

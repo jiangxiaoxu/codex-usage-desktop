@@ -15,6 +15,7 @@ namespace CodexUsage.App.ViewModels;
 public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 {
     private static readonly TimeSpan FilterDebounce = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan OptionDebounce = TimeSpan.FromMilliseconds(50);
     private readonly IUsageDashboardService _service;
     private readonly IUiDispatcher _dispatcher;
     private readonly StartupRegistrationCoordinator _startupTask;
@@ -52,6 +53,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private string _headerStatusGlyph = "\uE895";
     private DashboardHeaderStatusTone _headerStatusTone = DashboardHeaderStatusTone.Muted;
     private Brush? _headerStatusBrush;
+    private bool _isFilterRefreshing;
+    private string? _filterRefreshError;
     private string _coverageText = "等待首次对账";
     private string _collectorStatusText = "正在启动采集器";
     private string _platformStatusText;
@@ -67,11 +70,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private long _snapshotRequestGeneration;
     private int _busyCount;
     private SnapshotQueryRequest? _activeSnapshotQuery;
-    private SnapshotQueryRequest? _pendingSnapshotQuery;
-    private bool _queryPumpRunning;
-    private bool _preInitializationQueryPending;
-    private DashboardSnapshotApplyPurpose _preInitializationQueryPurpose = DashboardSnapshotApplyPurpose.UserFilter;
-    private long _preInitializationQueryGeneration;
+    private PendingFilterQuery? _pendingFilterQuery;
+    private bool _dataRefreshPending;
     private int _updateCheckInFlight;
     private int _disposed;
 
@@ -200,7 +200,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             }
 
             if (transition.ClearCustomRange) ClearCustomRange();
-            if (transition.QueryRequired) ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+            if (transition.QueryRequired) ScheduleFilterQuery(_filterDebounceDelay);
         }
     }
 
@@ -217,7 +217,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         {
             var normalized = ConversationId.IsUuidV7(value?.Trim()) ? value!.Trim().ToLowerInvariant() : null;
             if (SetProperty(ref _selectedMainThreadId, normalized))
-                ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+                ScheduleFilterQuery();
         }
     }
 
@@ -247,7 +247,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             {
                 if (ClearMainThreadFilterCore())
                 {
-                    ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+                    ScheduleFilterQuery();
                 }
                 return;
             }
@@ -280,9 +280,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     public string SourceFilesText { get => _sourceFilesText; private set => SetProperty(ref _sourceFilesText, value); }
     public string RetryQueueText { get => _retryQueueText; private set => SetProperty(ref _retryQueueText, value); }
     public string WatcherStatusText { get => _watcherStatusText; private set => SetProperty(ref _watcherStatusText, value); }
-    public string HeaderStatusText { get => _headerStatusText; private set => SetProperty(ref _headerStatusText, value); }
-    public string HeaderStatusGlyph { get => _headerStatusGlyph; private set => SetProperty(ref _headerStatusGlyph, value); }
-    public Brush HeaderStatusBrush => _headerStatusBrush ??= HeaderStatusBrushFor(_headerStatusTone);
+    public bool IsFilterRefreshing => _isFilterRefreshing;
+    public bool ShowHeaderStatusGlyph => !IsFilterRefreshing;
+    public string HeaderStatusText => IsFilterRefreshing
+        ? "正在刷新筛选结果"
+        : _filterRefreshError ?? _headerStatusText;
+    public string HeaderStatusGlyph => _filterRefreshError is null ? _headerStatusGlyph : "\uE7BA";
+    public Brush HeaderStatusBrush => _headerStatusBrush ??= HeaderStatusBrushFor(IsFilterRefreshing
+        ? DashboardHeaderStatusTone.Accent
+        : _filterRefreshError is not null ? DashboardHeaderStatusTone.Danger : _headerStatusTone);
     public string CoverageText { get => _coverageText; private set => SetProperty(ref _coverageText, value); }
     public string CollectorStatusText { get => _collectorStatusText; private set => SetProperty(ref _collectorStatusText, value); }
     public string PlatformStatusText { get => _platformStatusText; private set => SetProperty(ref _platformStatusText, value); }
@@ -290,7 +296,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        var snapshotRequestGeneration = BeginSnapshotRequest();
+        var snapshotRequestGeneration = Volatile.Read(ref _snapshotRequestGeneration);
         var request = CreateRequest();
         var startup = LoadStartupStateAsync(cancellationToken);
         await ExecuteSnapshotAsync(
@@ -299,29 +305,11 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             snapshotRequestGeneration,
             cancellationToken).ConfigureAwait(false);
         await startup.ConfigureAwait(false);
-        DashboardSnapshotApplyPurpose? preInitializationPurpose = null;
-        long preInitializationGeneration = 0;
         lock (_queryPumpLock)
         {
             _initialized = true;
-            if (_preInitializationQueryPending)
-            {
-                preInitializationPurpose = _preInitializationQueryPurpose;
-                preInitializationGeneration = _preInitializationQueryGeneration;
-                _preInitializationQueryPending = false;
-            }
         }
-
-        if (preInitializationPurpose is { } purpose)
-        {
-            QueueUi(() =>
-            {
-                if (IsCurrentSnapshotRequest(preInitializationGeneration, CancellationToken.None))
-                {
-                    ScheduleQuery(purpose, TimeSpan.Zero);
-                }
-            });
-        }
+        QueueUi(StartQueryPump);
     }
 
     public Task<ReleaseUpdateCheckResult?> CheckForUpdatesAsync(CancellationToken cancellationToken = default) =>
@@ -489,13 +477,13 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         ClearMainThreadFilterCore();
         SelectAllModels();
         SelectAllAgents();
-        ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+        ScheduleFilterQuery();
     }
 
     public void ClearMainThreadFilter()
     {
         ClearMainThreadFilterCore();
-        ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter, TimeSpan.Zero);
+        ScheduleFilterQuery();
     }
 
     public void SelectAllModels()
@@ -526,7 +514,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RangeLabel)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomStartDateSgt)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CustomEndDateSgt)));
-        ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+        ScheduleFilterQuery();
         return true;
     }
 
@@ -535,18 +523,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         CancelAutomaticUpdateChecks();
         _updateDownloadCoordinator.Cancel();
-        BeginSnapshotRequest();
         SnapshotQueryRequest? activeSnapshotQuery;
-        SnapshotQueryRequest? pendingSnapshotQuery;
         lock (_queryPumpLock)
         {
-            _preInitializationQueryPending = false;
             activeSnapshotQuery = _activeSnapshotQuery;
-            pendingSnapshotQuery = _pendingSnapshotQuery;
-            _pendingSnapshotQuery = null;
+            _pendingFilterQuery = null;
+            _dataRefreshPending = false;
         }
         activeSnapshotQuery?.Cancel();
-        pendingSnapshotQuery?.CancelAndDispose();
+        SetFilterRefreshStatus(refreshing: false);
         _service.StatusChanged -= OnStatusChanged;
         _service.UsageChanged -= OnUsageChanged;
         UnsubscribeOptions();
@@ -616,7 +601,18 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             {
                 if (IsCurrentSnapshotRequest(requestGeneration, cancellationToken))
                 {
-                    ApplySnapshot(snapshot, purpose);
+                    try
+                    {
+                        ApplySnapshot(snapshot, purpose);
+                    }
+                    finally
+                    {
+                        if ((purpose == DashboardSnapshotApplyPurpose.UserFilter || _filterRefreshError is not null)
+                            && IsCurrentSnapshotRequest(requestGeneration, cancellationToken))
+                        {
+                            SetFilterRefreshStatus(refreshing: false);
+                        }
+                    }
                 }
             });
         }
@@ -630,7 +626,14 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             {
                 if (IsCurrentSnapshotRequest(requestGeneration, cancellationToken))
                 {
-                    CollectorStatusText = $"采集失败: {error.Message}";
+                    if (purpose == DashboardSnapshotApplyPurpose.UserFilter)
+                    {
+                        SetFilterRefreshStatus(refreshing: false, $"筛选刷新失败: {error.Message}");
+                    }
+                    else
+                    {
+                        CollectorStatusText = $"采集失败: {error.Message}";
+                    }
                 }
             });
         }
@@ -640,93 +643,95 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void ScheduleQuery(DashboardSnapshotApplyPurpose purpose, TimeSpan? delay = null)
+    private void ScheduleFilterQuery(TimeSpan delay = default)
     {
-        var requestGeneration = BeginSnapshotRequest();
+        SnapshotQueryRequest? activeSnapshotQuery;
         lock (_queryPumpLock)
         {
             if (Volatile.Read(ref _disposed) != 0) return;
-            if (!_initialized)
-            {
-                _preInitializationQueryPending = true;
-                _preInitializationQueryPurpose = purpose;
-                _preInitializationQueryGeneration = requestGeneration;
-                return;
-            }
-        }
-
-        var query = new SnapshotQueryRequest(
-            CreateRequest(),
-            purpose,
-            delay ?? _filterDebounceDelay,
-            requestGeneration);
-        SnapshotQueryRequest? activeSnapshotQuery;
-        SnapshotQueryRequest? supersededSnapshotQuery;
-        var startPump = false;
-        lock (_queryPumpLock)
-        {
-            if (Volatile.Read(ref _disposed) != 0)
-            {
-                query.CancelAndDispose();
-                return;
-            }
-
-            supersededSnapshotQuery = _pendingSnapshotQuery;
-            _pendingSnapshotQuery = query;
+            _pendingFilterQuery = new PendingFilterQuery(
+                delay,
+                _timeProvider.GetTimestamp(),
+                Interlocked.Increment(ref _snapshotRequestGeneration));
             activeSnapshotQuery = _activeSnapshotQuery;
-            if (!_queryPumpRunning)
-            {
-                _queryPumpRunning = true;
-                startPump = true;
-            }
         }
 
-        supersededSnapshotQuery?.CancelAndDispose();
+        SetFilterRefreshStatus(refreshing: true);
         activeSnapshotQuery?.Cancel();
-        if (startPump) _ = RunQueryPumpAsync();
+        StartQueryPump();
     }
 
-    private async Task RunQueryPumpAsync()
+    // Run on the UI thread so a background refresh captures the latest selections.
+    private void StartQueryPump()
     {
-        while (true)
+        SnapshotQueryRequest query;
+        lock (_queryPumpLock)
         {
-            SnapshotQueryRequest query;
+            if (!_initialized || _activeSnapshotQuery is not null || Volatile.Read(ref _disposed) != 0) return;
+
+            if (_pendingFilterQuery is { } filterQuery)
+            {
+                query = new SnapshotQueryRequest(
+                    CreateRequest(),
+                    DashboardSnapshotApplyPurpose.UserFilter,
+                    filterQuery.Delay,
+                    filterQuery.ScheduledAt,
+                    filterQuery.Generation);
+                _pendingFilterQuery = null;
+            }
+            else if (_dataRefreshPending)
+            {
+                _dataRefreshPending = false;
+                query = new SnapshotQueryRequest(
+                    CreateRequest(),
+                    DashboardSnapshotApplyPurpose.DataRefresh,
+                    _filterDebounceDelay,
+                    _timeProvider.GetTimestamp(),
+                    Volatile.Read(ref _snapshotRequestGeneration));
+            }
+            else
+            {
+                return;
+            }
+
+            _activeSnapshotQuery = query;
+        }
+
+        _ = Task.Run(() => RunSnapshotQueryAsync(query));
+    }
+
+    private async Task RunSnapshotQueryAsync(SnapshotQueryRequest query)
+    {
+        var cancellationToken = query.Cancellation.Token;
+        try
+        {
+            var delay = query.Delay - _timeProvider.GetElapsedTime(query.ScheduledAt);
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await ExecuteSnapshotAsync(
+                token => _service.QueryAsync(query.Request, token),
+                query.Purpose,
+                query.Generation,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            bool hasPendingQuery;
             lock (_queryPumpLock)
             {
-                if (_pendingSnapshotQuery is null)
-                {
-                    _queryPumpRunning = false;
-                    return;
-                }
-
-                query = _pendingSnapshotQuery;
-                _pendingSnapshotQuery = null;
-                _activeSnapshotQuery = query;
+                _activeSnapshotQuery = null;
+                hasPendingQuery = _pendingFilterQuery is not null || _dataRefreshPending;
             }
 
-            try
-            {
-                await Task.Delay(query.Delay, query.Cancellation.Token).ConfigureAwait(false);
-                await ExecuteSnapshotAsync(
-                    token => _service.QueryAsync(query.Request, token),
-                    query.Purpose,
-                    query.Generation,
-                    query.Cancellation.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (query.Cancellation.IsCancellationRequested)
-            {
-            }
-            finally
-            {
-                lock (_queryPumpLock)
-                {
-                    if (ReferenceEquals(_activeSnapshotQuery, query))
-                    {
-                        _activeSnapshotQuery = null;
-                    }
-                }
-                query.Dispose();
-            }
+            query.Dispose();
+            if (hasPendingQuery) QueueUi(StartQueryPump);
         }
     }
 
@@ -855,7 +860,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     private void OnFilterOptionChanged(object? sender, PropertyChangedEventArgs args)
     {
         if (args.PropertyName == nameof(ModelFilterOption.IsSelected))
-            ScheduleQuery(DashboardSnapshotApplyPurpose.UserFilter);
+            ScheduleFilterQuery(OptionDebounce);
     }
 
     private async Task LoadStartupStateAsync(CancellationToken cancellationToken)
@@ -895,7 +900,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnUsageChanged(object? sender, EventArgs args)
     {
-        QueueUi(() => ScheduleQuery(DashboardSnapshotApplyPurpose.DataRefresh));
+        bool startPump;
+        lock (_queryPumpLock)
+        {
+            if (_dataRefreshPending || Volatile.Read(ref _disposed) != 0) return;
+            _dataRefreshPending = true;
+            startPump = _initialized && _activeSnapshotQuery is null;
+        }
+
+        if (startPump) QueueUi(StartQueryPump);
     }
 
     private void ApplyStatus(CollectorStatus status, bool synchronizeDiagnostics = true)
@@ -933,10 +946,11 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         CoverageText = coverage.Text;
         CollectorStatusText = status.Message;
         var headerPresentation = DashboardHeaderStatusPresentation.From(status.Phase);
-        HeaderStatusText = _collectorConflicts > 0
+        var headerText = _collectorConflicts > 0
             ? $"{headerPresentation.Text} · 冲突 {_collectorConflicts.ToString("N0", CultureInfo.CurrentCulture)}"
             : headerPresentation.Text;
-        HeaderStatusGlyph = headerPresentation.Glyph;
+        SetProperty(ref _headerStatusText, headerText, nameof(HeaderStatusText));
+        SetProperty(ref _headerStatusGlyph, headerPresentation.Glyph, nameof(HeaderStatusGlyph));
         if (_headerStatusTone != headerPresentation.Tone)
         {
             _headerStatusTone = headerPresentation.Tone;
@@ -944,6 +958,19 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HeaderStatusBrush)));
         }
         if (synchronizeDiagnostics) SynchronizeStatusDiagnostics();
+    }
+
+    private void SetFilterRefreshStatus(bool refreshing, string? error = null)
+    {
+        if (_isFilterRefreshing == refreshing && _filterRefreshError == error) return;
+        _isFilterRefreshing = refreshing;
+        _filterRefreshError = error;
+        _headerStatusBrush = null;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsFilterRefreshing)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowHeaderStatusGlyph)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HeaderStatusText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HeaderStatusGlyph)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HeaderStatusBrush)));
     }
 
     private DiagnosticRow[] CreateStatusDiagnostics() =>
@@ -1070,15 +1097,19 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
         _ => Color.FromArgb(0xFF, 0x82, 0x90, 0xA3),
     });
 
+    private readonly record struct PendingFilterQuery(TimeSpan Delay, long ScheduledAt, long Generation);
+
     private sealed class SnapshotQueryRequest(
         DashboardQueryRequest request,
         DashboardSnapshotApplyPurpose purpose,
         TimeSpan delay,
+        long scheduledAt,
         long generation) : IDisposable
     {
         public DashboardQueryRequest Request { get; } = request;
         public DashboardSnapshotApplyPurpose Purpose { get; } = purpose;
         public TimeSpan Delay { get; } = delay;
+        public long ScheduledAt { get; } = scheduledAt;
         public long Generation { get; } = generation;
         public CancellationTokenSource Cancellation { get; } = new();
         private int _disposed;
@@ -1093,12 +1124,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
             catch (ObjectDisposedException)
             {
             }
-        }
-
-        public void CancelAndDispose()
-        {
-            Cancel();
-            Dispose();
         }
 
         public void Dispose()
@@ -1181,8 +1206,6 @@ public sealed class DashboardViewModel : INotifyPropertyChanged, IDisposable
     {
         if (Volatile.Read(ref _disposed) == 0) _dispatcher.TryEnqueue(action);
     }
-
-    private long BeginSnapshotRequest() => Interlocked.Increment(ref _snapshotRequestGeneration);
 
     private bool IsCurrentSnapshotRequest(long requestGeneration, CancellationToken cancellationToken) =>
         !cancellationToken.IsCancellationRequested

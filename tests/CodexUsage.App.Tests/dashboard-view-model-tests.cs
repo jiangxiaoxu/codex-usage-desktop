@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.ComponentModel;
 using CodexUsage.App.Services;
 using CodexUsage.App.ViewModels;
 using CodexUsage.Application;
@@ -315,53 +314,91 @@ public sealed class DashboardViewModelTests
     }
 
     [Fact]
-    public async Task DataRefreshInterleavedWithThreadSelectionsAppliesOnlyLatestSelection()
+    public async Task UsageChangesCoalesceBehindLatestThreadSelection()
     {
         var firstQuery = new TaskCompletionSource<DashboardSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var latestQuery = new TaskCompletionSource<DashboardSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         var refreshQuery = new TaskCompletionSource<DashboardSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         var service = new FakeUsageDashboardService(Snapshot("initial", []));
         service.EnqueueQueryTask(firstQuery.Task);
+        service.EnqueueQueryTask(latestQuery.Task);
         service.EnqueueQueryTask(refreshQuery.Task);
-        service.EnqueueQuerySnapshot(Snapshot("selected-b", []));
         using var viewModel = CreateViewModel(service);
-        var applied = 0;
 
         await viewModel.InitializeAsync();
-        var selectedBSnapshotApplied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        viewModel.SnapshotApplied += (_, _) =>
-        {
-            applied++;
-            if (viewModel.CollectorStatusText == "selected-b") selectedBSnapshotApplied.TrySetResult(true);
-        };
+        var applied = new List<(DashboardSnapshotApplyPurpose Purpose, string Status, bool FilterRefreshing)>();
+        viewModel.SnapshotApplied += (_, args) => applied.Add(
+            (args.Purpose, viewModel.CollectorStatusText, viewModel.IsFilterRefreshing));
+        var refreshed = ObserveSnapshotApplication(viewModel, "refreshed-b");
         viewModel.MainThreadInputText = FirstCollidingMainThreadId;
         await service.FirstQueryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         service.RaiseUsageChanged();
-        Assert.True(service.QueryCancellationTokens[0].IsCancellationRequested);
+        service.RaiseUsageChanged();
+        Assert.False(service.QueryCancellationTokens[0].IsCancellationRequested);
 
+        viewModel.MainThreadInputText = SecondCollidingMainThreadId;
+        Assert.True(service.QueryCancellationTokens[0].IsCancellationRequested);
         firstQuery.SetResult(Snapshot("stale-first", []));
         await service.SecondQueryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        viewModel.MainThreadInputText = SecondCollidingMainThreadId;
-        Assert.True(service.QueryCancellationTokens[1].IsCancellationRequested);
-
-        refreshQuery.SetResult(Snapshot("stale-refresh", []));
+        service.RaiseUsageChanged();
+        service.RaiseUsageChanged();
+        Assert.False(service.QueryCancellationTokens[1].IsCancellationRequested);
+        latestQuery.SetResult(Snapshot("selected-b", []));
         await service.ThirdQueryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await selectedBSnapshotApplied.Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-        Assert.Equal(1, applied);
+        Assert.False(viewModel.IsFilterRefreshing);
         Assert.Equal("selected-b", viewModel.CollectorStatusText);
+
+        refreshQuery.SetResult(Snapshot("refreshed-b", []));
+        await refreshed.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Collection(
+            applied,
+            value => Assert.Equal((DashboardSnapshotApplyPurpose.UserFilter, "selected-b", true), value),
+            value => Assert.Equal((DashboardSnapshotApplyPurpose.DataRefresh, "refreshed-b", false), value));
         Assert.Equal(SecondCollidingMainThreadId, viewModel.SelectedMainThreadId);
         Assert.Collection(
             service.QueryRequests,
             value => Assert.Equal(FirstCollidingMainThreadId, value.MainThreadConversationId),
-            value => Assert.Equal(FirstCollidingMainThreadId, value.MainThreadConversationId),
+            value => Assert.Equal(SecondCollidingMainThreadId, value.MainThreadConversationId),
             value => Assert.Equal(SecondCollidingMainThreadId, value.MainThreadConversationId));
-        Assert.Collection(
-            service.QueryCancellationTokens,
-            value => Assert.True(value.IsCancellationRequested),
-            value => Assert.True(value.IsCancellationRequested),
-            value => Assert.False(value.IsCancellationRequested));
+    }
+
+    [Fact]
+    public async Task FilterFeedbackStartsBeforeDebounceAndReportsFailureOfLatestRequest()
+    {
+        var query = new TaskCompletionSource<DashboardSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeUsageDashboardService(Snapshot("initial", []));
+        service.EnqueueQueryTask(query.Task);
+        using var viewModel = CreateViewModel(service, TimeSpan.FromMinutes(1));
+        await viewModel.InitializeAsync();
+        var filterCompleted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(DashboardViewModel.IsFilterRefreshing) && !viewModel.IsFilterRefreshing)
+                filterCompleted.TrySetResult(viewModel.HeaderStatusText);
+        };
+
+        viewModel.RangeScalePosition = DashboardTimeRangeScale.HoursToPosition(24);
+
+        Assert.True(viewModel.IsFilterRefreshing);
+        Assert.Equal("正在刷新筛选结果", viewModel.HeaderStatusText);
+        Assert.Empty(service.QueryRequests);
+
+        viewModel.MainThreadInputText = DirectMainThreadId;
+        var request = await service.FirstQueryStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(viewModel.IsFilterRefreshing);
+        Assert.Equal(DirectMainThreadId, request.MainThreadConversationId);
+        Assert.Equal(TimeSpan.FromHours(24), request.EndUtc - request.StartUtc);
+
+        query.SetException(new InvalidOperationException("test failure"));
+        var failure = await filterCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Single(service.QueryRequests);
+        Assert.False(viewModel.IsFilterRefreshing);
+        Assert.Contains("test failure", failure);
     }
 
     [Fact]
@@ -373,16 +410,8 @@ public sealed class DashboardViewModelTests
         service.EnqueueQuerySnapshot(Snapshot("fresh", []));
         using var viewModel = CreateViewModel(service);
         var applied = 0;
-        var freshSnapshotApplied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         viewModel.SnapshotApplied += (_, _) => applied++;
-        viewModel.PropertyChanged += (_, args) =>
-        {
-            if (args.PropertyName == nameof(DashboardViewModel.CollectorStatusText)
-                && viewModel.CollectorStatusText == "fresh")
-            {
-                freshSnapshotApplied.TrySetResult(true);
-            }
-        };
+        var freshSnapshotApplied = ObserveSnapshotApplication(viewModel, "fresh");
 
         await viewModel.InitializeAsync();
         viewModel.ClearMainThreadFilter();
@@ -393,7 +422,7 @@ public sealed class DashboardViewModelTests
         Assert.True(service.QueryCancellationTokens[0].IsCancellationRequested);
 
         firstQuery.SetResult(Snapshot("stale", []));
-        await freshSnapshotApplied.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await freshSnapshotApplied.WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal(2, applied);
         Assert.Equal("fresh", viewModel.CollectorStatusText);
@@ -426,13 +455,15 @@ public sealed class DashboardViewModelTests
             value => Assert.Equal(DirectMainThreadId, value.MainThreadConversationId));
     }
 
-    private static DashboardViewModel CreateViewModel(FakeUsageDashboardService service) => new(
+    private static DashboardViewModel CreateViewModel(
+        FakeUsageDashboardService service,
+        TimeSpan filterDebounce = default) => new(
         service,
         new InlineUiDispatcher(),
         new UnavailableStartupRegistrationService("Startup is unavailable in tests."),
         new UnconfiguredReleaseUpdateService(),
         TimeProvider.System,
-        TimeSpan.Zero);
+        filterDebounce);
 
     private static MainThreadOption MainThread(
         string conversationId,
@@ -459,19 +490,18 @@ public sealed class DashboardViewModelTests
         string expectedCollectorStatus)
     {
         var applied = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        PropertyChangedEventHandler? handler = null;
-        handler = (_, args) =>
+        EventHandler<DashboardSnapshotApplicationEventArgs>? handler = null;
+        handler = (_, _) =>
         {
-            if (args.PropertyName != nameof(DashboardViewModel.CollectorStatusText)
-                || viewModel.CollectorStatusText != expectedCollectorStatus)
+            if (viewModel.CollectorStatusText != expectedCollectorStatus)
             {
                 return;
             }
 
-            viewModel.PropertyChanged -= handler;
+            viewModel.SnapshotApplied -= handler;
             applied.TrySetResult(true);
         };
-        viewModel.PropertyChanged += handler;
+        viewModel.SnapshotApplied += handler;
         return applied.Task;
     }
 
@@ -503,7 +533,6 @@ public sealed class DashboardViewModelTests
             new UsageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, cost ?? CostBreakdown.PricedZero, 0, 0, 0, 0),
             byModel?.ToImmutableArray() ?? ImmutableArray<GroupRow>.Empty,
             byRole?.ToImmutableArray() ?? ImmutableArray<RoleUsageRow>.Empty,
-            ImmutableArray<GroupRow>.Empty,
             new QueryFacets(ImmutableArray<ModelFacetOption>.Empty, ImmutableArray<SubjectFacetOption>.Empty),
             ScanDiagnostics.Empty),
         mainThreads,

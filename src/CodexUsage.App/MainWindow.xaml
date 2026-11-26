@@ -132,13 +132,21 @@
                     HorizontalAlignment="Right"
                     VerticalAlignment="Center"
                     AutomationProperties.Name="{Binding HeaderStatusText}"
-                    ColumnDefinitions="Auto,*"
+                    ColumnDefinitions="14,*"
                     ToolTipService.ToolTip="{Binding HeaderStatusText}">
                     <FontIcon
                         VerticalAlignment="Center"
                         FontSize="13"
                         Foreground="{Binding HeaderStatusBrush}"
-                        Glyph="{Binding HeaderStatusGlyph}" />
+                        Glyph="{Binding HeaderStatusGlyph}"
+                        Visibility="{Binding ShowHeaderStatusGlyph, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    <ProgressRing
+                        Width="14"
+                        Height="14"
+                        VerticalAlignment="Center"
+                        Foreground="{Binding HeaderStatusBrush}"
+                        IsActive="{Binding IsFilterRefreshing}"
+                        Visibility="{Binding IsFilterRefreshing, Converter={StaticResource BooleanToVisibilityConverter}}" />
                     <TextBlock
                         Grid.Column="1"
                         Margin="7,0,0,0"

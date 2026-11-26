@@ -2566,7 +2566,12 @@ public sealed class UsageCollector : IUsageCollector
         {
             EnsureStarted();
             _testHooks?.BeforeQuery?.Invoke();
-            query.Completion.TrySetResult(RequireStore().QueryEvents(query.Query));
+            query.Completion.TrySetResult(RequireStore().QueryEvents(query.Query, query.CancellationToken));
+        }
+        catch (OperationCanceledException error) when (query.CancellationToken.IsCancellationRequested
+            && error.CancellationToken == query.CancellationToken)
+        {
+            query.Completion.TrySetCanceled(query.CancellationToken);
         }
         catch (Exception error)
         {
@@ -2579,7 +2584,12 @@ public sealed class UsageCollector : IUsageCollector
         try
         {
             EnsureStarted();
-            query.Completion.TrySetResult(RequireStore().QueryRecentMainThreads(query.MaximumCount));
+            query.Completion.TrySetResult(RequireStore().QueryRecentMainThreads(query.MaximumCount, query.CancellationToken));
+        }
+        catch (OperationCanceledException error) when (query.CancellationToken.IsCancellationRequested
+            && error.CancellationToken == query.CancellationToken)
+        {
+            query.Completion.TrySetCanceled(query.CancellationToken);
         }
         catch (Exception error)
         {

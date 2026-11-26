@@ -103,7 +103,7 @@ public sealed class UsageStoreTests
             var usage = Assert.Single(rolledBack.QueryEvents(new(0, 2_000)));
             Assert.Equal(baseline, usage);
             var cost = UsageAccounting.CostFor(new UsageEvent(
-                usage.TimestampUtc.ToString("O"), usage.TokenEventOrdinal, usage.ConversationId, usage.RolloutId,
+                usage.TimestampUtc, usage.TokenEventOrdinal, usage.ConversationId, usage.RolloutId,
                 usage.ParentThreadId, usage.ThreadType, usage.AgentRole, usage.AgentPath, usage.AgentNickname,
                 usage.Model, usage.InputTokens, usage.CachedInputTokens, usage.OutputTokens,
                 usage.ReasoningOutputTokens, usage.ServiceTier));
@@ -1100,6 +1100,35 @@ public sealed class UsageStoreTests
         var threads = store.QueryRecentMainThreads(20);
 
         Assert.Equal(expected.AsEnumerable().Reverse(), threads.Select(value => value.ConversationId));
+    }
+
+    [Fact]
+    public void QueryRecentMainThreadsReflectsMetadataUpdatesWithoutNewEvents()
+    {
+        using var temporary = new TemporaryDirectory();
+        var databasePath = Path.Combine(temporary.Path, "usage.sqlite");
+        using var store = new UsageStore(databasePath);
+        const string mainId = "019fe0d7-dd64-7412-8fa0-ea96334569dd";
+        var main = Metadata with { ConversationId = mainId, LastActivityEpochMs = 100 };
+        store.AppendEvents(main, [], 100);
+        Assert.Equal(100, Assert.Single(store.QueryRecentMainThreads(20)).LastActivityUtc.ToUnixTimeMilliseconds());
+
+        var child = Metadata with
+        {
+            RolloutId = "child-rollout",
+            ParentThreadId = mainId,
+            ThreadType = ThreadType.Subagent,
+            LastActivityEpochMs = 200,
+        };
+        store.AppendEvents(child, [], 200);
+        Assert.Equal(200, Assert.Single(store.QueryRecentMainThreads(20)).LastActivityUtc.ToUnixTimeMilliseconds());
+
+        store.SynchronizeMainThreadTitles(new Dictionary<string, string> { [mainId] = "Updated title" }, false, 300);
+        Assert.Equal("Updated title", Assert.Single(store.QueryRecentMainThreads(20)).Title);
+
+        using var anotherStore = new UsageStore(databasePath);
+        anotherStore.AppendEvents(child with { LastActivityEpochMs = 400 }, [], 400);
+        Assert.Equal(400, Assert.Single(store.QueryRecentMainThreads(20)).LastActivityUtc.ToUnixTimeMilliseconds());
     }
 
     [Fact]

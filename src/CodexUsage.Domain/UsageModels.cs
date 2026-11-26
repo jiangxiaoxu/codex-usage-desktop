@@ -21,7 +21,7 @@ public enum ServiceTier
 public sealed record SubjectFilter(ThreadType ThreadType, string AgentRole);
 
 public sealed record UsageEvent(
-    string TimestampUtc,
+    DateTimeOffset TimestampUtc,
     long TokenEventOrdinal,
     string ConversationId,
     string RolloutId,
@@ -97,6 +97,5 @@ public sealed record QueryResult(
     UsageSummary Summary,
     ImmutableArray<GroupRow> ByModel,
     ImmutableArray<RoleUsageRow> ByRole,
-    ImmutableArray<GroupRow> ByAgent,
     QueryFacets Facets,
     ScanDiagnostics Diagnostics);

@@ -7,7 +7,8 @@ namespace CodexUsage.Domain.Tests;
 public sealed class UsageAccountingTests
 {
     private static readonly UsageEvent Event = new(
-        "2026-07-15T01:00:00.000Z", 0, "conversation", "rollout", "", ThreadType.Main, "main", "/root", "",
+        new DateTimeOffset(2026, 7, 15, 1, 0, 0, TimeSpan.Zero),
+        0, "conversation", "rollout", "", ThreadType.Main, "main", "/root", "",
         "gpt-5.6-sol", 1_000_000, 800_000, 100_000, 70_000, ServiceTier.Standard);
 
     private static readonly FilterSpec Filter = new(
@@ -256,7 +257,7 @@ public sealed class UsageAccountingTests
     public void Gpt62UsesFlatContextPricingAndFixedSpeedMultipliers(
         string model, decimal inputRate, decimal cachedRate, decimal outputRate)
     {
-        var usage = Event with { Model = model, TimestampUtc = "2026-11-18T00:00:00Z" };
+        var usage = Event with { Model = model, TimestampUtc = new DateTimeOffset(2026, 11, 18, 0, 0, 0, TimeSpan.Zero) };
         var baseline = 0.2m * inputRate + 0.8m * cachedRate + 0.1m * outputRate;
         foreach (var (tier, multiplier) in new[]
         {
@@ -505,7 +506,7 @@ public sealed class UsageAccountingTests
             Event with { RolloutId = "other", Model = "o3" },
             Event with { RolloutId = "auto-review", Model = "codex-auto-review" },
             Event with { RolloutId = "unknown", Model = "unknown" },
-            Event with { RolloutId = "outside", TimestampUtc = "2026-07-16T00:00:00.000Z", Model = "gpt-5.4" },
+            Event with { RolloutId = "outside", TimestampUtc = Filter.EndUtc, Model = "gpt-5.4" },
         };
         var result = UsageAccounting.Query(events, ScanDiagnostics.Empty, Filter with { Models = [selectedModel] });
         Assert.Equal(selectedModel, Assert.Single(result.ByModel).Key[0]);

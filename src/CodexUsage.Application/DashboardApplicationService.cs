@@ -138,9 +138,10 @@ public sealed class DashboardApplicationService : IUsageDashboardService
         _collectorStatus = status;
         var result = await Task.Run(
             () => UsageAccounting.Query(
-                storedEvents.Select(ToDomainEvent).ToArray(),
+                storedEvents.Select(ToDomainEvent),
                 ToScanDiagnostics(status.Diagnostics),
-                ToFilterSpec(request)),
+                ToFilterSpec(request),
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
         return new DashboardSnapshot(status, result, recentMainThreads, GetEfficiencyResult());
     }
@@ -274,7 +275,7 @@ public sealed class DashboardApplicationService : IUsageDashboardService
     }
 
     private static UsageEvent ToDomainEvent(StoredUsageEvent value) => new(
-        value.TimestampUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+        value.TimestampUtc,
         value.TokenEventOrdinal,
         value.ConversationId,
         value.RolloutId,
